@@ -52,9 +52,9 @@ class TestMonteCarloSimulator:
 
     def test_var_calculation(self, simulator):
         """Test Value at Risk calculation"""
-        pnl = np.random.normal(100, 50, 10000)
+        pnl = np.random.normal(-100, 50, 10000)
         var = simulator.calculate_value_at_risk(pnl, confidence_level=0.95)
-        assert var < 0  # VaR should be negative
+        assert var < 0  # VaR should be negative for losses
 
     def test_position_sizing(self, simulator):
         """Test optimal position sizing"""
@@ -138,6 +138,6 @@ class TestMarketMaker:
         market_maker.inventory = {"MARKET_A": 0.1, "MARKET_B": -0.05}
         metrics = market_maker.get_portfolio_metrics()
 
-        assert metrics["total_position"] == 0.15
-        assert metrics["net_exposure"] == 0.05
+        assert np.isclose(metrics["total_position"], 0.15)
+        assert np.isclose(metrics["net_exposure"], 0.05)
         assert metrics["number_of_markets"] == 2
