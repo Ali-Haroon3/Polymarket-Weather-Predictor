@@ -95,15 +95,6 @@ positions = mm.calculate_position_sizes(probability_estimates)
 - **Backtesting**: Backtrader
 - **Visualization**: Matplotlib, Seaborn
 
-## Project Timeline
-
-- **August 2025**: Project initiation and research
-- **September 2025**: Data pipeline implementation
-- **October 2025**: Model development and training
-- **November 2025**: Trading strategy implementation
-- **December 2025**: Testing and optimization
-- **January 2026**: Production deployment
-
 ## License
 
 MIT License
