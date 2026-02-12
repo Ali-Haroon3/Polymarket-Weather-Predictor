@@ -1,104 +1,77 @@
-# Polymarket Weather Prediction System
+# Polymarket Weather Predictor (Rust)
 
-A comprehensive probabilistic forecasting system for weather prediction market derivatives on Polymarket. This system implements Bayesian inference models, Monte Carlo simulations, and quantitative trading strategies for weather-based prediction markets.
+A Rust port of the full Polymarket Weather Prediction System, including:
+- Multi-source weather data pipeline
+- Bayesian probability modeling
+- Monte Carlo trading simulation and market making
+- End-to-end backtesting engine
+- Polymarket API client and live trader scaffolding
 
-## Features
+## Project Layout
 
-- **NOAA Weather Data Pipeline**: Processes 500K+ historical weather records with automated data validation
-- **Bayesian Inference Models**: Generates calibrated probability estimates for temperature and precipitation events
-- **Monte Carlo Simulation**: Advanced position sizing and market-making strategies with risk management
-- **PostgreSQL Integration**: Scalable data storage and retrieval for historical analysis
-- **Probability Calibration**: Achieves 0.87 Brier score for forecast accuracy
+- `src/data_pipeline/`: weather fetchers, aggregation, processing
+- `src/models/`: Bayesian model and calibration metrics
+- `src/trading/`: Monte Carlo simulator and market maker
+- `src/backtesting/`: market simulator, backtest engine, performance analytics
+- `src/api/`: Polymarket API client + live trading bot
+- `src/database/`: data model structs and connection/session abstractions
+- `src/bin/`: runnable binaries (examples, backtest, init_db)
+- `tests/`: integration tests covering models/trading/backtesting/data/api
 
-## System Architecture
-
-```
-├── data_pipeline/          # NOAA data fetching and processing
-├── models/                 # Bayesian inference and statistical models
-├── trading/               # Monte Carlo simulations and strategies
-├── database/              # PostgreSQL schema and ORM models
-├── tests/                 # Comprehensive test suite
-└── notebooks/             # Analysis and exploration notebooks
-```
-
-## Installation
-
-### Prerequisites
-- Python 3.9+
-- PostgreSQL 12+
-- pip
-
-### Setup
+## Build
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your database credentials and API keys
-
-# Initialize database
-python -m scripts.init_db
-
-# Run tests
-pytest tests/
+cargo build
 ```
 
-## Usage
+## Test
 
-### Data Pipeline
-
-```python
-from polymarket.data_pipeline import NOAADataPipeline
-
-pipeline = NOAADataPipeline(db_connection_string="postgresql://...")
-pipeline.fetch_historical_data(start_date="2020-01-01", end_date="2024-12-31")
-pipeline.validate_and_process()
+```bash
+cargo test
 ```
 
-### Probability Forecasting
+## Run
 
-```python
-from polymarket.models import BayesianWeatherModel
+Initialize database abstraction:
 
-model = BayesianWeatherModel()
-model.train(historical_data)
-
-# Generate calibrated probability estimates
-prob_high_temp = model.predict_temperature_exceeds(temp_threshold=95)
-prob_precipitation = model.predict_precipitation_probability()
+```bash
+cargo run --bin init_db
 ```
 
-### Trading Strategy
+Run the full backtest example:
 
-```python
-from polymarket.trading import MonteCarloMarketMaker
-
-mm = MonteCarloMarketMaker(capital=100000)
-optimal_spreads = mm.optimize_bid_ask_spreads(market_prices, volatility)
-positions = mm.calculate_position_sizes(probability_estimates)
+```bash
+cargo run --bin run_backtest
 ```
 
-## Performance Metrics
+Run end-to-end workflow example:
 
-- **Brier Score**: 0.87 (calibration accuracy)
-- **Data Processing**: 500K+ records handled efficiently
-- **Forecast Horizon**: Up to 30 days ahead
-- **Geographic Coverage**: Continental US weather stations
+```bash
+cargo run --bin example_workflow
+```
 
-## Technologies
+Run live trading example in paper mode:
 
-- **Data Science**: NumPy, pandas, Scikit-learn
-- **Statistical Modeling**: PyMC3, SciPy
-- **Database**: PostgreSQL, SQLAlchemy
-- **Backtesting**: Backtrader
-- **Visualization**: Matplotlib, Seaborn
+```bash
+cargo run --bin live_trading_example
+```
 
-## License
+## Environment Variables
 
-MIT License
+Optional variables (defaults are provided in `src/config.rs`):
 
-## Contact
+- `DATABASE_URL`
+- `NOAA_API_KEY`
+- `NOAA_BASE_URL`
+- `OPENWEATHERMAP_API_KEY`
+- `VISUAL_CROSSING_API_KEY`
+- `WEATHERAPI_KEY`
+- `TOMORROW_IO_API_KEY`
+- `INITIAL_CAPITAL`
+- `MIN_BID_ASK_SPREAD`
 
-For questions or collaboration inquiries, reach out to Ali Haroon.
+## Notes
+
+- API-keyed weather sources are automatically skipped when keys are missing.
+- Polymarket client supports paper trading mode by default.
+- The database layer is a lightweight Rust abstraction in this port.
