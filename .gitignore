@@ -70,3 +70,6 @@ logs/
 *.tmp
 *.bak
 *.swp
+
+# Rust
+target/
