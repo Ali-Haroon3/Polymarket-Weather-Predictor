@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 
+use crate::data_pipeline::accuweather_fetcher::AccuWeatherFetcher;
+use crate::data_pipeline::awc_fetcher::AWCFetcher;
 use crate::data_pipeline::noaa_fetcher::NOAAFetcher;
 use crate::data_pipeline::nws_fetcher::NWSFetcher;
 use crate::data_pipeline::open_meteo_fetcher::OpenMeteoFetcher;
@@ -20,6 +22,8 @@ pub struct MultiSourceAggregator {
     pub vc: VisualCrossingFetcher,
     pub wapi: WeatherAPIFetcher,
     pub tio: TomorrowIOFetcher,
+    pub accu: AccuWeatherFetcher,
+    pub awc: AWCFetcher,
 }
 
 impl MultiSourceAggregator {
@@ -32,6 +36,8 @@ impl MultiSourceAggregator {
             vc: VisualCrossingFetcher::new(None),
             wapi: WeatherAPIFetcher::new(None),
             tio: TomorrowIOFetcher::new(None),
+            accu: AccuWeatherFetcher::new(None),
+            awc: AWCFetcher::new(),
         }
     }
 
@@ -88,6 +94,23 @@ impl MultiSourceAggregator {
             let rows = self.tio.fetch_location(location_key, start_date, end_date);
             if !rows.is_empty() {
                 results.insert("tomorrow_io".to_string(), rows);
+            }
+        }
+
+        let metar = self.awc.fetch_metar_location(location_key, start_date, end_date);
+        if !metar.is_empty() {
+            results.insert("awc_metar".to_string(), metar);
+        }
+
+        let taf = self.awc.fetch_taf_location(location_key, start_date, end_date);
+        if !taf.is_empty() {
+            results.insert("awc_taf".to_string(), taf);
+        }
+
+        if self.accu.is_available() {
+            let rows = self.accu.fetch_location(location_key, start_date, end_date);
+            if !rows.is_empty() {
+                results.insert("accuweather".to_string(), rows);
             }
         }
 

@@ -3,8 +3,8 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Gamma, Normal};
 
 use polymarket_weather_predictor::data_pipeline::{
-    MultiSourceAggregator, NWSFetcher, OpenMeteoFetcher, OpenWeatherMapFetcher, TomorrowIOFetcher,
-    VisualCrossingFetcher, WeatherAPIFetcher,
+    AWCFetcher, AccuWeatherFetcher, MultiSourceAggregator, NWSFetcher, OpenMeteoFetcher,
+    OpenWeatherMapFetcher, TomorrowIOFetcher, VisualCrossingFetcher, WeatherAPIFetcher,
 };
 use polymarket_weather_predictor::types::WeatherRecord;
 
@@ -36,10 +36,20 @@ fn synthetic_records(source_prefix: &str, location_key: &str, n_days: usize) -> 
 
 #[test]
 fn test_fetcher_availability_flags() {
+    assert!(!AccuWeatherFetcher::new(Some("".to_string())).is_available());
     assert!(!OpenWeatherMapFetcher::new(Some("".to_string())).is_available());
     assert!(!VisualCrossingFetcher::new(Some("".to_string())).is_available());
     assert!(!WeatherAPIFetcher::new(Some("".to_string())).is_available());
     assert!(!TomorrowIOFetcher::new(Some("".to_string())).is_available());
+}
+
+#[test]
+fn test_awc_invalid_location_is_empty() {
+    let fetcher = AWCFetcher::new();
+    let start = NaiveDate::from_ymd_opt(2025, 8, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2025, 8, 3).unwrap();
+    assert!(fetcher.fetch_metar_location("INVALID_CITY", start, end).is_empty());
+    assert!(fetcher.fetch_taf_location("INVALID_CITY", start, end).is_empty());
 }
 
 #[test]

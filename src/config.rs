@@ -71,6 +71,16 @@ pub fn openweathermap_api_key() -> String {
     env_or("OPENWEATHERMAP_API_KEY", "")
 }
 
+pub fn accuweather_api_key() -> String {
+    dotenv().ok();
+    env_or("ACCUWEATHER_API_KEY", "")
+}
+
+pub fn awc_base_url() -> String {
+    dotenv().ok();
+    env_or("AWC_BASE_URL", "https://aviationweather.gov/api/data")
+}
+
 pub fn visual_crossing_api_key() -> String {
     dotenv().ok();
     env_or("VISUAL_CROSSING_API_KEY", "")

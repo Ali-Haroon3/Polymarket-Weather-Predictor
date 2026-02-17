@@ -1,3 +1,5 @@
+pub mod accuweather_fetcher;
+pub mod awc_fetcher;
 pub mod data_processor;
 pub mod multi_source_aggregator;
 pub mod noaa_fetcher;
@@ -8,6 +10,8 @@ pub mod tomorrow_io_fetcher;
 pub mod visual_crossing_fetcher;
 pub mod weatherapi_fetcher;
 
+pub use accuweather_fetcher::AccuWeatherFetcher;
+pub use awc_fetcher::AWCFetcher;
 pub use data_processor::DataProcessor;
 pub use multi_source_aggregator::MultiSourceAggregator;
 pub use noaa_fetcher::NOAAFetcher;
