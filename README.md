@@ -44,6 +44,25 @@ Run the full backtest example:
 cargo run --bin run_backtest
 ```
 
+Run backtest with real Polymarket market history (CSV/JSON):
+
+```bash
+cargo run --bin run_backtest_real -- \
+  --markets data/polymarket_history.csv \
+  --start 2025-01-01 \
+  --end 2025-03-31
+```
+
+Required columns in CSV/JSON rows:
+- `date` (`YYYY-MM-DD` or RFC3339 timestamp)
+- `market_id`
+- `market_title`
+- `market_type` (`temperature` or `precipitation`)
+- `threshold`
+- `market_price` (0-1)
+- `actual_outcome` (0 or 1)
+- `city` (e.g., `NYC`, `LA`, `London`)
+
 Run end-to-end workflow example:
 
 ```bash
@@ -63,6 +82,8 @@ Optional variables (defaults are provided in `src/config.rs`):
 - `DATABASE_URL`
 - `NOAA_API_KEY`
 - `NOAA_BASE_URL`
+- `ACCUWEATHER_API_KEY`
+- `AWC_BASE_URL`
 - `OPENWEATHERMAP_API_KEY`
 - `VISUAL_CROSSING_API_KEY`
 - `WEATHERAPI_KEY`

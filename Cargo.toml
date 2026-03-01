@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+csv = "1.4"
 dotenvy = "0.15"
 rand = "0.8"
 rand_distr = "0.4"
@@ -17,4 +18,3 @@ thiserror = "2"
 
 [dev-dependencies]
 approx = "0.5"
-

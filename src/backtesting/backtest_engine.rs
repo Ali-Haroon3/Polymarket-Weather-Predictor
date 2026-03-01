@@ -82,45 +82,64 @@ impl BacktestEngine {
 
         let markets = self.generate_markets(&weather_data);
         let (trades, portfolio_values) = self.simulate_trading(&weather_data, &markets);
-        let metrics = PerformanceAnalyzer::compute_metrics(&trades, &portfolio_values, self.initial_capital);
+        self.build_results(
+            "simulated",
+            start,
+            end,
+            &weather_data,
+            markets.len(),
+            trades,
+            portfolio_values,
+        )
+    }
 
-        let mut config = HashMap::new();
-        config.insert("start_date".to_string(), start.to_string());
-        config.insert("end_date".to_string(), end.to_string());
-        config.insert("cities".to_string(), self.cities.join(","));
-        config.insert("initial_capital".to_string(), self.initial_capital.to_string());
-        config.insert("edge_threshold".to_string(), self.edge_threshold.to_string());
-        config.insert("kelly_fraction".to_string(), self.kelly_fraction.to_string());
-        config.insert(
-            "model_lookback_days".to_string(),
-            self.model_lookback_days.to_string(),
-        );
+    pub fn run_with_real_markets(
+        &mut self,
+        markets: Vec<SimulatedMarket>,
+        start_date: Option<NaiveDate>,
+        end_date: Option<NaiveDate>,
+        weather_data_override: Option<HashMap<String, Vec<WeatherRecord>>>,
+    ) -> BacktestResults {
+        let (min_date, max_date) = infer_market_date_bounds(&markets).unwrap_or_else(|| {
+            let today = Utc::now().date_naive();
+            (today, today)
+        });
 
-        let data_sources = weather_data
-            .iter()
-            .map(|(city, rows)| {
-                let mut sources = rows
-                    .iter()
-                    .filter_map(|r| r.sources.clone())
-                    .flat_map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>())
-                    .collect::<Vec<_>>();
-                sources.sort();
-                sources.dedup();
-                if sources.is_empty() {
-                    sources.push("unknown".to_string());
-                }
-                (city.clone(), sources)
-            })
+        let start = start_date.unwrap_or(min_date);
+        let end = end_date.unwrap_or(max_date);
+
+        let filtered_markets: Vec<SimulatedMarket> = markets
+            .into_iter()
+            .filter(|m| m.date >= start && m.date <= end)
             .collect();
 
-        BacktestResults {
-            config,
-            data_sources,
-            metrics,
-            portfolio_values,
-            total_markets_generated: markets.len(),
+        let market_cities: Vec<String> = {
+            let mut cities = filtered_markets
+                .iter()
+                .map(|m| m.city.clone())
+                .collect::<Vec<_>>();
+            cities.sort();
+            cities.dedup();
+            cities
+        };
+
+        let weather_data = weather_data_override.unwrap_or_else(|| {
+            let fetch_start = start - Duration::days(self.model_lookback_days);
+            self.aggregator
+                .aggregate_multiple(&market_cities, fetch_start, end)
+        });
+
+        let (trades, portfolio_values) = self.simulate_trading(&weather_data, &filtered_markets);
+
+        self.build_results(
+            "real_markets",
+            start,
+            end,
+            &weather_data,
+            filtered_markets.len(),
             trades,
-        }
+            portfolio_values,
+        )
     }
 
     fn generate_markets(&mut self, weather_data: &HashMap<String, Vec<WeatherRecord>>) -> Vec<SimulatedMarket> {
@@ -264,4 +283,62 @@ impl BacktestEngine {
         let max_pos = available_capital * self.max_position_pct;
         (kelly * available_capital).min(max_pos)
     }
+
+    fn build_results(
+        &self,
+        market_mode: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+        weather_data: &HashMap<String, Vec<WeatherRecord>>,
+        total_markets_generated: usize,
+        trades: Vec<TradeRecord>,
+        portfolio_values: Vec<f64>,
+    ) -> BacktestResults {
+        let metrics = PerformanceAnalyzer::compute_metrics(&trades, &portfolio_values, self.initial_capital);
+
+        let mut config = HashMap::new();
+        config.insert("market_mode".to_string(), market_mode.to_string());
+        config.insert("start_date".to_string(), start.to_string());
+        config.insert("end_date".to_string(), end.to_string());
+        config.insert("cities".to_string(), self.cities.join(","));
+        config.insert("initial_capital".to_string(), self.initial_capital.to_string());
+        config.insert("edge_threshold".to_string(), self.edge_threshold.to_string());
+        config.insert("kelly_fraction".to_string(), self.kelly_fraction.to_string());
+        config.insert(
+            "model_lookback_days".to_string(),
+            self.model_lookback_days.to_string(),
+        );
+
+        let data_sources = weather_data
+            .iter()
+            .map(|(city, rows)| {
+                let mut sources = rows
+                    .iter()
+                    .filter_map(|r| r.sources.clone())
+                    .flat_map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>())
+                    .collect::<Vec<_>>();
+                sources.sort();
+                sources.dedup();
+                if sources.is_empty() {
+                    sources.push("unknown".to_string());
+                }
+                (city.clone(), sources)
+            })
+            .collect();
+
+        BacktestResults {
+            config,
+            data_sources,
+            metrics,
+            portfolio_values,
+            total_markets_generated,
+            trades,
+        }
+    }
+}
+
+fn infer_market_date_bounds(markets: &[SimulatedMarket]) -> Option<(NaiveDate, NaiveDate)> {
+    let min = markets.iter().map(|m| m.date).min()?;
+    let max = markets.iter().map(|m| m.date).max()?;
+    Some((min, max))
 }
