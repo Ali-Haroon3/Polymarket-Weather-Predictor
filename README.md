@@ -44,6 +44,16 @@ Run the full backtest example:
 cargo run --bin run_backtest
 ```
 
+Download real Polymarket weather market history (CSV for backtesting):
+
+```bash
+cargo run --bin download_polymarket_history -- \
+  --output data/polymarket_history.csv \
+  --start 2025-01-01 \
+  --end 2025-03-31 \
+  --limit 500
+```
+
 Run backtest with real Polymarket market history (CSV/JSON):
 
 ```bash
@@ -52,6 +62,10 @@ cargo run --bin run_backtest_real -- \
   --start 2025-01-01 \
   --end 2025-03-31
 ```
+
+Typical flow:
+1. `download_polymarket_history` to generate `data/polymarket_history.csv`
+2. `run_backtest_real` to compute strategy performance on those markets
 
 Required columns in CSV/JSON rows:
 - `date` (`YYYY-MM-DD` or RFC3339 timestamp)

@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 
 use crate::types::SimulatedMarket;
+use crate::utils::parse_date;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RealMarketLoadError {
@@ -92,17 +92,3 @@ impl RealMarketLoader {
     }
 }
 
-fn parse_date(input: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(input, "%Y-%m-%d")
-        .ok()
-        .or_else(|| {
-            DateTime::parse_from_rfc3339(input)
-                .ok()
-                .map(|d| d.with_timezone(&Utc).date_naive())
-        })
-        .or_else(|| {
-            DateTime::parse_from_str(input, "%Y-%m-%d %H:%M:%S%:z")
-                .ok()
-                .map(|d| d.with_timezone(&Utc).date_naive())
-        })
-}

@@ -1,5 +1,22 @@
+use chrono::{DateTime, NaiveDate, Utc};
 use rand::prelude::*;
 use rand_distr::{Distribution, StandardNormal};
+
+/// Parse a date string in YYYY-MM-DD, RFC3339, or "%Y-%m-%d %H:%M:%S%:z" formats.
+pub fn parse_date(input: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(input, "%Y-%m-%d")
+        .ok()
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(input)
+                .ok()
+                .map(|d| d.with_timezone(&Utc).date_naive())
+        })
+        .or_else(|| {
+            DateTime::parse_from_str(input, "%Y-%m-%d %H:%M:%S%:z")
+                .ok()
+                .map(|d| d.with_timezone(&Utc).date_naive())
+        })
+}
 
 pub fn clip(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
