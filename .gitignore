@@ -73,3 +73,9 @@ logs/
 
 # Rust
 target/
+.gstack/
+
+# Generated runtime data / dashboards
+data/
+dashboard.html
+backtest_results/

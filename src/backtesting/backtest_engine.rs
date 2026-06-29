@@ -380,3 +380,66 @@ pub fn market_estimate(model: &BayesianWeatherModel, market: &SimulatedMarket) -
         _ => None,
     }
 }
+
+/// A market with the model's probability and the realized outcome side by side. Unlike a trade
+/// record this covers EVERY market (not just the ones an edge triggered), which is what calibration
+/// analysis needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketEvaluation {
+    pub date: NaiveDate,
+    pub city: String,
+    pub market_id: String,
+    pub market_title: String,
+    pub market_type: String,
+    pub threshold: f64,
+    pub threshold_upper: Option<f64>,
+    pub unit: Option<String>,
+    pub market_price: f64,
+    pub actual_outcome: f64,
+    /// Model P(event); None when there isn't enough trailing weather to train (or city uncovered).
+    pub model_estimate: Option<f64>,
+}
+
+/// Score each market: train the model on the city's trailing `lookback_days` of weather (as the
+/// backtest does) and record its probability alongside the realized outcome.
+pub fn evaluate_markets(
+    markets: &[SimulatedMarket],
+    weather_data: &HashMap<String, Vec<WeatherRecord>>,
+    lookback_days: i64,
+) -> Vec<MarketEvaluation> {
+    markets
+        .iter()
+        .map(|market| {
+            let model_estimate = weather_data.get(&market.city).and_then(|city_data| {
+                let trailing: Vec<WeatherRecord> = city_data
+                    .iter()
+                    .filter(|r| {
+                        r.date < market.date
+                            && r.date >= market.date - Duration::days(lookback_days)
+                    })
+                    .cloned()
+                    .collect();
+                if trailing.len() < 14 {
+                    return None;
+                }
+                let mut model = BayesianWeatherModel::default();
+                model.train(&trailing).ok()?;
+                market_estimate(&model, market)
+            });
+
+            MarketEvaluation {
+                date: market.date,
+                city: market.city.clone(),
+                market_id: market.market_id.clone(),
+                market_title: market.market_title.clone(),
+                market_type: market.market_type.clone(),
+                threshold: market.threshold,
+                threshold_upper: market.threshold_upper,
+                unit: market.unit.clone(),
+                market_price: market.market_price,
+                actual_outcome: market.actual_outcome,
+                model_estimate,
+            }
+        })
+        .collect()
+}

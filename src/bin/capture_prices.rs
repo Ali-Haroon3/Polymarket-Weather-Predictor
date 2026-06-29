@@ -1,0 +1,222 @@
+//! Daily capture daemon for forward, real-price evaluation.
+//!
+//! Each run: snapshot every ACTIVE Polymarket weather market (its current price + the model's
+//! probability computed from today's climatology), and finalize any previously-captured market that
+//! has since resolved (fill in its outcome). Over time this accrues a real dataset of
+//! (entry price, model estimate, realized outcome) the dashboard turns into calibration and PnL.
+//!
+//! Run daily, e.g. via cron or the schedule skill:  cargo run --release --bin capture_prices
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+use chrono::{Duration, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+
+use polymarket_weather_predictor::api::{PolymarketHistoryDownloader, WeatherMarketRow};
+use polymarket_weather_predictor::backtesting::evaluate_markets;
+use polymarket_weather_predictor::data_pipeline::MultiSourceAggregator;
+use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Snapshot {
+    captured_at: NaiveDate,
+    target_date: NaiveDate,
+    market_id: String,
+    market_title: String,
+    market_type: String,
+    threshold: f64,
+    threshold_upper: Option<f64>,
+    unit: Option<String>,
+    city: String,
+    entry_price: f64,
+    model_estimate: Option<f64>,
+    outcome: Option<f64>,
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), String> {
+    let out_path = std::env::args()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|w| w[0] == "--out")
+        .map(|w| PathBuf::from(&w[1]))
+        .unwrap_or_else(|| PathBuf::from("data/captures.jsonl"));
+    let cache_dir = PathBuf::from("data/weather_cache");
+    let lookback_days = 45i64;
+
+    let downloader = PolymarketHistoryDownloader::default();
+
+    // ── async: pull active markets (entry prices) + resolved markets (outcomes) ──
+    println!("Fetching active weather markets...");
+    let active = downloader
+        .download_weather_markets(true, 4000)
+        .await
+        .map_err(|e| format!("active fetch failed: {e}"))?;
+    println!("  {} active weather markets", active.len());
+
+    println!("Fetching resolved weather markets (for finalizing)...");
+    let resolved = downloader
+        .download_weather_markets(false, 4000)
+        .await
+        .map_err(|e| format!("resolved fetch failed: {e}"))?;
+    let outcomes: HashMap<String, f64> = resolved
+        .into_iter()
+        .filter_map(|r| r.outcome.map(|o| (r.market_id, o)))
+        .collect();
+    println!("  {} resolved outcomes available", outcomes.len());
+
+    // ── blocking: weather + model + file IO, off the async executor ──
+    let today = Utc::now().date_naive();
+    tokio::task::spawn_blocking(move || {
+        process(active, outcomes, today, lookback_days, &cache_dir, &out_path)
+    })
+    .await
+    .map_err(|e| format!("worker join failed: {e}"))?
+}
+
+fn process(
+    active: Vec<WeatherMarketRow>,
+    outcomes: HashMap<String, f64>,
+    today: NaiveDate,
+    lookback_days: i64,
+    cache_dir: &PathBuf,
+    out_path: &PathBuf,
+) -> Result<(), String> {
+    let mut snaps = load_snapshots(out_path);
+    let existing: HashSet<String> = snaps.iter().map(|s| s.market_id.clone()).collect();
+
+    // 1. Finalize: fill outcomes for snapshots that have since resolved.
+    let mut finalized = 0;
+    for s in snaps.iter_mut() {
+        if s.outcome.is_none() {
+            if let Some(o) = outcomes.get(&s.market_id) {
+                s.outcome = Some(*o);
+                finalized += 1;
+            }
+        }
+    }
+    println!("Finalized {finalized} previously-captured markets");
+
+    // 2. Snapshot new active markets: compute the model estimate from current climatology.
+    let fresh: Vec<&WeatherMarketRow> = active
+        .iter()
+        .filter(|r| !existing.contains(&r.market_id))
+        .collect();
+    println!("{} new active markets to snapshot", fresh.len());
+
+    if !fresh.is_empty() {
+        let sims: Vec<SimulatedMarket> = fresh.iter().map(|r| to_sim(r)).collect();
+        let weather = load_weather(&sims, lookback_days, cache_dir);
+        let evals = evaluate_markets(&sims, &weather, lookback_days);
+        let est: HashMap<&str, Option<f64>> =
+            evals.iter().map(|e| (e.market_id.as_str(), e.model_estimate)).collect();
+
+        for r in fresh {
+            snaps.push(Snapshot {
+                captured_at: today,
+                target_date: r.target_date,
+                market_id: r.market_id.clone(),
+                market_title: r.market_title.clone(),
+                market_type: r.market_type.clone(),
+                threshold: r.threshold,
+                threshold_upper: r.threshold_upper,
+                unit: r.unit.clone(),
+                city: r.city.clone(),
+                entry_price: r.price,
+                model_estimate: est.get(r.market_id.as_str()).copied().flatten(),
+                outcome: outcomes.get(&r.market_id).copied(),
+            });
+        }
+    }
+
+    write_snapshots(out_path, &snaps)?;
+    let priced = snaps.iter().filter(|s| s.model_estimate.is_some()).count();
+    let settled = snaps.iter().filter(|s| s.outcome.is_some()).count();
+    println!(
+        "captures.jsonl: {} total · {} with model estimate · {} settled outcomes",
+        snaps.len(),
+        priced,
+        settled
+    );
+    println!("Wrote {}", out_path.display());
+    Ok(())
+}
+
+fn to_sim(r: &WeatherMarketRow) -> SimulatedMarket {
+    SimulatedMarket {
+        date: r.target_date,
+        market_id: r.market_id.clone(),
+        market_title: r.market_title.clone(),
+        market_type: r.market_type.clone(),
+        threshold: r.threshold,
+        threshold_upper: r.threshold_upper,
+        unit: r.unit.clone(),
+        market_price: r.price,
+        actual_outcome: 0.0, // unknown at capture time
+        city: r.city.clone(),
+    }
+}
+
+fn load_snapshots(path: &PathBuf) -> Vec<Snapshot> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Snapshot>(l).ok())
+        .collect()
+}
+
+fn write_snapshots(path: &PathBuf, snaps: &[Snapshot]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    }
+    let mut body = String::new();
+    for s in snaps {
+        body.push_str(&serde_json::to_string(s).map_err(|e| e.to_string())?);
+        body.push('\n');
+    }
+    std::fs::write(path, body).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Cached aggregated weather per city covering the markets' trailing windows.
+fn load_weather(
+    markets: &[SimulatedMarket],
+    lookback_days: i64,
+    cache_dir: &PathBuf,
+) -> HashMap<String, Vec<WeatherRecord>> {
+    let _ = std::fs::create_dir_all(cache_dir);
+    let mut ranges: HashMap<&str, (NaiveDate, NaiveDate)> = HashMap::new();
+    for m in markets {
+        let e = ranges.entry(m.city.as_str()).or_insert((m.date, m.date));
+        if m.date < e.0 {
+            e.0 = m.date;
+        }
+        if m.date > e.1 {
+            e.1 = m.date;
+        }
+    }
+
+    let aggregator = MultiSourceAggregator::new();
+    let mut out: HashMap<String, Vec<WeatherRecord>> = HashMap::new();
+    for (city, (min_d, max_d)) in ranges {
+        let start = min_d - Duration::days(lookback_days + 5);
+        // Daily-refresh cache: re-fetch if the cached range doesn't reach max_d.
+        print!("  weather {city}: ");
+        let rows = aggregator.aggregate(city, start, max_d);
+        println!("{} records", rows.len());
+        if !rows.is_empty() {
+            out.insert(city.to_string(), rows);
+        }
+    }
+    out
+}

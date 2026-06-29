@@ -97,6 +97,32 @@ Run live trading example in paper mode:
 cargo run --bin live_trading_example
 ```
 
+## Dashboard and forward capture
+
+Generate a self-contained HTML dashboard of the model's calibration against real resolved
+Polymarket markets (reliability diagram, Brier/ECE/skill score, per-city and per-market tables):
+
+```bash
+cargo run --release --bin weather_dashboard -- \
+  --markets data/polymarket_history.csv \
+  --output dashboard.html
+```
+
+Weather is fetched once per city and cached under `data/weather_cache/` (pass `--refresh` to
+re-fetch). Open `dashboard.html` in a browser.
+
+Polymarket purges price history shortly after a market resolves, so real entry prices for a backtest
+only exist while markets are live. The capture daemon snapshots every active weather market (its
+current price + the model's probability) and finalizes outcomes as markets resolve, accruing a real
+(price, estimate, outcome) dataset over time:
+
+```bash
+cargo run --release --bin capture_prices    # run daily (cron / schedule)
+```
+
+It appends to `data/captures.jsonl`, which the dashboard reads to populate the forward-PnL panel and
+the live model-vs-market disagreement signals.
+
 ## Environment Variables
 
 Optional variables (defaults are provided in `src/config.rs`):

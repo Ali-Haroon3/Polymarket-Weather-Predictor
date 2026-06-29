@@ -15,6 +15,24 @@ pub enum PolymarketHistoryError {
     Io(#[from] std::io::Error),
 }
 
+/// A weather market parsed into the model's pricing inputs, with its current price and (if resolved)
+/// its outcome. Used by the capture daemon to snapshot active markets and finalize resolved ones.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeatherMarketRow {
+    pub target_date: NaiveDate,
+    pub market_id: String,
+    pub market_title: String,
+    pub market_type: String,
+    pub threshold: f64,
+    pub threshold_upper: Option<f64>,
+    pub unit: Option<String>,
+    pub city: String,
+    /// Current/last traded price of the YES side (0..1).
+    pub price: f64,
+    /// Realized outcome (1.0 YES / 0.0 NO), or None while the market is unresolved.
+    pub outcome: Option<f64>,
+}
+
 #[derive(Clone)]
 pub struct PolymarketHistoryDownloader {
     gamma_base_url: String,
@@ -239,6 +257,92 @@ impl PolymarketHistoryDownloader {
             }
         }
         Ok(())
+    }
+
+    /// Fetch temperature-tagged weather markets parsed into pricing inputs. `active=true` returns
+    /// open markets (current price, no outcome); `active=false` returns resolved markets (with
+    /// outcome). Uses the events tag for discovery and `lastTradePrice` for the price (no per-market
+    /// price-history call), so it is fast enough to run as a daily daemon.
+    pub async fn download_weather_markets(
+        &self,
+        active: bool,
+        limit: usize,
+    ) -> Result<Vec<WeatherMarketRow>, PolymarketHistoryError> {
+        let closed = if active { "false" } else { "true" };
+
+        // Collect raw markets from BOTH sources (the temperature tag is reliable for the closed
+        // batch but empty for current active markets, which only the /markets scan surfaces).
+        let mut raw: Vec<Value> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // a) temperature-tagged events -> child markets
+        let events_url = format!("{}/events", self.gamma_base_url);
+        let mut offset = 0usize;
+        loop {
+            if raw.len() >= limit {
+                break;
+            }
+            let query = [
+                ("limit", "100".to_string()),
+                ("offset", offset.to_string()),
+                ("closed", closed.to_string()),
+                ("tag_slug", "temperature".to_string()),
+                ("order", "startDate".to_string()),
+                ("ascending", "false".to_string()),
+            ];
+            let resp = self.client.get(&events_url).query(&query).send().await?;
+            let val = resp.json::<Value>().await?;
+            let events = extract_rows(&val);
+            if events.is_empty() {
+                break;
+            }
+            offset += events.len();
+            for ev in &events {
+                if let Some(markets) = ev.get("markets").and_then(|m| m.as_array()) {
+                    for m in markets {
+                        push_unique(&mut raw, &mut seen_ids, m, limit);
+                    }
+                }
+            }
+        }
+
+        // b) /markets?closed=<>&order=volume scan (catches untagged active/closed markets)
+        let markets_url = format!("{}/markets", self.gamma_base_url);
+        let mut offset = 0usize;
+        loop {
+            if raw.len() >= limit {
+                break;
+            }
+            let query = [
+                ("limit", "100".to_string()),
+                ("offset", offset.to_string()),
+                ("closed", closed.to_string()),
+                ("order", "volume".to_string()),
+                ("ascending", "false".to_string()),
+            ];
+            let resp = self.client.get(&markets_url).query(&query).send().await?;
+            let val = resp.json::<Value>().await?;
+            let rows = extract_rows(&val);
+            if rows.is_empty() {
+                break;
+            }
+            offset += rows.len();
+            for m in &rows {
+                push_unique(&mut raw, &mut seen_ids, m, limit);
+            }
+        }
+
+        // Parse + keep the rows matching the requested side (active => unresolved, closed => resolved).
+        let mut out: Vec<WeatherMarketRow> = Vec::new();
+        let mut seen_mid: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in &raw {
+            if let Some(row) = parse_weather_market_row(m) {
+                if active == row.outcome.is_none() && seen_mid.insert(row.market_id.clone()) {
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Fetch the market's daily price series (one point per day). The CLOB rejects wide
@@ -492,6 +596,52 @@ fn parse_binary_outcome(v: &Value) -> Option<f64> {
     }
 
     None
+}
+
+/// Push a market into `raw` if its id is new and the cap isn't reached.
+fn push_unique(
+    raw: &mut Vec<Value>,
+    seen: &mut std::collections::HashSet<String>,
+    m: &Value,
+    limit: usize,
+) {
+    if raw.len() >= limit {
+        return;
+    }
+    let id = json_str(m, &["id", "conditionId", "slug"]).unwrap_or_default();
+    if id.is_empty() || seen.insert(id) {
+        raw.push(m.clone());
+    }
+}
+
+/// Parse a raw Gamma market into a `WeatherMarketRow` (None if it isn't a priceable weather market).
+fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
+    let title = json_str(market, &["question", "title", "name"])?;
+    if !is_weather_like_market(&title.to_ascii_lowercase()) {
+        return None;
+    }
+    let city = infer_city(&title)?;
+    let (market_type, threshold, threshold_upper, unit) = infer_market_type_and_threshold(&title)?;
+    let target_date = market_target_date(market)?;
+    let market_id = json_str(market, &["id", "conditionId", "slug", "questionID"])
+        .unwrap_or_else(|| format!("{city}_{threshold}"));
+    let price = market
+        .get("lastTradePrice")
+        .and_then(value_as_f64)
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    Some(WeatherMarketRow {
+        target_date,
+        market_id,
+        market_title: title,
+        market_type,
+        threshold,
+        threshold_upper,
+        unit,
+        city,
+        price,
+        outcome: infer_actual_outcome(market),
+    })
 }
 
 /// The day a temperature bucket is measured/resolved (the day whose high the market is about).
@@ -856,6 +1006,36 @@ mod tests {
             infer_market_type_and_threshold("Will the highest temperature in Dover be 70°C on May 1?"),
             Some(("temp_bucket".to_string(), 70.0, Some(70.0), Some("C".to_string())))
         );
+    }
+
+    #[test]
+    fn test_parse_weather_market_row() {
+        let m = serde_json::json!({
+            "question": "Will the highest temperature in London be between 66-67°F on May 20?",
+            "lastTradePrice": 0.23,
+            "endDate": "2026-05-20T12:00:00Z",
+            "outcomes": "[\"Yes\", \"No\"]",
+            "outcomePrices": "[\"0\", \"1\"]"
+        });
+        let row = parse_weather_market_row(&m).expect("should parse");
+        assert_eq!(row.city, "London");
+        assert_eq!(row.market_type, "temp_bucket");
+        assert_eq!(row.threshold, 66.0);
+        assert_eq!(row.threshold_upper, Some(67.0));
+        assert_eq!(row.unit.as_deref(), Some("F"));
+        assert!((row.price - 0.23).abs() < 1e-9);
+        assert_eq!(row.outcome, Some(0.0)); // outcomePrices ["0","1"] -> NO won
+        assert_eq!(row.target_date, NaiveDate::from_ymd_opt(2026, 5, 20).unwrap());
+
+        // Active market (unresolved) -> outcome None.
+        let active = serde_json::json!({
+            "question": "Will the highest temperature in Tokyo be 30°C on July 1?",
+            "lastTradePrice": 0.4, "endDate": "2026-07-01T12:00:00Z"
+        });
+        assert_eq!(parse_weather_market_row(&active).unwrap().outcome, None);
+
+        // Non-weather -> None.
+        assert!(parse_weather_market_row(&serde_json::json!({"question": "Will BTC hit 100k?"})).is_none());
     }
 
     #[test]
