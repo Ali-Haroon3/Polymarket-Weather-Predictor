@@ -71,11 +71,19 @@ Required columns in CSV/JSON rows:
 - `date` (`YYYY-MM-DD` or RFC3339 timestamp)
 - `market_id`
 - `market_title`
-- `market_type` (`temperature` or `precipitation`)
-- `threshold`
+- `market_type` — one of:
+  - `temperature` (legacy: P(high ≥ `threshold`), `threshold` in °F)
+  - `temp_at_least` (P(high ≥ `threshold`)), `temp_at_most` (P(high ≤ `threshold`))
+  - `temp_bucket` (P(`threshold` ≤ high ≤ `threshold_upper`); for an exact "be N" bucket set `threshold_upper` = `threshold`)
+  - `precipitation`
+- `threshold` (lower/primary bound, in `unit`)
+- `threshold_upper` (optional; upper bound for `temp_bucket`)
+- `unit` (optional; `C` or `F`; defaults to °F for legacy rows)
 - `market_price` (0-1)
 - `actual_outcome` (0 or 1)
 - `city` (e.g., `NYC`, `LA`, `London`)
+
+Bucket markets are priced round-half-up: the integer bucket "be N" is the interval `[N-0.5, N+0.5)` (applied in `unit`, then converted to °C). The model forecasts the daily **high**, so `lowest temperature` markets are skipped by the downloader.
 
 Run end-to-end workflow example:
 

@@ -28,6 +28,10 @@ struct RealMarketInputRow {
     market_type: String,
     #[serde(default)]
     threshold: Option<f64>,
+    #[serde(default)]
+    threshold_upper: Option<f64>,
+    #[serde(default)]
+    unit: Option<String>,
     market_price: f64,
     actual_outcome: f64,
     city: String,
@@ -85,6 +89,8 @@ impl RealMarketLoader {
             },
             market_type: row.market_type.to_ascii_lowercase(),
             threshold: row.threshold.unwrap_or(0.0),
+            threshold_upper: row.threshold_upper,
+            unit: row.unit,
             market_price: row.market_price,
             actual_outcome: row.actual_outcome,
             city: row.city,

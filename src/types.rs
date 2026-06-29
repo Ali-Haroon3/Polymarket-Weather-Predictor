@@ -49,8 +49,20 @@ pub struct SimulatedMarket {
     pub date: NaiveDate,
     pub market_id: String,
     pub market_title: String,
+    /// Routing discriminator for pricing. Legacy values: "temperature" (P(high >= threshold),
+    /// threshold in °F) and "precipitation". Bucket shapes over the daily HIGH, bounds in `unit`:
+    ///   "temp_at_least" -> P(high >= threshold)
+    ///   "temp_at_most"  -> P(high <= threshold)
+    ///   "temp_bucket"   -> P(threshold <= high <= threshold_upper)  ("be N" => upper == threshold)
     pub market_type: String,
+    /// Lower / primary bound, in `unit`.
     pub threshold: f64,
+    /// Upper bound for "temp_bucket"; None for open-ended / legacy shapes.
+    #[serde(default)]
+    pub threshold_upper: Option<f64>,
+    /// Unit of threshold/threshold_upper: "F" or "C". None => legacy °F (back-compat for old data).
+    #[serde(default)]
+    pub unit: Option<String>,
     pub market_price: f64,
     pub actual_outcome: f64,
     pub city: String,

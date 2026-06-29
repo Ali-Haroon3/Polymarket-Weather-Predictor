@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::backtesting::market_simulator::MarketSimulator;
+use crate::backtesting::market_simulator::{fahrenheit_to_celsius, MarketSimulator};
 use crate::backtesting::performance_metrics::{PerformanceAnalyzer, PerformanceMetrics};
 use crate::config::backtest_params;
 use crate::data_pipeline::multi_source_aggregator::MultiSourceAggregator;
@@ -244,20 +244,7 @@ impl BacktestEngine {
     }
 
     fn get_model_estimate(&self, model: &BayesianWeatherModel, market: &SimulatedMarket) -> Option<f64> {
-        match market.market_type.as_str() {
-            "temperature" => {
-                let threshold_c = (market.threshold - 32.0) * 5.0 / 9.0;
-                model
-                    .predict_temperature_exceeds(threshold_c, 5000)
-                    .ok()
-                    .map(|p| clip(p, 0.01, 0.99))
-            }
-            "precipitation" => model
-                .predict_precipitation_probability(5000)
-                .ok()
-                .map(|(p, _)| clip(p, 0.01, 0.99)),
-            _ => None,
-        }
+        market_estimate(model, market)
     }
 
     pub fn kelly_position_size(&self, probability: f64, market_price: f64, available_capital: f64) -> f64 {
@@ -341,4 +328,55 @@ fn infer_market_date_bounds(markets: &[SimulatedMarket]) -> Option<(NaiveDate, N
     let min = markets.iter().map(|m| m.date).min()?;
     let max = markets.iter().map(|m| m.date).max()?;
     Some((min, max))
+}
+
+/// Bucket edge half-width applied IN THE TITLE'S UNIT before °F->°C conversion. Polymarket buckets
+/// are stated at integer resolution ("be 18°C" = the 18 bin), so the priced interval is round-half-up
+/// [N-0.5, N+0.5). This 0.5 is a calibration knob — set to 0.0 for a venue that floors instead.
+const BUCKET_HALF_WIDTH: f64 = 0.5;
+const PRICE_FLOOR: f64 = 0.01;
+const PRICE_CEIL: f64 = 0.99;
+
+/// Convert a threshold expressed in `unit` to °C. Any unit starting with 'c' (C, c, Celsius, °C) is
+/// Celsius; None/unknown/Fahrenheit => °F. Normalizing covers hand-authored CSV/JSON rows.
+fn to_celsius(value: f64, unit: &Option<String>) -> f64 {
+    match unit.as_deref().map(|u| u.trim().to_ascii_lowercase()) {
+        Some(u) if u.starts_with('c') => value,
+        _ => fahrenheit_to_celsius(value),
+    }
+}
+
+/// Price one market against a trained model: P(event) clipped to [0.01, 0.99], or None for shapes
+/// the model can't price. The bucket ±0.5 widening is applied in the title's unit, then converted to
+/// °C (the model's unit). The model forecasts the daily HIGH; callers train it before pricing.
+pub fn market_estimate(model: &BayesianWeatherModel, market: &SimulatedMarket) -> Option<f64> {
+    // The bucket methods are infallible f64 with no is_trained guard; refuse to price off the
+    // untrained default (mu=0, sigma=1) so a caller can't get a confident-but-meaningless number.
+    if !model.is_trained {
+        return None;
+    }
+    let clip01 = |p: f64| clip(p, PRICE_FLOOR, PRICE_CEIL);
+    match market.market_type.as_str() {
+        // Legacy exceed market: P(high >= threshold), threshold in °F, no bucket widening.
+        "temperature" => Some(clip01(model.prob_at_least(fahrenheit_to_celsius(market.threshold)))),
+        "temp_at_least" => {
+            let lo = to_celsius(market.threshold - BUCKET_HALF_WIDTH, &market.unit);
+            Some(clip01(model.prob_at_least(lo)))
+        }
+        "temp_at_most" => {
+            let hi = to_celsius(market.threshold + BUCKET_HALF_WIDTH, &market.unit);
+            Some(clip01(model.prob_at_most(hi)))
+        }
+        "temp_bucket" => {
+            let upper = market.threshold_upper.unwrap_or(market.threshold);
+            let lo = to_celsius(market.threshold - BUCKET_HALF_WIDTH, &market.unit);
+            let hi = to_celsius(upper + BUCKET_HALF_WIDTH, &market.unit);
+            Some(clip01(model.prob_between(lo, hi)))
+        }
+        "precipitation" => model
+            .predict_precipitation_probability(5000)
+            .ok()
+            .map(|(p, _)| clip01(p)),
+        _ => None,
+    }
 }

@@ -66,7 +66,9 @@ impl PolymarketHistoryDownloader {
                 continue;
             };
 
-            let Some((market_type, threshold)) = infer_market_type_and_threshold(&title) else {
+            let Some((market_type, threshold, threshold_upper, unit)) =
+                infer_market_type_and_threshold(&title)
+            else {
                 continue;
             };
 
@@ -121,6 +123,8 @@ impl PolymarketHistoryDownloader {
                     market_title: title.clone(),
                     market_type: market_type.clone(),
                     threshold,
+                    threshold_upper,
+                    unit: unit.clone(),
                     market_price: price.clamp(0.0, 1.0),
                     actual_outcome,
                     city: city.clone(),
@@ -143,32 +147,45 @@ impl PolymarketHistoryDownloader {
 
     async fn fetch_gamma_markets(&self, limit: usize) -> Result<Vec<Value>, reqwest::Error> {
         let url = format!("{}/markets", self.gamma_base_url);
+        let mut all: Vec<Value> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        let mut all = Vec::new();
-        let mut offset = 0usize;
-        let page_size = limit.min(200).max(1);
+        // Resolved weather buckets are sparse among the newest-by-id markets (mostly crypto/sports),
+        // so scan the weather-dense pool first: high-volume CLOSED markets. Then top up with newest.
+        let strategies: [&[(&str, &str)]; 2] = [
+            &[("closed", "true"), ("order", "volume"), ("ascending", "false")],
+            &[("order", "id"), ("ascending", "false")],
+        ];
 
-        while all.len() < limit {
-            let query = [
-                ("limit", page_size.to_string()),
-                ("offset", offset.to_string()),
-                ("order", "id".to_string()),
-                ("ascending", "false".to_string()),
-            ];
-
-            let resp = self.client.get(&url).query(&query).send().await?;
-            let val = resp.json::<Value>().await?;
-            let rows = extract_rows(&val);
-            let count = rows.len();
-            if rows.is_empty() {
+        for extra in strategies {
+            if all.len() >= limit {
                 break;
             }
+            let mut offset = 0usize;
+            loop {
+                if all.len() >= limit {
+                    break;
+                }
+                // The server caps a page at ~100 rows, so request 100 and advance by the count.
+                let mut query: Vec<(&str, String)> =
+                    vec![("limit", "100".to_string()), ("offset", offset.to_string())];
+                for (k, v) in extra {
+                    query.push((k, (*v).to_string()));
+                }
 
-            offset += count;
-            all.extend(rows);
-
-            if count < page_size {
-                break;
+                let resp = self.client.get(&url).query(&query).send().await?;
+                let val = resp.json::<Value>().await?;
+                let rows = extract_rows(&val);
+                if rows.is_empty() {
+                    break;
+                }
+                offset += rows.len();
+                for row in rows {
+                    let id = json_str(&row, &["id", "conditionId", "slug"]).unwrap_or_default();
+                    if id.is_empty() || seen.insert(id) {
+                        all.push(row);
+                    }
+                }
             }
         }
 
@@ -399,6 +416,37 @@ fn infer_actual_outcome(market: &Value) -> Option<f64> {
         }
     }
 
+    // Gamma schema: a resolved market exposes parallel `outcomes` /
+    // `outcomePrices` arrays where the winning outcome's price is exactly "1".
+    // (Unresolved markets carry fractional prices, so they yield None here.)
+    if let (Some(outcomes), Some(prices)) = (
+        market.get("outcomes").and_then(parse_str_array),
+        market.get("outcomePrices").and_then(parse_outcome_prices),
+    ) {
+        if let Some(yes_idx) = outcomes.iter().position(|o| o.eq_ignore_ascii_case("yes")) {
+            if let Some(price) = prices.get(yes_idx) {
+                if (price - 1.0).abs() < 1e-9 {
+                    return Some(1.0);
+                }
+                if price.abs() < 1e-9 {
+                    return Some(0.0);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_str_array(v: &Value) -> Option<Vec<String>> {
+    if let Some(arr) = v.as_array() {
+        return Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+    }
+    if let Some(s) = v.as_str() {
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(s) {
+            return Some(arr);
+        }
+    }
     None
 }
 
@@ -520,51 +568,145 @@ fn infer_city(title: &str) -> Option<String> {
     None
 }
 
-/// Returns true if `word` appears in `text` as a standalone word
-/// (not surrounded by ASCII alphabetic characters).
+/// Returns true if `word` appears in `text` as a standalone alphabetic token
+/// (delimited by any non-ASCII-alphabetic char). Splitting on chars keeps this
+/// safe on multi-byte input like the '°' in temperature market titles.
 fn contains_word(text: &str, word: &str) -> bool {
-    let bytes = text.as_bytes();
-    let wlen = word.len();
-    let tlen = bytes.len();
-    let mut pos = 0;
-    while pos + wlen <= tlen {
-        if &text[pos..pos + wlen] == word {
-            let before_ok = pos == 0 || !bytes[pos - 1].is_ascii_alphabetic();
-            let after_ok = pos + wlen == tlen || !bytes[pos + wlen].is_ascii_alphabetic();
-            if before_ok && after_ok {
-                return true;
-            }
-        }
-        pos += 1;
-    }
-    false
+    text.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|token| token == word)
 }
 
-fn infer_market_type_and_threshold(title: &str) -> Option<(String, f64)> {
+/// Parse a market title into (market_type, threshold, threshold_upper, unit).
+/// Temperature markets resolve into the bucket shapes the model can price (over the daily HIGH):
+///   "N or higher" -> temp_at_least, "N or below" -> temp_at_most,
+///   "between A-B" -> temp_bucket(A,B), "be N" -> temp_bucket(N,N).
+/// "lowest temperature" markets are skipped (None) — the model forecasts the high only.
+fn infer_market_type_and_threshold(
+    title: &str,
+) -> Option<(String, f64, Option<f64>, Option<String>)> {
     let t = title.to_ascii_lowercase();
 
     if t.contains("rain") || t.contains("precip") || t.contains("snow") {
-        return Some(("precipitation".to_string(), 0.1));
+        return Some(("precipitation".to_string(), 0.1, None, None));
     }
 
-    if t.contains("temp") || t.contains("temperature") {
-        if let Some(number) = extract_first_number(&t) {
-            return Some(("temperature".to_string(), number));
+    if t.contains("temp") || t.contains("temperature") || t.contains('°') {
+        // The model forecasts the daily high; it cannot price daily-low markets.
+        if t.contains("lowest") || t.contains("coldest") || t.contains("minimum temp") || t.contains("low temp") {
+            return None;
         }
-        return Some(("temperature".to_string(), 70.0));
+        let unit = detect_temp_unit(&t);
+
+        // "between A-B" range bucket. Gated on "between" so a date like "2024-01-15" can't be
+        // misread as a range (real Polymarket range markets are always phrased "between A-B").
+        if t.contains("between") {
+            if let Some((a, b)) = extract_range(&t) {
+                return Some(("temp_bucket".to_string(), a, Some(b), Some(unit)));
+            }
+        }
+
+        let n = extract_first_number(&t)?;
+
+        // Phrase forms are matched as substrings; bare single words use whole-word matching so a
+        // city/word like "Dover" ("over") or "thunder" ("under") can't flip the bucket direction.
+        let at_least = t.contains("or higher")
+            || t.contains("or above")
+            || t.contains("or more")
+            || t.contains("at least")
+            || t.contains("exceed")
+            || contains_word(&t, "above")
+            || contains_word(&t, "over")
+            || contains_word(&t, "greater");
+        let at_most = t.contains("or below")
+            || t.contains("or lower")
+            || t.contains("or less")
+            || t.contains("at most")
+            || t.contains("less than")
+            || contains_word(&t, "below")
+            || contains_word(&t, "under");
+        if at_least {
+            return Some(("temp_at_least".to_string(), n, None, Some(unit)));
+        }
+        if at_most {
+            return Some(("temp_at_most".to_string(), n, None, Some(unit)));
+        }
+        // "be N" exact integer bucket.
+        return Some(("temp_bucket".to_string(), n, Some(n), Some(unit)));
     }
 
     if t.contains("wind") || t.contains("gust") {
-        if let Some(number) = extract_first_number(&t) {
-            return Some(("wind".to_string(), number));
-        }
-        return Some(("wind".to_string(), 20.0));
+        let n = extract_first_number(&t).unwrap_or(20.0);
+        return Some(("wind".to_string(), n, None, None));
     }
 
     if t.contains("hurricane") || t.contains("storm") || t.contains("tornado") || t.contains("cyclone") {
-        return Some(("storm".to_string(), 0.5));
+        return Some(("storm".to_string(), 0.5, None, None));
     }
 
+    None
+}
+
+/// "F" or "C" from a temperature title. Reliable on "°F"/"°C"/"fahrenheit"/"celsius"; also
+/// catches a bare suffix like "90f". Defaults to "F" (legacy) when no marker is present.
+fn detect_temp_unit(t: &str) -> String {
+    if t.contains("°f") || t.contains("fahrenheit") {
+        return "F".to_string();
+    }
+    if t.contains("°c") || t.contains("celsius") {
+        return "C".to_string();
+    }
+    // Bare suffix like "90f": the unit letter must come IMMEDIATELY after the number (an optional
+    // "°" aside). Do NOT skip spaces/words, or a later word like "cooler" would latch as "C".
+    let b = t.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let mut j = i;
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
+                j += 1;
+            }
+            if j + 1 < b.len() && b[j] == 0xC2 && b[j + 1] == 0xB0 {
+                j += 2; // skip a "°"
+            }
+            if j < b.len() {
+                match b[j] | 0x20 {
+                    b'f' => return "F".to_string(),
+                    b'c' => return "C".to_string(),
+                    _ => {}
+                }
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    "F".to_string()
+}
+
+/// Extract a "A-B" numeric range (e.g. "between 66-67°F" -> (66, 67)). Only a hyphen directly
+/// flanked by digits counts, so date words like "on May 20" are not mistaken for a range.
+fn extract_range(t: &str) -> Option<(f64, f64)> {
+    let b = t.as_bytes();
+    for i in 1..b.len() {
+        if b[i] == b'-' && b[i - 1].is_ascii_digit() && i + 1 < b.len() && b[i + 1].is_ascii_digit() {
+            let mut lo = i;
+            while lo > 0 && (b[lo - 1].is_ascii_digit() || b[lo - 1] == b'.') {
+                lo -= 1;
+            }
+            // Absorb a leading '-' so a negative lower bound keeps its sign ("between -5-3").
+            if lo > 0 && b[lo - 1] == b'-' && (lo < 2 || !b[lo - 2].is_ascii_digit()) {
+                lo -= 1;
+            }
+            let mut hi = i + 1;
+            while hi < b.len() && (b[hi].is_ascii_digit() || b[hi] == b'.') {
+                hi += 1;
+            }
+            let a = t[lo..i].parse::<f64>().ok()?;
+            let c = t[i + 1..hi].parse::<f64>().ok()?;
+            // Order the bounds so a reversed parse can't become an empty (lo > hi) bucket priced ~0.
+            return Some(if a <= c { (a, c) } else { (c, a) });
+        }
+    }
     None
 }
 
@@ -611,11 +753,81 @@ mod tests {
     fn test_infer_market_signature() {
         assert_eq!(
             infer_market_type_and_threshold("Will NYC temperature exceed 90F?"),
-            Some(("temperature".to_string(), 90.0))
+            Some(("temp_at_least".to_string(), 90.0, None, Some("F".to_string())))
         );
         assert_eq!(
             infer_market_type_and_threshold("Will it rain in LA tomorrow?"),
-            Some(("precipitation".to_string(), 0.1))
+            Some(("precipitation".to_string(), 0.1, None, None))
+        );
+    }
+
+    #[test]
+    fn test_infer_bucket_shapes() {
+        // "or higher" -> temp_at_least, degC
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in Manila be 36°C or higher on July 1?"),
+            Some(("temp_at_least".to_string(), 36.0, None, Some("C".to_string())))
+        );
+        // "or below" -> temp_at_most, degC
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in Manila be 26°C or below on July 1?"),
+            Some(("temp_at_most".to_string(), 26.0, None, Some("C".to_string())))
+        );
+        // exact "be N" -> temp_bucket with upper == lower, degC
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in London be 18°C on February 25?"),
+            Some(("temp_bucket".to_string(), 18.0, Some(18.0), Some("C".to_string())))
+        );
+        // "between A-B" -> temp_bucket, degF
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in Seattle be between 50-51°F on May 20?"),
+            Some(("temp_bucket".to_string(), 50.0, Some(51.0), Some("F".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_lowest_temperature_skipped() {
+        // The model forecasts the daily high; low-temperature markets cannot be priced.
+        assert_eq!(
+            infer_market_type_and_threshold("Will the lowest temperature in London be 24°C or higher on June 1?"),
+            None
+        );
+        // "coldest" is the same daily-low event.
+        assert_eq!(
+            infer_market_type_and_threshold("Will the coldest temperature in Denver be 2°C or higher?"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_negative_range_not_inverted() {
+        // "between -5-3" must keep the negative lower bound and order the bounds (was (5,3) -> 0).
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in London be between -5-3°C on Jan 5?"),
+            Some(("temp_bucket".to_string(), -5.0, Some(3.0), Some("C".to_string())))
+        );
+        assert_eq!(extract_range("between -5-3"), Some((-5.0, 3.0)));
+        assert_eq!(extract_range("between 66-67"), Some((66.0, 67.0)));
+    }
+
+    #[test]
+    fn test_unit_does_not_latch_to_later_word() {
+        // Bare suffix only: a later word starting with c/f must not set the unit.
+        assert_eq!(detect_temp_unit("be 18 then cooler later"), "F"); // not "C" from "cooler"
+        assert_eq!(detect_temp_unit("be 40 for the day"), "F");
+        // Real markers and adjacent bare suffixes still work.
+        assert_eq!(detect_temp_unit("be 90f"), "F");
+        assert_eq!(detect_temp_unit("be 25c"), "C");
+        assert_eq!(detect_temp_unit("be 18°c"), "C");
+        assert_eq!(detect_temp_unit("between 66-67°f"), "F");
+    }
+
+    #[test]
+    fn test_directional_word_collision() {
+        // "Dover" contains "over"; must not route to temp_at_least — it's an exact bucket.
+        assert_eq!(
+            infer_market_type_and_threshold("Will the highest temperature in Dover be 70°C on May 1?"),
+            Some(("temp_bucket".to_string(), 70.0, Some(70.0), Some("C".to_string())))
         );
     }
 
@@ -696,16 +908,16 @@ mod tests {
     fn test_infer_market_type_wind() {
         assert_eq!(
             infer_market_type_and_threshold("Will wind exceed 30mph in Chicago?"),
-            Some(("wind".to_string(), 30.0))
+            Some(("wind".to_string(), 30.0, None, None))
         );
         assert_eq!(
             infer_market_type_and_threshold("Will gusts reach 50mph?"),
-            Some(("wind".to_string(), 50.0))
+            Some(("wind".to_string(), 50.0, None, None))
         );
         // No number → default 20mph
         assert_eq!(
             infer_market_type_and_threshold("High wind warning issued"),
-            Some(("wind".to_string(), 20.0))
+            Some(("wind".to_string(), 20.0, None, None))
         );
     }
 
@@ -713,28 +925,28 @@ mod tests {
     fn test_infer_market_type_storm() {
         assert_eq!(
             infer_market_type_and_threshold("Will hurricane Ian make landfall?"),
-            Some(("storm".to_string(), 0.5))
+            Some(("storm".to_string(), 0.5, None, None))
         );
         assert_eq!(
             infer_market_type_and_threshold("Will a tornado strike Kansas City?"),
-            Some(("storm".to_string(), 0.5))
+            Some(("storm".to_string(), 0.5, None, None))
         );
         assert_eq!(
             infer_market_type_and_threshold("Major storm expected this weekend"),
-            Some(("storm".to_string(), 0.5))
+            Some(("storm".to_string(), 0.5, None, None))
         );
     }
 
     #[test]
     fn test_infer_market_type_negative_temp() {
-        // Regression: negative temperatures were previously unextracted → 70.0 fallback.
+        // "below N" routes to temp_at_most; negative thresholds are extracted (not the date hyphen).
         assert_eq!(
             infer_market_type_and_threshold("Will temperature drop below -10°C?"),
-            Some(("temperature".to_string(), -10.0))
+            Some(("temp_at_most".to_string(), -10.0, None, Some("C".to_string())))
         );
         assert_eq!(
             infer_market_type_and_threshold("Temperature below -32F tonight?"),
-            Some(("temperature".to_string(), -32.0))
+            Some(("temp_at_most".to_string(), -32.0, None, Some("F".to_string())))
         );
     }
 
@@ -792,6 +1004,29 @@ mod tests {
             ]
         });
         assert_eq!(infer_actual_outcome(&m), Some(0.0));
+    }
+
+    #[test]
+    fn test_infer_actual_outcome_from_gamma_outcome_prices() {
+        // Real Gamma schema: parallel string-encoded arrays, winner price "1".
+        let yes_won = serde_json::json!({
+            "outcomes": "[\"Yes\", \"No\"]",
+            "outcomePrices": "[\"1\", \"0\"]"
+        });
+        assert_eq!(infer_actual_outcome(&yes_won), Some(1.0));
+
+        let no_won = serde_json::json!({
+            "outcomes": "[\"Yes\", \"No\"]",
+            "outcomePrices": "[\"0\", \"1\"]"
+        });
+        assert_eq!(infer_actual_outcome(&no_won), Some(0.0));
+
+        // Unresolved (fractional prices) must NOT be read as resolved.
+        let open = serde_json::json!({
+            "outcomes": "[\"Yes\", \"No\"]",
+            "outcomePrices": "[\"0.55\", \"0.45\"]"
+        });
+        assert_eq!(infer_actual_outcome(&open), None);
     }
 
     #[test]
@@ -962,5 +1197,8 @@ mod tests {
         assert!(!contains_word("dallas temperature", "la"));
         assert!(!contains_word("atlanta rain", "la"));
         assert!(!contains_word("philadelphia storm", "la"));
+        // Regression: must not panic on multi-byte chars (the '°' degree sign).
+        assert!(!contains_word("highest temperature in panama city be 39°c or higher", "la"));
+        assert!(contains_word("will la reach 39°c", "la"));
     }
 }

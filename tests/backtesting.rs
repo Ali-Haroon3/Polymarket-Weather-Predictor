@@ -173,6 +173,8 @@ fn test_backtest_engine_with_real_markets() {
             market_title: "Will NYC max temperature exceed 90°F?".to_string(),
             market_type: "temperature".to_string(),
             threshold: 90.0,
+            threshold_upper: None,
+            unit: None,
             market_price: 0.40,
             actual_outcome: 1.0,
             city: "NYC".to_string(),
@@ -183,6 +185,8 @@ fn test_backtest_engine_with_real_markets() {
             market_title: "Will it rain in NYC today?".to_string(),
             market_type: "precipitation".to_string(),
             threshold: 0.1,
+            threshold_upper: None,
+            unit: None,
             market_price: 0.30,
             actual_outcome: 0.0,
             city: "NYC".to_string(),
@@ -205,4 +209,57 @@ fn test_backtest_engine_with_real_markets() {
     );
     assert_eq!(results.total_markets_generated, 2);
     assert!(results.metrics.portfolio.final_value > 0.0);
+}
+
+#[test]
+fn test_market_estimate_bucket_pricing() {
+    use polymarket_weather_predictor::backtesting::{fahrenheit_to_celsius, market_estimate};
+    use polymarket_weather_predictor::models::BayesianWeatherModel;
+
+    // Train on 400 daily highs ~ N(25, 8) degC.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let dist = Normal::new(25.0, 8.0).unwrap();
+    let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let data: Vec<WeatherRecord> = (0..400)
+        .map(|i| {
+            let mut row = WeatherRecord::new(start + Duration::days(i), "T");
+            row.temperature_max = Some(dist.sample(&mut rng));
+            row.precipitation_total = Some(0.0);
+            row
+        })
+        .collect();
+    let mut model = BayesianWeatherModel::default();
+    model.train(&data).unwrap();
+
+    let mk = |mt: &str, th: f64, up: Option<f64>, unit: Option<&str>| SimulatedMarket {
+        date: start,
+        market_id: "m".into(),
+        market_title: "t".into(),
+        market_type: mt.into(),
+        threshold: th,
+        threshold_upper: up,
+        unit: unit.map(|s| s.to_string()),
+        market_price: 0.5,
+        actual_outcome: 0.0,
+        city: "NYC".into(),
+    };
+    let clip = |p: f64| p.clamp(0.01, 0.99);
+    let est = |m: &SimulatedMarket| market_estimate(&model, m).unwrap();
+
+    // Each shape must route to the right prob_* with the +-0.5 widening applied IN THE UNIT.
+    // "N or higher" (degC): [N-0.5, inf)
+    assert!((est(&mk("temp_at_least", 30.0, None, Some("C"))) - clip(model.prob_at_least(29.5))).abs() < 1e-12);
+    // "N or below" (degC): (-inf, N+0.5]
+    assert!((est(&mk("temp_at_most", 20.0, None, Some("C"))) - clip(model.prob_at_most(20.5))).abs() < 1e-12);
+    // exact "be N" (degC): [N-0.5, N+0.5]
+    assert!((est(&mk("temp_bucket", 25.0, Some(25.0), Some("C"))) - clip(model.prob_between(24.5, 25.5))).abs() < 1e-12);
+    // "between A-B" (degF): widen in F, then convert to degC
+    let (lo, hi) = (fahrenheit_to_celsius(76.5), fahrenheit_to_celsius(79.5));
+    assert!((est(&mk("temp_bucket", 77.0, Some(79.0), Some("F"))) - clip(model.prob_between(lo, hi))).abs() < 1e-12);
+    // temp_at_least in degF: +-0.5 in F before conversion
+    assert!((est(&mk("temp_at_least", 80.0, None, Some("F"))) - clip(model.prob_at_least(fahrenheit_to_celsius(79.5)))).abs() < 1e-12);
+    // legacy "temperature": P(high >= threshold degF), NO widening
+    assert!((est(&mk("temperature", 80.0, None, None)) - clip(model.prob_at_least(fahrenheit_to_celsius(80.0)))).abs() < 1e-12);
+    // a shape the model can't price -> None
+    assert!(market_estimate(&model, &mk("wind", 20.0, None, None)).is_none());
 }
