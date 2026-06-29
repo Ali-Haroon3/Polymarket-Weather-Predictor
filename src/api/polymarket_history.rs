@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 
@@ -80,14 +78,11 @@ impl PolymarketHistoryDownloader {
                 .unwrap_or_else(|| format!("{}_{}", city, threshold));
 
             let token_id = infer_yes_token_id(&market);
-            let mut history = if let Some(id) = token_id.as_deref() {
+            let history = if let Some(id) = token_id.as_deref() {
                 match self.fetch_price_history(id, start_date, end_date).await {
                     Ok(h) => h,
                     Err(e) => {
-                        eprintln!(
-                            "warning: failed to fetch price history for market '{}': {}",
-                            title, e
-                        );
+                        eprintln!("warning: failed to fetch price history for market '{}': {}", title, e);
                         Vec::new()
                     }
                 }
@@ -95,41 +90,41 @@ impl PolymarketHistoryDownloader {
                 Vec::new()
             };
 
-            if history.is_empty() {
-                if let Some((d, p)) = fallback_market_point(&market) {
-                    eprintln!(
-                        "warning: using fabricated fallback price {:.2} for market '{}' (no price history available)",
-                        p, title
-                    );
-                    history.push((d, p));
-                }
+            // One row per market: the bucket is about a single day's high. Entry price = the opening
+            // (earliest) traded price; date = the market's resolution day.
+            let (entry_date, entry_price) = match history.first().copied() {
+                Some(point) => point,
+                None => match fallback_market_point(&market) {
+                    Some(fb) => {
+                        eprintln!(
+                            "warning: using fabricated fallback price {:.2} for market '{}' (no traded history)",
+                            fb.1, title
+                        );
+                        fb
+                    }
+                    None => continue,
+                },
+            };
+
+            let date = market_target_date(&market).unwrap_or(entry_date);
+            if start_date.map(|s| date < s).unwrap_or(false)
+                || end_date.map(|e| date > e).unwrap_or(false)
+            {
+                continue;
             }
 
-            for (date, price) in history {
-                if let Some(start) = start_date {
-                    if date < start {
-                        continue;
-                    }
-                }
-                if let Some(end) = end_date {
-                    if date > end {
-                        continue;
-                    }
-                }
-
-                out.push(SimulatedMarket {
-                    date,
-                    market_id: market_id.clone(),
-                    market_title: title.clone(),
-                    market_type: market_type.clone(),
-                    threshold,
-                    threshold_upper,
-                    unit: unit.clone(),
-                    market_price: price.clamp(0.0, 1.0),
-                    actual_outcome,
-                    city: city.clone(),
-                });
-            }
+            out.push(SimulatedMarket {
+                date,
+                market_id,
+                market_title: title.clone(),
+                market_type,
+                threshold,
+                threshold_upper,
+                unit,
+                market_price: entry_price.clamp(0.0, 1.0),
+                actual_outcome,
+                city,
+            });
 
             if delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -150,8 +145,13 @@ impl PolymarketHistoryDownloader {
         let mut all: Vec<Value> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // Resolved weather buckets are sparse among the newest-by-id markets (mostly crypto/sports),
-        // so scan the weather-dense pool first: high-volume CLOSED markets. Then top up with newest.
+        // 1. Targeted discovery: closed "temperature"-tagged EVENTS, whose child markets are the
+        // bucket ladders we want. This is by far the highest-yield source for weather markets.
+        self.collect_temperature_event_markets(limit, &mut all, &mut seen)
+            .await?;
+
+        // 2. Top up from the weather-dense closed-market pool, then newest-by-id, to catch anything
+        // the tag misses (precipitation/wind markets aren't under the temperature tag).
         let strategies: [&[(&str, &str)]; 2] = [
             &[("closed", "true"), ("order", "volume"), ("ascending", "false")],
             &[("order", "id"), ("ascending", "false")],
@@ -193,53 +193,72 @@ impl PolymarketHistoryDownloader {
         Ok(all)
     }
 
+    /// Pull closed "temperature"-tagged events and flatten their child markets (the bucket ladders)
+    /// into `all`, deduped by id. Each child market carries the same question/outcomes/clobTokenIds
+    /// fields the rest of the pipeline expects.
+    async fn collect_temperature_event_markets(
+        &self,
+        limit: usize,
+        all: &mut Vec<Value>,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> Result<(), reqwest::Error> {
+        let url = format!("{}/events", self.gamma_base_url);
+        let mut offset = 0usize;
+        loop {
+            if all.len() >= limit {
+                break;
+            }
+            let query = [
+                ("limit", "100".to_string()),
+                ("offset", offset.to_string()),
+                ("closed", "true".to_string()),
+                ("tag_slug", "temperature".to_string()),
+                ("order", "startDate".to_string()),
+                ("ascending", "false".to_string()),
+            ];
+            let resp = self.client.get(&url).query(&query).send().await?;
+            let val = resp.json::<Value>().await?;
+            let events = extract_rows(&val);
+            if events.is_empty() {
+                break;
+            }
+            offset += events.len();
+            for ev in &events {
+                let Some(markets) = ev.get("markets").and_then(|m| m.as_array()) else {
+                    continue;
+                };
+                for m in markets {
+                    if all.len() >= limit {
+                        break;
+                    }
+                    let id = json_str(m, &["id", "conditionId", "slug"]).unwrap_or_default();
+                    if id.is_empty() || seen.insert(id) {
+                        all.push(m.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Fetch the market's daily price series (one point per day). The CLOB rejects wide
+    /// startTs/endTs spans ("interval too long"), so we ask for `interval=max` (the full traded
+    /// history) and keep the OPENING (first) price of each day — the near-settlement price carries
+    /// the resolution, so the opening is the least-leaky entry price for a backtest. Returns days
+    /// in ascending order (so `.first()` is the overall opening price).
     async fn fetch_price_history(
         &self,
         token_id: &str,
-        start_date: Option<NaiveDate>,
-        end_date: Option<NaiveDate>,
+        _start_date: Option<NaiveDate>,
+        _end_date: Option<NaiveDate>,
     ) -> Result<Vec<(NaiveDate, f64)>, reqwest::Error> {
-        let start_ts = start_date
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .map(|dt| dt.and_utc().timestamp())
-            .unwrap_or(0);
-        let end_ts = end_date
-            .and_then(|d| d.and_hms_opt(23, 59, 59))
-            .map(|dt| dt.and_utc().timestamp())
-            .unwrap_or_else(|| Utc::now().timestamp());
-
-        let candidates: [(&str, Vec<(&str, String)>); 3] = [
-            (
-                "prices-history",
-                vec![
-                    ("market", token_id.to_string()),
-                    ("interval", "1d".to_string()),
-                    ("startTs", start_ts.to_string()),
-                    ("endTs", end_ts.to_string()),
-                ],
-            ),
-            (
-                "prices-history",
-                vec![
-                    ("token_id", token_id.to_string()),
-                    ("interval", "1d".to_string()),
-                    ("startTs", start_ts.to_string()),
-                    ("endTs", end_ts.to_string()),
-                ],
-            ),
-            (
-                "price-history",
-                vec![
-                    ("market", token_id.to_string()),
-                    ("interval", "1d".to_string()),
-                    ("startTs", start_ts.to_string()),
-                    ("endTs", end_ts.to_string()),
-                ],
-            ),
+        let candidates: [Vec<(&str, String)>; 2] = [
+            vec![("market", token_id.to_string()), ("interval", "max".to_string())],
+            vec![("token_id", token_id.to_string()), ("interval", "max".to_string())],
         ];
 
-        for (path, query) in candidates {
-            let url = format!("{}/{}", self.clob_base_url, path);
+        let url = format!("{}/prices-history", self.clob_base_url);
+        for query in candidates {
             let Ok(resp) = self.client.get(&url).query(&query).send().await else {
                 continue;
             };
@@ -247,15 +266,15 @@ impl PolymarketHistoryDownloader {
                 continue;
             };
 
-            let points = parse_price_history_points(&val);
+            let points = parse_price_history_points(&val); // time-ascending
             if !points.is_empty() {
-                let mut by_day: HashMap<NaiveDate, f64> = HashMap::new();
+                let mut seen: std::collections::HashSet<NaiveDate> = std::collections::HashSet::new();
+                let mut out = Vec::new();
                 for (d, p) in points {
-                    by_day.insert(d, p);
+                    if seen.insert(d) {
+                        out.push((d, p)); // first (opening) price of day d
+                    }
                 }
-
-                let mut out = by_day.into_iter().collect::<Vec<_>>();
-                out.sort_by_key(|(d, _)| *d);
                 return Ok(out);
             }
         }
@@ -473,6 +492,14 @@ fn parse_binary_outcome(v: &Value) -> Option<f64> {
     }
 
     None
+}
+
+/// The day a temperature bucket is measured/resolved (the day whose high the market is about).
+fn market_target_date(market: &Value) -> Option<NaiveDate> {
+    ["endDate", "endDateIso", "closedTime", "resolveTime"]
+        .iter()
+        .find_map(|k| market.get(*k).and_then(|v| v.as_str()))
+        .and_then(parse_date)
 }
 
 fn fallback_market_point(market: &Value) -> Option<(NaiveDate, f64)> {
