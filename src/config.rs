@@ -112,7 +112,10 @@ pub fn min_bid_ask_spread() -> f64 {
 
 pub fn bayesian_model_params() -> BayesianModelParams {
     BayesianModelParams {
-        temperature_prior_mu: 60.0,
+        // Daily-high climatology prior, in degC. 20 degC (~68 degF) is a sane weak prior;
+        // sigma=15 keeps it weak so data dominates. (Was 60.0 degC = 140 degF — nonsensical;
+        // harmless under long lookbacks but biases mu upward on short windows.)
+        temperature_prior_mu: 20.0,
         temperature_prior_sigma: 15.0,
         precipitation_prior_alpha: 1.0,
         precipitation_prior_beta: 1.0,

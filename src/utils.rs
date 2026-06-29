@@ -108,3 +108,23 @@ pub fn sample_normal(mu: f64, sigma: f64, n: usize, rng: &mut StdRng) -> Vec<f64
         })
         .collect()
 }
+
+/// Error function via Abramowitz & Stegun 7.1.26 (max abs error ~1.5e-7).
+/// Used for analytic Normal-CDF probabilities; std has no erf and we avoid a new dependency.
+pub fn erf(x: f64) -> f64 {
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+            + 0.254829592)
+            * t
+            * (-x * x).exp();
+    sign * y
+}
+
+/// Standard Normal CDF, Phi(z).
+#[inline]
+pub fn normal_cdf(z: f64) -> f64 {
+    0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
+}
