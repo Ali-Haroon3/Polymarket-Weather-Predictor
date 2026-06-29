@@ -1,5 +1,6 @@
 pub mod api;
 pub mod backtesting;
+pub mod cities;
 pub mod config;
 pub mod data_pipeline;
 pub mod database;

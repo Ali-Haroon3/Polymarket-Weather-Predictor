@@ -122,17 +122,10 @@ fn as_opt_f64_vec(v: Option<&Value>) -> Vec<Option<f64>> {
 }
 
 fn default_locations() -> HashMap<String, (f64, f64, String)> {
-    [
-        ("NYC", 40.71, -74.01, "New York, NY"),
-        ("LA", 34.05, -118.24, "Los Angeles, CA"),
-        ("London", 51.51, -0.13, "London, UK"),
-        ("Chicago", 41.88, -87.63, "Chicago, IL"),
-        ("Dallas", 32.78, -96.80, "Dallas, TX"),
-        ("Denver", 39.74, -104.99, "Denver, CO"),
-        ("Miami", 25.76, -80.19, "Miami, FL"),
-        ("Boston", 42.36, -71.06, "Boston, MA"),
-    ]
-    .into_iter()
-    .map(|(k, lat, lon, name)| (k.to_string(), (lat, lon, name.to_string())))
-    .collect()
+    // Built from the shared city registry so every recognizable city has coordinates (Open-Meteo's
+    // archive works for any lat/lon globally, so coverage is just the registry).
+    crate::cities::CITIES
+        .iter()
+        .map(|c| (c.key.to_string(), (c.lat, c.lon, c.key.to_string())))
+        .collect()
 }

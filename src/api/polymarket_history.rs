@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 
 use crate::types::SimulatedMarket;
-use crate::utils::parse_date;
+use crate::utils::{contains_word, parse_date};
 
 const DEFAULT_GAMMA_BASE_URL: &str = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL: &str = "https://clob.polymarket.com";
@@ -705,52 +705,9 @@ fn is_weather_like_market(title: &str) -> bool {
     keys.iter().any(|k| title.contains(k))
 }
 
+/// Identify the city in a market title (delegates to the shared city registry).
 fn infer_city(title: &str) -> Option<String> {
-    let t = title.to_ascii_lowercase();
-
-    let mapping: &[(&str, &str)] = &[
-        ("new york", "NYC"),
-        ("nyc", "NYC"),
-        ("los angeles", "LA"),
-        ("l.a.", "LA"),
-        ("london", "London"),
-        ("chicago", "Chicago"),
-        ("dallas", "Dallas"),
-        ("denver", "Denver"),
-        ("miami", "Miami"),
-        ("boston", "Boston"),
-        ("seattle", "Seattle"),
-        ("atlanta", "Atlanta"),
-        ("houston", "Houston"),
-        ("phoenix", "Phoenix"),
-        ("portland", "Portland"),
-        ("san francisco", "SF"),
-        ("toronto", "Toronto"),
-        ("tokyo", "Tokyo"),
-        ("sydney", "Sydney"),
-    ];
-
-    for (k, city) in mapping {
-        if t.contains(k) {
-            return Some((*city).to_string());
-        }
-    }
-
-    // "la" is ambiguous — match only as a whole word to avoid false positives
-    // in city names like "dallas" or "atlanta".
-    if contains_word(&t, "la") {
-        return Some("LA".to_string());
-    }
-
-    None
-}
-
-/// Returns true if `word` appears in `text` as a standalone alphabetic token
-/// (delimited by any non-ASCII-alphabetic char). Splitting on chars keeps this
-/// safe on multi-byte input like the '°' in temperature market titles.
-fn contains_word(text: &str, word: &str) -> bool {
-    text.split(|c: char| !c.is_ascii_alphabetic())
-        .any(|token| token == word)
+    crate::cities::infer_city(title).map(String::from)
 }
 
 /// Parse a market title into (market_type, threshold, threshold_upper, unit).

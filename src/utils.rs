@@ -128,3 +128,10 @@ pub fn erf(x: f64) -> f64 {
 pub fn normal_cdf(z: f64) -> f64 {
     0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
 }
+
+/// True if `word` appears in `text` as a standalone alphabetic token (delimited by any
+/// non-ASCII-alphabetic char). Splitting on chars keeps this safe on multi-byte input like '°'.
+pub fn contains_word(text: &str, word: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|token| token == word)
+}
