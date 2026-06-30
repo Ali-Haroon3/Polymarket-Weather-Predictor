@@ -236,6 +236,17 @@ impl BayesianWeatherModel {
         Ok(())
     }
 
+    /// Set the temperature predictive directly from a point FORECAST of the target day's high (degC)
+    /// and a forecast-error `sigma` (degC). This bypasses climatology — for near-term targets a real
+    /// forecast (~2 degC error) concentrates probability far better than the ~6 degC climatology
+    /// spread. prob_* read the same two fields, so bucket pricing is unchanged.
+    pub fn set_point_forecast(&mut self, high_c: f64, sigma: f64) {
+        self.temp_posterior_mu = high_c;
+        self.temp_predictive_sigma = sigma.max(1e-6);
+        self.temp_posterior_sigma = sigma.max(1e-6);
+        self.is_trained = true;
+    }
+
     /// The posterior predictive distribution of a new daily high: N(mu, predictive_sigma), in degC.
     fn temperature_predictive(&self) -> (f64, f64) {
         (self.temp_posterior_mu, self.temp_predictive_sigma)

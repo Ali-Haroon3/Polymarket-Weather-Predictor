@@ -6,6 +6,9 @@ use serde_json::Value;
 use crate::types::WeatherRecord;
 
 pub const BASE_URL: &str = "https://archive-api.open-meteo.com/v1/archive";
+/// Archived *forecasts* (what was predicted at the time), for backtesting forecast skill — distinct
+/// from the reanalysis archive (observed truth) above.
+pub const FORECAST_BASE_URL: &str = "https://historical-forecast-api.open-meteo.com/v1/forecast";
 
 #[derive(Clone)]
 pub struct OpenMeteoFetcher {
@@ -22,6 +25,53 @@ impl OpenMeteoFetcher {
                 .unwrap_or_else(|_| reqwest::blocking::Client::new()),
             locations: default_locations(),
         }
+    }
+
+    /// Archived daily-high FORECASTS (degC) for a location, keyed by date — the model's view of the
+    /// target day at the time, used to price near-term buckets with real forecast skill. Returns an
+    /// empty vec on any failure (degradation by design, like every fetcher).
+    pub fn fetch_forecast_max(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Vec<(NaiveDate, f64)> {
+        let query = [
+            ("latitude", latitude.to_string()),
+            ("longitude", longitude.to_string()),
+            ("start_date", start_date.to_string()),
+            ("end_date", end_date.to_string()),
+            ("daily", "temperature_2m_max".to_string()),
+            ("timezone", "auto".to_string()),
+        ];
+
+        let Ok(resp) = self.client.get(FORECAST_BASE_URL).query(&query).send() else {
+            return Vec::new();
+        };
+        let Ok(json) = resp.json::<Value>() else {
+            return Vec::new();
+        };
+
+        let daily = json.get("daily").cloned().unwrap_or(Value::Null);
+        let times = daily
+            .get("time")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let highs = as_opt_f64_vec(daily.get("temperature_2m_max"));
+
+        let mut out = Vec::new();
+        for (i, date_v) in times.iter().enumerate() {
+            let Some(ds) = date_v.as_str() else { continue };
+            let Ok(date) = NaiveDate::parse_from_str(ds, "%Y-%m-%d") else {
+                continue;
+            };
+            if let Some(h) = highs.get(i).copied().flatten() {
+                out.push((date, h));
+            }
+        }
+        out
     }
 
     pub fn fetch_daily_observations(

@@ -263,3 +263,42 @@ fn test_market_estimate_bucket_pricing() {
     // a shape the model can't price -> None
     assert!(market_estimate(&model, &mk("wind", 20.0, None, None)).is_none());
 }
+
+#[test]
+fn test_evaluate_markets_uses_forecast() {
+    use polymarket_weather_predictor::backtesting::evaluate_markets_with_forecast;
+
+    // "be 24C" bucket = high in [23.5, 24.5]. A forecast of 24C ± 1.5 prices it from the point
+    // forecast — even with NO climatology weather available — far tighter than climatology could.
+    let date = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+    let market = SimulatedMarket {
+        date,
+        market_id: "m".into(),
+        market_title: "be 24C".into(),
+        market_type: "temp_bucket".into(),
+        threshold: 24.0,
+        threshold_upper: Some(24.0),
+        unit: Some("C".into()),
+        market_price: 0.1,
+        actual_outcome: 1.0,
+        city: "NYC".into(),
+    };
+    let weather: HashMap<String, Vec<WeatherRecord>> = HashMap::new(); // no climatology fallback
+    let mut forecasts: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
+    forecasts
+        .entry("NYC".into())
+        .or_default()
+        .insert(date, 24.0);
+
+    let evals = evaluate_markets_with_forecast(std::slice::from_ref(&market), &weather, 45, &forecasts, 1.5);
+    let est = evals[0]
+        .model_estimate
+        .expect("forecast prices the market even without climatology weather");
+    // P(high in [23.5, 24.5]) under N(24, 1.5) ≈ Φ(0.333) − Φ(−0.333) ≈ 0.26
+    assert!((est - 0.26).abs() < 0.03, "forecast bucket estimate {est} ≈ 0.26");
+
+    // No forecast for this city AND no climatology weather -> can't price.
+    let empty: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
+    let evals2 = evaluate_markets_with_forecast(&[market], &weather, 45, &empty, 1.5);
+    assert!(evals2[0].model_estimate.is_none());
+}

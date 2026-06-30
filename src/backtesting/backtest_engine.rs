@@ -407,25 +407,59 @@ pub fn evaluate_markets(
     weather_data: &HashMap<String, Vec<WeatherRecord>>,
     lookback_days: i64,
 ) -> Vec<MarketEvaluation> {
+    evaluate_markets_inner(markets, weather_data, lookback_days, None, 0.0)
+}
+
+/// Like `evaluate_markets`, but when a daily-high FORECAST exists for a market's (city, date) it
+/// prices from that point forecast — N(high, forecast_sigma) — instead of climatology, measuring
+/// real forecast skill. Falls back to the climatology model wherever no forecast is available.
+pub fn evaluate_markets_with_forecast(
+    markets: &[SimulatedMarket],
+    weather_data: &HashMap<String, Vec<WeatherRecord>>,
+    lookback_days: i64,
+    forecasts: &HashMap<String, HashMap<NaiveDate, f64>>,
+    forecast_sigma: f64,
+) -> Vec<MarketEvaluation> {
+    evaluate_markets_inner(markets, weather_data, lookback_days, Some(forecasts), forecast_sigma)
+}
+
+fn evaluate_markets_inner(
+    markets: &[SimulatedMarket],
+    weather_data: &HashMap<String, Vec<WeatherRecord>>,
+    lookback_days: i64,
+    forecasts: Option<&HashMap<String, HashMap<NaiveDate, f64>>>,
+    forecast_sigma: f64,
+) -> Vec<MarketEvaluation> {
     markets
         .iter()
         .map(|market| {
-            let model_estimate = weather_data.get(&market.city).and_then(|city_data| {
-                let trailing: Vec<WeatherRecord> = city_data
-                    .iter()
-                    .filter(|r| {
-                        r.date < market.date
-                            && r.date >= market.date - Duration::days(lookback_days)
-                    })
-                    .cloned()
-                    .collect();
-                if trailing.len() < 14 {
-                    return None;
-                }
+            let forecast_high = forecasts
+                .and_then(|f| f.get(&market.city))
+                .and_then(|m| m.get(&market.date))
+                .copied();
+
+            let model_estimate = if let Some(high_c) = forecast_high {
                 let mut model = BayesianWeatherModel::default();
-                model.train_for_target(&trailing, market.date).ok()?;
+                model.set_point_forecast(high_c, forecast_sigma);
                 market_estimate(&model, market)
-            });
+            } else {
+                weather_data.get(&market.city).and_then(|city_data| {
+                    let trailing: Vec<WeatherRecord> = city_data
+                        .iter()
+                        .filter(|r| {
+                            r.date < market.date
+                                && r.date >= market.date - Duration::days(lookback_days)
+                        })
+                        .cloned()
+                        .collect();
+                    if trailing.len() < 14 {
+                        return None;
+                    }
+                    let mut model = BayesianWeatherModel::default();
+                    model.train_for_target(&trailing, market.date).ok()?;
+                    market_estimate(&model, market)
+                })
+            };
 
             MarketEvaluation {
                 date: market.date,

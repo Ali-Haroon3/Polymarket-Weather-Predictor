@@ -8,8 +8,11 @@ use std::path::PathBuf;
 
 use chrono::{Duration, NaiveDate};
 
-use polymarket_weather_predictor::backtesting::{evaluate_markets, MarketEvaluation, RealMarketLoader};
-use polymarket_weather_predictor::data_pipeline::MultiSourceAggregator;
+use polymarket_weather_predictor::backtesting::{
+    evaluate_markets, evaluate_markets_with_forecast, MarketEvaluation, RealMarketLoader,
+};
+use polymarket_weather_predictor::cities;
+use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
 use polymarket_weather_predictor::models::CalibrationAnalyzer;
 use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 
@@ -34,7 +37,27 @@ fn run() -> Result<(), String> {
     let covered: Vec<&String> = weather.keys().collect();
     println!("Weather available for {} cities: {:?}", covered.len(), covered);
 
-    let evals = evaluate_markets(&markets, &weather, args.lookback_days);
+    let evals = if args.forecast {
+        let forecasts = load_forecasts(&markets, &args.forecast_cache_dir, args.refresh)?;
+        let (bias, computed_sigma) = calibrate_forecast(&forecasts, &weather);
+        let sigma = args.forecast_sigma.unwrap_or(computed_sigma);
+        println!(
+            "Forecast model: debias {bias:+.2}C, error sigma {sigma:.2}C{} (vs archive highs)",
+            if args.forecast_sigma.is_some() {
+                format!(" [override; computed {computed_sigma:.2}]")
+            } else {
+                String::new()
+            }
+        );
+        // Debias the forecast (subtract its mean error) and price each market from N(forecast, sigma).
+        let debiased: HashMap<String, HashMap<NaiveDate, f64>> = forecasts
+            .into_iter()
+            .map(|(c, m)| (c, m.into_iter().map(|(d, h)| (d, h - bias)).collect()))
+            .collect();
+        evaluate_markets_with_forecast(&markets, &weather, args.lookback_days, &debiased, sigma)
+    } else {
+        evaluate_markets(&markets, &weather, args.lookback_days)
+    };
     let captures = load_captures(&args.captures);
     if !captures.is_empty() {
         println!("Loaded {} forward captures from {}", captures.len(), args.captures.display());
@@ -102,6 +125,85 @@ fn load_weather(
     }
 
     Ok(out)
+}
+
+/// Fetch (and cache) archived daily-high FORECASTS per city, keyed by date (degC). Uses Open-Meteo's
+/// historical-forecast API (what was predicted), distinct from the reanalysis archive (observed).
+fn load_forecasts(
+    markets: &[SimulatedMarket],
+    cache_dir: &PathBuf,
+    refresh: bool,
+) -> Result<HashMap<String, HashMap<NaiveDate, f64>>, String> {
+    std::fs::create_dir_all(cache_dir)
+        .map_err(|e| format!("cannot create forecast cache dir {}: {e}", cache_dir.display()))?;
+
+    let mut ranges: HashMap<&str, (NaiveDate, NaiveDate)> = HashMap::new();
+    for m in markets {
+        let e = ranges.entry(m.city.as_str()).or_insert((m.date, m.date));
+        e.0 = e.0.min(m.date);
+        e.1 = e.1.max(m.date);
+    }
+
+    let fetcher = OpenMeteoFetcher::new();
+    let mut out: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
+
+    for (city, (min_d, max_d)) in ranges {
+        let cache_file = cache_dir.join(format!("{}.json", city.replace(['/', ' '], "_")));
+        if !refresh && cache_file.exists() {
+            if let Ok(bytes) = std::fs::read(&cache_file) {
+                if let Ok(pairs) = serde_json::from_slice::<Vec<(NaiveDate, f64)>>(&bytes) {
+                    if !pairs.is_empty() {
+                        let map: HashMap<NaiveDate, f64> = pairs.into_iter().collect();
+                        println!("  {city}: {} cached forecasts", map.len());
+                        out.insert(city.to_string(), map);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let Some((lat, lon)) = cities::coords(city) else {
+            println!("  {city}: no coords, skipping forecast");
+            continue;
+        };
+        print!("  {city}: fetching forecasts {min_d}..{max_d} ... ");
+        let pairs = fetcher.fetch_forecast_max(lat, lon, min_d, max_d);
+        println!("{} forecasts", pairs.len());
+        if !pairs.is_empty() {
+            let _ = std::fs::write(&cache_file, serde_json::to_vec(&pairs).unwrap_or_default());
+            out.insert(city.to_string(), pairs.into_iter().collect());
+        }
+    }
+
+    Ok(out)
+}
+
+/// Forecast error vs the cached archive highs: (mean bias, residual sigma) in degC. The sigma becomes
+/// the predictive spread; the bias is removed before pricing. ponytail: in-sample calibration over the
+/// whole window — fine for measurement; make it rolling/causal before trusting live PnL.
+fn calibrate_forecast(
+    forecasts: &HashMap<String, HashMap<NaiveDate, f64>>,
+    weather: &HashMap<String, Vec<WeatherRecord>>,
+) -> (f64, f64) {
+    let mut residuals = Vec::new();
+    for (city, fmap) in forecasts {
+        let Some(rows) = weather.get(city) else { continue };
+        let archive: HashMap<NaiveDate, f64> = rows
+            .iter()
+            .filter_map(|r| r.temperature_max.map(|h| (r.date, h)))
+            .collect();
+        for (date, f) in fmap {
+            if let Some(a) = archive.get(date) {
+                residuals.push(f - a);
+            }
+        }
+    }
+    if residuals.len() < 2 {
+        return (0.0, 2.5); // no overlap to calibrate; a sane default short-lead sigma
+    }
+    let bias = residuals.iter().sum::<f64>() / residuals.len() as f64;
+    let var = residuals.iter().map(|r| (r - bias).powi(2)).sum::<f64>() / (residuals.len() - 1) as f64;
+    (bias, var.sqrt().max(0.5))
 }
 
 // ── metrics ────────────────────────────────────────────────────────────────
@@ -521,6 +623,9 @@ struct Args {
     captures: PathBuf,
     lookback_days: i64,
     refresh: bool,
+    forecast: bool,
+    forecast_cache_dir: PathBuf,
+    forecast_sigma: Option<f64>,
 }
 
 impl Args {
@@ -530,7 +635,7 @@ impl Args {
         let mut i = 0;
         while i < argv.len() {
             let k = argv[i].clone();
-            if k == "--refresh" {
+            if k == "--refresh" || k == "--forecast" {
                 flags.push(k);
                 i += 1;
                 continue;
@@ -552,12 +657,19 @@ impl Args {
             captures: map.get("--captures").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("data/captures.jsonl")),
             lookback_days: map.get("--lookback-days").and_then(|v| v.parse().ok()).unwrap_or(45),
             refresh: flags.iter().any(|f| f == "--refresh"),
+            forecast: flags.iter().any(|f| f == "--forecast"),
+            forecast_cache_dir: map
+                .get("--forecast-cache-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data/forecast_cache")),
+            forecast_sigma: map.get("--forecast-sigma").and_then(|v| v.parse().ok()),
         })
     }
 }
 
 fn usage() -> String {
     "usage: cargo run --bin weather_dashboard -- --markets <path.csv> [--output dashboard.html] \
-     [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh]"
+     [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
+     [--forecast] [--forecast-cache-dir data/forecast_cache]"
         .to_string()
 }
