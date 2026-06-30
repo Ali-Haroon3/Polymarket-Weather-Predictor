@@ -13,7 +13,10 @@ cargo clippy --all-targets        # lint
 cargo fmt                         # format (no rustfmt.toml; uses defaults)
 ```
 
-Runnable binaries (`src/bin/`): `init_db`, `run_backtest`, `run_backtest_real`, `download_polymarket_history`, `example_workflow`, `live_trading_example`. See README for their flags. The history downloader and backtest-real form the real-data pipeline: `download_polymarket_history` → CSV → `run_backtest_real --markets <csv>`.
+Runnable binaries (`src/bin/`): `init_db`, `run_backtest` (simulated markets), `run_backtest_real` (real markets from CSV/JSON), `download_polymarket_history`, `capture_prices`, `weather_dashboard`, `example_workflow`, `live_trading_example`. CLI flags are parsed by hand (see gotchas). Two real-data flows:
+
+- **Real-data backtest:** `download_polymarket_history` → CSV → `run_backtest_real --markets <csv>`.
+- **Forward calibration:** Polymarket purges price history shortly after a market resolves, so real entry prices only exist while markets are live. `capture_prices` (run daily via cron/schedule) snapshots every active weather market's price + model estimate to `data/captures.jsonl` and fills in outcomes as markets resolve. `weather_dashboard --markets <csv> --output dashboard.html` renders calibration (Brier / ECE / reliability) + forward PnL, fetching weather once per city into `data/weather_cache/` (`--refresh` re-fetches).
 
 ## Architecture
 
@@ -27,12 +30,15 @@ Rust port of a Python weather-market trading system. The Python original is arch
 4. **`MarketSimulator`** (`backtesting/market_simulator.rs`) — synthesizes markets from weather: computes rolling **climatological** probabilities and prices each market at that prob plus seeded Gaussian noise. Used only in simulated-backtest mode.
 5. **`BacktestEngine`** (`backtesting/backtest_engine.rs`) — the orchestrator. Walk-forward: for each market date it trains a *fresh* model on the trailing `model_lookback_days` window (needs ≥14 records), computes `edge = estimate − price`, filters by `edge_threshold`, sizes with **fractional Kelly** (`kelly_fraction`, capped at `max_position_pct`), and books PnL. Two entry points: `run()` (simulated markets) and `run_with_real_markets()` (markets loaded from CSV/JSON via `RealMarketLoader`).
 6. **`PerformanceAnalyzer`** (`backtesting/performance_metrics.rs`) — turns the trade log + portfolio curve into Sharpe, drawdown, return, etc.
+7. **`market_estimate` / `evaluate_markets`** (`backtesting/backtest_engine.rs`) — a position-free path used by the dashboard and capture daemon. `market_estimate(model, market)` is the **single place market shapes are priced**: it routes on `market_type` (`temp_at_least`, `temp_at_most`, `temp_bucket`, plus legacy `temperature`/`precipitation`) and respects the market's `unit`. `evaluate_markets` walk-forward-trains a model per market and returns predicted-prob-vs-outcome rows for `CalibrationAnalyzer` (`models/calibration.rs`: Brier, ECE, reliability diagram).
 
 **Live trading** (`src/api/`): `PolymarketClient` (defaults to paper mode unless real auth is passed) and `LiveTrader`, which wires the same `BayesianWeatherModel` + `MarketMaker` against live orderbooks. Separate from the backtest path.
 
 ## Conventions & gotchas
 
-- **Temperature units cross boundaries.** `WeatherRecord` stores °C. Config thresholds and `SimulatedMarket` use °F. Conversions happen at the edges — `backtest_engine::get_model_estimate` converts the °F threshold to °C before calling the model; `market_simulator` converts stored °C to °F. NOAA raw values are in tenths and divided by 10 in `normalize_noaa_data`. Get a unit wrong here and backtests silently produce garbage.
+- **Temperature units cross boundaries.** `WeatherRecord` stores °C. Config thresholds and `SimulatedMarket` use °F. Conversions happen at the edges — `backtest_engine::get_model_estimate` converts the °F threshold to °C before calling the model; `market_simulator` converts stored °C to °F. NOAA raw values are in tenths and divided by 10 in `normalize_noaa_data`. Real bucket markets carry an explicit `unit` (`"F"`/`"C"`); `unit: None` means legacy °F (back-compat for old CSVs). Get a unit wrong here and backtests silently produce garbage.
+- **Two posterior sigmas — pick the right one.** Probabilities for "will the high exceed / fall in X" markets must use `temp_predictive_sigma` (posterior-mean variance + day-to-day sample variance, ≈ the sample SD, ~8°C), **not** `temp_posterior_sigma` (standard error of the *mean*, which only sizes the mean credible band). Using the latter made the model wildly overconfident — that was the `c4d4304` fix. Honor this when adding any new market shape.
+- **`src/cities.rs` is the single source of truth for cities.** `infer_city(title)` matches a market title to a canonical key; `coords(key)` gives lat/lon for fetching. Add a city as one `City` row (key + lowercase title patterns + coords) so title-parsing and weather-fetching can't drift apart.
 - **Config is functions, not a loaded struct.** `src/config.rs` exposes `bayesian_model_params()`, `backtest_params()`, `initial_capital()`, etc. Env-backed accessors each call `dotenvy::dotenv()` and fall back to a hardcoded default — there is no global config object.
 - **Determinism is load-bearing.** Every RNG is a seeded `StdRng`. Tests and backtests rely on this; don't introduce `thread_rng()` or unseeded randomness in the model/sim/backtest paths.
 - **Blocking vs async split.** Weather fetchers use `reqwest::blocking`. Only the Polymarket history downloader (`api/polymarket_history.rs`) is async (`reqwest` + `tokio`); its bin is `#[tokio::main]`. Don't call blocking fetchers from an async context.
