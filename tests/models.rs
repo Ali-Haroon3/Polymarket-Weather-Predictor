@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};
 
@@ -190,4 +190,248 @@ fn test_brier_beats_buggy() {
         ece_fixed < ece_buggy - 0.05,
         "fixed ECE {ece_fixed} should crush buggy ECE {ece_buggy}"
     );
+}
+
+// ── day-of-year seasonality (local linear detrend) ──────────────────────────
+
+/// Daily highs on a linear ramp on real dates [target-n, target-1]: high(i) = base + slope*i + noise.
+/// Truth at the target day (i = n) is base + slope*n. Stationary training averages to the window
+/// midpoint (~base + slope*n/2); seasonal training extrapolates the trend to the target.
+fn ramp_data(target: NaiveDate, n: i64, base: f64, slope: f64, noise: f64, seed: u64) -> Vec<WeatherRecord> {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let dist = Normal::new(0.0, noise).unwrap();
+    (0..n)
+        .map(|i| {
+            let date = target - Duration::days(n - i);
+            let mut row = WeatherRecord::new(date, "TEST");
+            row.temperature_max = Some(base + slope * i as f64 + dist.sample(&mut rng));
+            row.precipitation_total = Some(0.0);
+            row
+        })
+        .collect()
+}
+
+#[test]
+fn test_seasonal_tracks_ramp_not_midpoint() {
+    let target = NaiveDate::from_ymd_opt(2021, 3, 1).unwrap();
+    let data = ramp_data(target, 60, 14.0, 0.2, 2.0, 7);
+
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&data, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&data).unwrap();
+
+    let true_target = 14.0 + 0.2 * 60.0; // 26.0
+    assert!(
+        (seas.temp_posterior_mu - true_target).abs() < 1.0,
+        "seasonal mu {} should track true target {true_target}",
+        seas.temp_posterior_mu
+    );
+    assert!(
+        stat.temp_posterior_mu < seas.temp_posterior_mu - 3.0,
+        "stationary {} must lag seasonal {} by >3C on a rising ramp",
+        stat.temp_posterior_mu,
+        seas.temp_posterior_mu
+    );
+}
+
+#[test]
+fn test_seasonal_residual_variance() {
+    let target = NaiveDate::from_ymd_opt(2021, 3, 1).unwrap();
+    let data = ramp_data(target, 60, 14.0, 0.2, 2.0, 7);
+
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&data, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&data).unwrap();
+
+    // Seasonal sigma ~ true noise SD (2.0); stationary sigma is inflated by the trend.
+    assert!(
+        (seas.temp_predictive_sigma - 2.0).abs() < 0.7,
+        "seasonal sigma {} should be near noise SD 2.0",
+        seas.temp_predictive_sigma
+    );
+    assert!(
+        stat.temp_predictive_sigma > seas.temp_predictive_sigma + 1.0,
+        "trend should inflate stationary sigma {} vs seasonal {}",
+        stat.temp_predictive_sigma,
+        seas.temp_predictive_sigma
+    );
+}
+
+#[test]
+fn test_seasonal_fallback_short_window() {
+    // Below the 14-record floor the seasonal fit must be byte-identical to the stationary fit.
+    let target = NaiveDate::from_ymd_opt(2021, 3, 1).unwrap();
+    let data = ramp_data(target, 10, 14.0, 0.2, 2.0, 1);
+
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&data, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&data).unwrap();
+
+    assert!((seas.temp_posterior_mu - stat.temp_posterior_mu).abs() < 1e-9);
+    assert!((seas.temp_predictive_sigma - stat.temp_predictive_sigma).abs() < 1e-9);
+    assert!(seas.temp_predictive_sigma.is_finite() && seas.temp_predictive_sigma > 0.0);
+}
+
+#[test]
+fn test_seasonal_deterministic() {
+    let target = NaiveDate::from_ymd_opt(2021, 3, 1).unwrap();
+    let data = ramp_data(target, 60, 14.0, 0.2, 2.0, 99);
+    let mut a = BayesianWeatherModel::default();
+    a.train_for_target(&data, target).unwrap();
+    let mut b = BayesianWeatherModel::default();
+    b.train_for_target(&data, target).unwrap();
+    for &t in &[15.0, 22.0, 28.0] {
+        assert_eq!(a.prob_at_least(t).to_bits(), b.prob_at_least(t).to_bits());
+    }
+}
+
+#[test]
+fn test_seasonal_no_regression_flat() {
+    // On data with NO trend, the slope the seasonal fit finds is spurious — but its predictive
+    // sigma widens (via proj_var) to cover the added mean uncertainty, so CALIBRATION is preserved:
+    // Brier on held-out flat days is no worse than the stationary model's. (We test the property
+    // that matters — calibration — not point-estimate stability, which detrending legitimately
+    // trades for the ability to track real trends.)
+    let target = NaiveDate::from_ymd_opt(2020, 3, 1).unwrap(); // day after the 60-record window
+    let train = sample_max_data(25.0, 8.0, 11, 60); // flat, dates end 2020-02-29
+    let held: Vec<f64> = sample_max_data(25.0, 8.0, 23, 200)
+        .iter()
+        .filter_map(|r| r.temperature_max)
+        .collect();
+
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&train, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&train).unwrap();
+
+    let (mut outcomes, mut p_seas, mut p_stat) = (Vec::new(), Vec::new(), Vec::new());
+    for &t in &[17.0, 21.0, 25.0, 29.0, 33.0] {
+        for &h in &held {
+            outcomes.push(if h >= t { 1.0 } else { 0.0 });
+            p_seas.push(seas.prob_at_least(t));
+            p_stat.push(stat.prob_at_least(t));
+        }
+    }
+    let brier_seas = CalibrationAnalyzer::brier_score(&p_seas, &outcomes);
+    let brier_stat = CalibrationAnalyzer::brier_score(&p_stat, &outcomes);
+    assert!(
+        brier_seas < brier_stat + 0.03,
+        "flat data: seasonal Brier {brier_seas} should be no worse than stationary {brier_stat}"
+    );
+    assert!(
+        seas.temp_predictive_sigma.is_finite() && seas.temp_predictive_sigma > 4.0,
+        "seasonal sigma {} stays sane on flat data",
+        seas.temp_predictive_sigma
+    );
+}
+
+#[test]
+fn test_seasonal_no_regression_flat_many_seeds() {
+    // Averaged over many flat windows the slope-significance gate keeps seasonal Brier from
+    // regressing vs stationary (a single seed could pass by luck; the mean gap is the real test).
+    let target = NaiveDate::from_ymd_opt(2020, 3, 1).unwrap();
+    let held: Vec<f64> = sample_max_data(25.0, 8.0, 23, 200)
+        .iter()
+        .filter_map(|r| r.temperature_max)
+        .collect();
+    let mut sum_gap = 0.0;
+    let seeds = 30u64;
+    for seed in 0..seeds {
+        let train = sample_max_data(25.0, 8.0, 100 + seed, 60);
+        let mut seas = BayesianWeatherModel::default();
+        seas.train_for_target(&train, target).unwrap();
+        let mut stat = BayesianWeatherModel::default();
+        stat.train(&train).unwrap();
+        let (mut o, mut ps, mut pt) = (Vec::new(), Vec::new(), Vec::new());
+        for &t in &[17.0, 21.0, 25.0, 29.0, 33.0] {
+            for &h in &held {
+                o.push(if h >= t { 1.0 } else { 0.0 });
+                ps.push(seas.prob_at_least(t));
+                pt.push(stat.prob_at_least(t));
+            }
+        }
+        sum_gap +=
+            CalibrationAnalyzer::brier_score(&ps, &o) - CalibrationAnalyzer::brier_score(&pt, &o);
+    }
+    let mean_gap = sum_gap / seeds as f64;
+    assert!(
+        mean_gap < 0.005,
+        "flat data: mean seasonal-minus-stationary Brier gap {mean_gap} should be ~0"
+    );
+}
+
+#[test]
+fn test_seasonal_tracks_downward_ramp() {
+    // Fall cooling: stationary lags ABOVE the target; seasonal tracks it. (Catches an offset/sign bug.)
+    let target = NaiveDate::from_ymd_opt(2021, 10, 1).unwrap();
+    let data = ramp_data(target, 60, 30.0, -0.2, 2.0, 5);
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&data, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&data).unwrap();
+
+    let true_target = 30.0 - 0.2 * 60.0; // 18.0
+    assert!(
+        (seas.temp_posterior_mu - true_target).abs() < 1.0,
+        "seasonal mu {} should track true target {true_target}",
+        seas.temp_posterior_mu
+    );
+    assert!(
+        stat.temp_posterior_mu > seas.temp_posterior_mu + 3.0,
+        "stationary {} must lag ABOVE seasonal {} on a falling ramp",
+        stat.temp_posterior_mu,
+        seas.temp_posterior_mu
+    );
+}
+
+#[test]
+fn test_seasonal_beats_stationary_on_seasonal_curve() {
+    // Real-ish sinusoidal annual cycle, target on the steep ascending part: the local linear
+    // projection tracks the target's true climatology far better than the lagging stationary mean.
+    let target = NaiveDate::from_ymd_opt(2021, 2, 14).unwrap(); // doy ~45, rising steeply
+    let seasonal_high = |doy: f64| 15.0 + 12.0 * (2.0 * std::f64::consts::PI * doy / 365.0).sin();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let noise = Normal::new(0.0, 2.0).unwrap();
+    let data: Vec<WeatherRecord> = (1..=60i64)
+        .map(|k| {
+            let date = target - Duration::days(k);
+            let mut r = WeatherRecord::new(date, "T");
+            r.temperature_max = Some(seasonal_high(date.ordinal() as f64) + noise.sample(&mut rng));
+            r.precipitation_total = Some(0.0);
+            r
+        })
+        .collect();
+    let truth = seasonal_high(target.ordinal() as f64);
+
+    let mut seas = BayesianWeatherModel::default();
+    seas.train_for_target(&data, target).unwrap();
+    let mut stat = BayesianWeatherModel::default();
+    stat.train(&data).unwrap();
+
+    let err_seas = (seas.temp_posterior_mu - truth).abs();
+    let err_stat = (stat.temp_posterior_mu - truth).abs();
+    assert!(
+        err_seas < err_stat,
+        "on a seasonal curve, seasonal error {err_seas} should beat stationary error {err_stat} (truth {truth})"
+    );
+}
+
+#[test]
+fn test_seasonal_temp_empty_window_errors() {
+    // Precip-only records (all temperature fields None, e.g. NOAA PRCP-only days) must Err cleanly,
+    // never panic — even with ≥14 records (which clear the walk-forward's record-count gate).
+    let target = NaiveDate::from_ymd_opt(2021, 3, 1).unwrap();
+    let recs: Vec<WeatherRecord> = (1..=20i64)
+        .map(|k| {
+            let mut r = WeatherRecord::new(target - Duration::days(k), "T");
+            r.precipitation_total = Some(0.0); // temperature_max and temperature_mean stay None
+            r
+        })
+        .collect();
+    let mut m = BayesianWeatherModel::default();
+    assert!(m.train_for_target(&recs, target).is_err());
+    assert!(!m.is_trained);
 }

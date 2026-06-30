@@ -192,7 +192,7 @@ impl BacktestEngine {
                 }
 
                 let mut model = BayesianWeatherModel::default();
-                if model.train(&trailing).is_err() {
+                if model.train_for_target(&trailing, date).is_err() {
                     continue;
                 }
 
@@ -423,7 +423,7 @@ pub fn evaluate_markets(
                     return None;
                 }
                 let mut model = BayesianWeatherModel::default();
-                model.train(&trailing).ok()?;
+                model.train_for_target(&trailing, market.date).ok()?;
                 market_estimate(&model, market)
             });
 

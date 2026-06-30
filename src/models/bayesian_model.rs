@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use rand::SeedableRng;
 use rand_distr::{Beta, Distribution};
 
@@ -132,6 +133,107 @@ impl BayesianWeatherModel {
         self.precip_posterior_beta = beta + failures;
         self.precip_posterior_mean =
             self.precip_posterior_alpha / (self.precip_posterior_alpha + self.precip_posterior_beta);
+    }
+
+    /// Dated, target-aware training. Fits a local linear trend of the daily high on day-offset
+    /// from `target`, then evaluates the predictive Normal AT the target day — removing the
+    /// seasonal lag a stationary trailing-window mean suffers. Writes the same three temp_* fields
+    /// as `train`, so all `prob_*` pricing is unchanged. (Precipitation is trained stationary.)
+    pub fn train_for_target(
+        &mut self,
+        observations: &[WeatherRecord],
+        target: NaiveDate,
+    ) -> Result<(), String> {
+        // (day-offset-from-target, daily high) pairs; same max-or-mean fallback as train().
+        let dated: Vec<(f64, f64)> = observations
+            .iter()
+            .filter_map(|r| {
+                r.temperature_max
+                    .or(r.temperature_mean)
+                    .map(|y| ((r.date - target).num_days() as f64, y))
+            })
+            .collect();
+
+        let precips: Vec<bool> = observations
+            .iter()
+            .filter_map(|r| r.precipitation_total)
+            .map(|p| p > 0.0)
+            .collect();
+
+        if precips.is_empty() {
+            return Err("need precipitation observations".to_string());
+        }
+
+        self.fit_trend_temperature(&dated)?;
+        self.train_precipitation_model(&precips);
+        self.is_trained = true;
+        Ok(())
+    }
+
+    /// Local linear detrend in day-offset space: fit `high = a + b·offset` by OLS, predict at the
+    /// target day (offset 0) so `mu = a`. Predictive sigma keeps the step-1 philosophy — projection
+    /// uncertainty + residual day-to-day variance, never the SE of the mean. Falls back to the
+    /// stationary conjugate fit when a slope can't be identified (too few points or zero x-spread).
+    fn fit_trend_temperature(&mut self, dated: &[(f64, f64)]) -> Result<(), String> {
+        // Match the stationary path's contract: too few temperature points is a clean Err, never a
+        // panic. (A window can have ≥14 records but <2 temperatures — e.g. precip-only NOAA days.)
+        if dated.len() < 2 {
+            return Err("need at least two temperature observations".to_string());
+        }
+        let ys: Vec<f64> = dated.iter().map(|&(_, y)| y).collect();
+        let n = dated.len();
+        // Below the walk-forward's own 14-record floor a slope is just noise; use the stationary fit.
+        if n < 14 {
+            return self.train_temperature_model(&ys);
+        }
+
+        let nf = n as f64;
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+        for &(x, y) in dated {
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let d = nf * sxx - sx * sx; // = n·Σ(x − x̄)² ≥ 0
+        if d <= 1e-9 {
+            // Singular design (all records share one date) — no slope to fit.
+            return self.train_temperature_model(&ys);
+        }
+
+        let b = (nf * sxy - sx * sy) / d;
+        let a = (sy - b * sx) / nf; // intercept = prediction at target (offset 0)
+
+        let sse: f64 = dated
+            .iter()
+            .map(|&(x, y)| {
+                let r = y - a - b * x;
+                r * r
+            })
+            .sum();
+        let s2 = sse / (nf - 2.0); // residual day-to-day variance, df = n−2
+        if !s2.is_finite() || s2 <= 0.0 {
+            return Err("temperature variance must be positive and finite".to_string());
+        }
+
+        // Slope-significance gate. SE(b) = sqrt(s2·n/D). Only detrend when the slope is statistically
+        // real (|t| ≥ 2 ≈ 95%): a real spring/fall ramp scores t ~ 10–20 and is kept; a spurious slope
+        // on flat (e.g. mid-summer) data scores |t| < 2 and collapses to the stationary fit — which
+        // avoids the ~2°C per-window mean wander that a predictive band widens for but can't re-center,
+        // and incidentally avoids over-extrapolating curvature near seasonal turning points.
+        let se_b = (s2 * nf / d).sqrt();
+        if !se_b.is_finite() || se_b <= 0.0 || b.abs() / se_b < 2.0 {
+            return self.train_temperature_model(&ys);
+        }
+
+        let x_bar = sx / nf;
+        let proj_var = s2 * (1.0 / nf + x_bar * x_bar * nf / d); // Var(fitted line) at offset 0
+
+        // ponytail: weak prior (sigma^2=225) vs data precision at n>=14 is a no-op; skip the shrink.
+        self.temp_posterior_mu = a;
+        self.temp_posterior_sigma = proj_var.sqrt(); // trend-aware SE of the target-day mean
+        self.temp_predictive_sigma = (s2 + proj_var).sqrt(); // projection + residual; step-1 philosophy
+        Ok(())
     }
 
     /// The posterior predictive distribution of a new daily high: N(mu, predictive_sigma), in degC.
