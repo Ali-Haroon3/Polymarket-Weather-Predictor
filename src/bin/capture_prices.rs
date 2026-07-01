@@ -124,10 +124,27 @@ fn process(
 
     if !fresh.is_empty() {
         let sims: Vec<SimulatedMarket> = fresh.iter().map(|r| to_sim(r)).collect();
-        let weather = load_weather(&sims, lookback_days, cache_dir);
-        // Price each market from the LIVE forecast of its target day (real trading lead, no leakage);
-        // markets beyond the forecast horizon fall back to climatology inside the eval.
+        // Price each market from the LIVE forecast of its target day (real trading lead, no leakage).
         let forecasts = load_forecasts(&sims);
+        // Climatology is only the fallback for markets the forecast can't reach (beyond horizon).
+        // Active markets are future-dated, so the archive returns nothing for the rest anyway — skip
+        // the slow multi-source aggregator entirely when every market already has a forecast.
+        let need_weather: Vec<SimulatedMarket> = sims
+            .iter()
+            .filter(|m| {
+                !forecasts
+                    .get(&m.city)
+                    .map(|f| f.contains_key(&m.date))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        let weather = if need_weather.is_empty() {
+            HashMap::new()
+        } else {
+            println!("{} markets beyond forecast horizon; loading climatology", need_weather.len());
+            load_weather(&need_weather, lookback_days, cache_dir)
+        };
         let evals =
             evaluate_markets_with_forecast(&sims, &weather, lookback_days, &forecasts, FORECAST_SIGMA);
         let est: HashMap<&str, Option<f64>> =
