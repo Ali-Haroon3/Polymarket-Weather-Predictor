@@ -1,9 +1,11 @@
 //! Daily capture daemon for forward, real-price evaluation.
 //!
 //! Each run: snapshot every ACTIVE Polymarket weather market (its current price + the model's
-//! probability computed from today's climatology), and finalize any previously-captured market that
-//! has since resolved (fill in its outcome). Over time this accrues a real dataset of
-//! (entry price, model estimate, realized outcome) the dashboard turns into calibration and PnL.
+//! probability computed from the LIVE forecast of its target day, falling back to climatology beyond
+//! the forecast horizon), and finalize any previously-captured market that has since resolved (fill
+//! in its outcome). Over time this accrues a real dataset of (entry price, model estimate, realized
+//! outcome) — at genuine trading lead with real prices — that the dashboard turns into calibration
+//! and PnL.
 //!
 //! Run daily, e.g. via cron or the schedule skill:  cargo run --release --bin capture_prices
 
@@ -14,9 +16,16 @@ use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::{PolymarketHistoryDownloader, WeatherMarketRow};
-use polymarket_weather_predictor::backtesting::evaluate_markets;
-use polymarket_weather_predictor::data_pipeline::MultiSourceAggregator;
+use polymarket_weather_predictor::backtesting::evaluate_markets_with_forecast;
+use polymarket_weather_predictor::cities;
+use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
 use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
+
+/// Forecast-error spread (degC) for pricing active markets from the live forecast. Fixed and
+/// conservative — we can't calibrate against future outcomes; the backtest showed +0.12 Brier skill
+/// even at 2.0 (vs a tighter in-sample 0.84), so this errs toward humility. ponytail: make it a
+/// rolling estimate from recently-settled captures once enough have accrued.
+const FORECAST_SIGMA: f64 = 2.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
@@ -116,7 +125,11 @@ fn process(
     if !fresh.is_empty() {
         let sims: Vec<SimulatedMarket> = fresh.iter().map(|r| to_sim(r)).collect();
         let weather = load_weather(&sims, lookback_days, cache_dir);
-        let evals = evaluate_markets(&sims, &weather, lookback_days);
+        // Price each market from the LIVE forecast of its target day (real trading lead, no leakage);
+        // markets beyond the forecast horizon fall back to climatology inside the eval.
+        let forecasts = load_forecasts(&sims);
+        let evals =
+            evaluate_markets_with_forecast(&sims, &weather, lookback_days, &forecasts, FORECAST_SIGMA);
         let est: HashMap<&str, Option<f64>> =
             evals.iter().map(|e| (e.market_id.as_str(), e.model_estimate)).collect();
 
@@ -216,6 +229,34 @@ fn load_weather(
         println!("{} records", rows.len());
         if !rows.is_empty() {
             out.insert(city.to_string(), rows);
+        }
+    }
+    out
+}
+
+/// Live daily-high forecasts per city for the markets' target dates (city -> date -> high, degC).
+/// Fetched fresh each run since forecasts change daily. Cities without coords, or targets beyond the
+/// ~16-day forecast horizon, simply won't appear — the eval falls back to climatology for those.
+fn load_forecasts(markets: &[SimulatedMarket]) -> HashMap<String, HashMap<NaiveDate, f64>> {
+    let mut ranges: HashMap<&str, (NaiveDate, NaiveDate)> = HashMap::new();
+    for m in markets {
+        let e = ranges.entry(m.city.as_str()).or_insert((m.date, m.date));
+        if m.date < e.0 {
+            e.0 = m.date;
+        }
+        if m.date > e.1 {
+            e.1 = m.date;
+        }
+    }
+
+    let fetcher = OpenMeteoFetcher::new();
+    let mut out: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
+    for (city, (min_d, max_d)) in ranges {
+        let Some((lat, lon)) = cities::coords(city) else { continue };
+        let pairs = fetcher.fetch_forecast_max_live(lat, lon, min_d, max_d);
+        if !pairs.is_empty() {
+            println!("  forecast {city}: {} days", pairs.len());
+            out.insert(city.to_string(), pairs.into_iter().collect());
         }
     }
     out

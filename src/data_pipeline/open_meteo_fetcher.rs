@@ -9,6 +9,8 @@ pub const BASE_URL: &str = "https://archive-api.open-meteo.com/v1/archive";
 /// Archived *forecasts* (what was predicted at the time), for backtesting forecast skill — distinct
 /// from the reanalysis archive (observed truth) above.
 pub const FORECAST_BASE_URL: &str = "https://historical-forecast-api.open-meteo.com/v1/forecast";
+/// Live forecast (future dates), for pricing active markets at real trading lead.
+pub const FORECAST_LIVE_BASE_URL: &str = "https://api.open-meteo.com/v1/forecast";
 
 #[derive(Clone)]
 pub struct OpenMeteoFetcher {
@@ -27,11 +29,33 @@ impl OpenMeteoFetcher {
         }
     }
 
-    /// Archived daily-high FORECASTS (degC) for a location, keyed by date — the model's view of the
-    /// target day at the time, used to price near-term buckets with real forecast skill. Returns an
-    /// empty vec on any failure (degradation by design, like every fetcher).
+    /// Archived daily-high FORECASTS (degC) — what was predicted for past dates. For backtesting
+    /// forecast skill against resolved markets. Empty vec on any failure (degradation by design).
     pub fn fetch_forecast_max(
         &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Vec<(NaiveDate, f64)> {
+        self.fetch_forecast_max_at(FORECAST_BASE_URL, latitude, longitude, start_date, end_date)
+    }
+
+    /// LIVE daily-high forecasts (degC) for near-future dates — used to price active markets at the
+    /// real trading lead (no leakage possible; the outcome hasn't happened yet).
+    pub fn fetch_forecast_max_live(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Vec<(NaiveDate, f64)> {
+        self.fetch_forecast_max_at(FORECAST_LIVE_BASE_URL, latitude, longitude, start_date, end_date)
+    }
+
+    fn fetch_forecast_max_at(
+        &self,
+        base_url: &str,
         latitude: f64,
         longitude: f64,
         start_date: NaiveDate,
@@ -46,7 +70,7 @@ impl OpenMeteoFetcher {
             ("timezone", "auto".to_string()),
         ];
 
-        let Ok(resp) = self.client.get(FORECAST_BASE_URL).query(&query).send() else {
+        let Ok(resp) = self.client.get(base_url).query(&query).send() else {
             return Vec::new();
         };
         let Ok(json) = resp.json::<Value>() else {
