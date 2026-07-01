@@ -15,17 +15,30 @@ use std::path::PathBuf;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use polymarket_weather_predictor::api::{PolymarketHistoryDownloader, WeatherMarketRow};
+use polymarket_weather_predictor::api::{
+    KalshiHistoryDownloader, PolymarketHistoryDownloader, WeatherMarketRow,
+};
 use polymarket_weather_predictor::backtesting::evaluate_markets_with_forecast;
 use polymarket_weather_predictor::cities;
+use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
 use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 
-/// Forecast-error spread (degC) for pricing active markets from the live forecast. Fixed and
-/// conservative — we can't calibrate against future outcomes; the backtest showed +0.12 Brier skill
-/// even at 2.0 (vs a tighter in-sample 0.84), so this errs toward humility. ponytail: make it a
-/// rolling estimate from recently-settled captures once enough have accrued.
+/// Forecast-error spread (degC) for pricing active markets from the live forecast.
+///
+/// Kept at 2.0 deliberately. Open-Meteo's daily-high error is ~1.25 degC at SHORT lead (measured vs
+/// archive, n=336), and re-pricing the 50 settled captures found the best-Brier sigma ~1.5 — but that
+/// used near-final forecasts, whereas the daemon prices markets days out (bigger error), so 2.0 is the
+/// right order for the actual trading lead. More importantly, re-pricing showed NO sigma gets the model
+/// near the market's calibration on narrow buckets (best re-priced Brier ~0.12 vs market ~0.04): the
+/// bucket deficit is structural, not a mistuned constant, so tuning this knob is low-value. Per-city
+/// debiasing did not help either. `forecast_high`/`forecast_sigma` are now stored per snapshot so a
+/// lead-aware rolling estimate can be fit against realized highs once enough captures accrue.
 const FORECAST_SIGMA: f64 = 2.0;
+
+/// Only direct-lookup markets whose target day is within this many days behind today. A market that
+/// hasn't resolved this long after its date is voided/stuck; stop re-querying it every run.
+const RESOLVE_WINDOW_DAYS: i64 = 45;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
@@ -41,6 +54,21 @@ struct Snapshot {
     entry_price: f64,
     model_estimate: Option<f64>,
     outcome: Option<f64>,
+    /// Venue ("polymarket" / "kalshi"). Defaulted for snapshots captured before multi-venue support.
+    #[serde(default = "default_source")]
+    source: String,
+    /// Live daily-high forecast (°C) used to price this market and the σ (°C) applied. Stored because
+    /// the live forecast is ephemeral — it can't be recovered after the fact — and it's the raw input
+    /// needed to recalibrate bucket pricing against realized highs as settled captures accrue.
+    /// None ⇒ priced from climatology (no forecast reached this city/date).
+    #[serde(default)]
+    forecast_high: Option<f64>,
+    #[serde(default)]
+    forecast_sigma: Option<f64>,
+}
+
+fn default_source() -> String {
+    "polymarket".to_string()
 }
 
 #[tokio::main]
@@ -63,30 +91,88 @@ async fn run() -> Result<(), String> {
     let lookback_days = 45i64;
 
     let downloader = PolymarketHistoryDownloader::default();
+    let today = Utc::now().date_naive();
 
-    // ── async: pull active markets (entry prices) + resolved markets (outcomes) ──
-    println!("Fetching active weather markets...");
-    let active = downloader
+    // ── async: pull active markets (entry prices) ──
+    println!("Fetching active Polymarket weather markets...");
+    let mut active = downloader
         .download_weather_markets(true, 4000)
         .await
         .map_err(|e| format!("active fetch failed: {e}"))?;
     println!("  {} active weather markets", active.len());
 
-    println!("Fetching resolved weather markets (for finalizing)...");
-    let resolved = downloader
-        .download_weather_markets(false, 4000)
-        .await
-        .map_err(|e| format!("resolved fetch failed: {e}"))?;
-    let outcomes: HashMap<String, f64> = resolved
+    // Finalize by DIRECT id lookup of our own unresolved, past-dated snapshots. Recently-resolved
+    // low-volume weather markets never surface in Polymarket's bulk closed-market feeds — the
+    // `temperature` tag lags by weeks (newest closed events sit ~10 weeks back) and the volume scan
+    // is capped at high-volume markets — so the old bulk-resolved discovery finalized nothing. Each
+    // market resolves cleanly when queried by id, which is exactly what we stored at capture time.
+    let mut outcomes: HashMap<String, f64> = HashMap::new();
+    let need_ids: Vec<String> = load_snapshots(&out_path)
         .into_iter()
-        .filter_map(|r| r.outcome.map(|o| (r.market_id, o)))
+        .filter(|s| {
+            s.outcome.is_none()
+                && s.source == "polymarket"
+                && s.target_date <= today
+                && s.target_date >= today - Duration::days(RESOLVE_WINDOW_DAYS)
+        })
+        .map(|s| s.market_id)
         .collect();
-    println!("  {} resolved outcomes available", outcomes.len());
+    if !need_ids.is_empty() {
+        println!(
+            "Finalizing {} past-dated unresolved Polymarket snapshots by direct id lookup...",
+            need_ids.len()
+        );
+        let found = downloader.fetch_outcomes_for_ids(&need_ids).await;
+        println!("  {} newly resolved via direct lookup", found.len());
+        outcomes.extend(found);
+    }
+
+    // Kalshi (demo by default) — additive and best-effort: no creds ⇒ skipped, a fetch error is
+    // logged but never aborts the Polymarket run (same degrade-by-design contract as the fetchers).
+    let kalshi = KalshiHistoryDownloader::new();
+    if kalshi.is_available() {
+        println!(
+            "Fetching Kalshi weather markets ({})...",
+            config::kalshi_base_url()
+        );
+        match kalshi.download_weather_markets(true, 4000).await {
+            Ok(k) => {
+                println!("  {} active Kalshi weather markets", k.len());
+                active.extend(k);
+            }
+            Err(e) => eprintln!("  Kalshi active fetch failed, continuing without it: {e}"),
+        }
+        match kalshi.download_weather_markets(false, 4000).await {
+            Ok(k) => {
+                let before = outcomes.len();
+                for r in k {
+                    if let Some(o) = r.outcome {
+                        outcomes.insert(r.market_id, o);
+                    }
+                }
+                println!(
+                    "  {} Kalshi resolved outcomes added",
+                    outcomes.len() - before
+                );
+            }
+            Err(e) => eprintln!("  Kalshi resolved fetch failed, continuing without it: {e}"),
+        }
+    } else {
+        println!(
+            "Kalshi not configured — skipping (set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH to enable)."
+        );
+    }
 
     // ── blocking: weather + model + file IO, off the async executor ──
-    let today = Utc::now().date_naive();
     tokio::task::spawn_blocking(move || {
-        process(active, outcomes, today, lookback_days, &cache_dir, &out_path)
+        process(
+            active,
+            outcomes,
+            today,
+            lookback_days,
+            &cache_dir,
+            &out_path,
+        )
     })
     .await
     .map_err(|e| format!("worker join failed: {e}"))?
@@ -142,15 +228,30 @@ fn process(
         let weather = if need_weather.is_empty() {
             HashMap::new()
         } else {
-            println!("{} markets beyond forecast horizon; loading climatology", need_weather.len());
+            println!(
+                "{} markets beyond forecast horizon; loading climatology",
+                need_weather.len()
+            );
             load_weather(&need_weather, lookback_days, cache_dir)
         };
-        let evals =
-            evaluate_markets_with_forecast(&sims, &weather, lookback_days, &forecasts, FORECAST_SIGMA);
-        let est: HashMap<&str, Option<f64>> =
-            evals.iter().map(|e| (e.market_id.as_str(), e.model_estimate)).collect();
+        let evals = evaluate_markets_with_forecast(
+            &sims,
+            &weather,
+            lookback_days,
+            &forecasts,
+            FORECAST_SIGMA,
+        );
+        let est: HashMap<&str, Option<f64>> = evals
+            .iter()
+            .map(|e| (e.market_id.as_str(), e.model_estimate))
+            .collect();
 
         for r in fresh {
+            // The forecast (°C) that priced this market, if one reached its city/date.
+            let fh = forecasts
+                .get(&r.city)
+                .and_then(|m| m.get(&r.target_date))
+                .copied();
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -164,6 +265,9 @@ fn process(
                 entry_price: r.price,
                 model_estimate: est.get(r.market_id.as_str()).copied().flatten(),
                 outcome: outcomes.get(&r.market_id).copied(),
+                source: r.source.clone(),
+                forecast_high: fh,
+                forecast_sigma: fh.map(|_| FORECAST_SIGMA),
             });
         }
     }
@@ -269,7 +373,9 @@ fn load_forecasts(markets: &[SimulatedMarket]) -> HashMap<String, HashMap<NaiveD
     let fetcher = OpenMeteoFetcher::new();
     let mut out: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
     for (city, (min_d, max_d)) in ranges {
-        let Some((lat, lon)) = cities::coords(city) else { continue };
+        let Some((lat, lon)) = cities::coords(city) else {
+            continue;
+        };
         let pairs = fetcher.fetch_forecast_max_live(lat, lon, min_d, max_d);
         if !pairs.is_empty() {
             println!("  forecast {city}: {} days", pairs.len());

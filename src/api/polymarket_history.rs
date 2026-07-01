@@ -31,6 +31,13 @@ pub struct WeatherMarketRow {
     pub price: f64,
     /// Realized outcome (1.0 YES / 0.0 NO), or None while the market is unresolved.
     pub outcome: Option<f64>,
+    /// Venue this market came from ("polymarket" / "kalshi").
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "polymarket".to_string()
 }
 
 #[derive(Clone)]
@@ -100,7 +107,10 @@ impl PolymarketHistoryDownloader {
                 match self.fetch_price_history(id, start_date, end_date).await {
                     Ok(h) => h,
                     Err(e) => {
-                        eprintln!("warning: failed to fetch price history for market '{}': {}", title, e);
+                        eprintln!(
+                            "warning: failed to fetch price history for market '{}': {}",
+                            title, e
+                        );
                         Vec::new()
                     }
                 }
@@ -171,7 +181,11 @@ impl PolymarketHistoryDownloader {
         // 2. Top up from the weather-dense closed-market pool, then newest-by-id, to catch anything
         // the tag misses (precipitation/wind markets aren't under the temperature tag).
         let strategies: [&[(&str, &str)]; 2] = [
-            &[("closed", "true"), ("order", "volume"), ("ascending", "false")],
+            &[
+                ("closed", "true"),
+                ("order", "volume"),
+                ("ascending", "false"),
+            ],
             &[("order", "id"), ("ascending", "false")],
         ];
 
@@ -345,6 +359,41 @@ impl PolymarketHistoryDownloader {
         Ok(out)
     }
 
+    /// Resolve outcomes for specific market ids via direct `/markets/<id>` lookups — how the capture
+    /// daemon finalizes its own snapshots. Recently-resolved low-volume weather markets don't surface
+    /// in the bulk closed-market feeds (the `temperature` tag lags by weeks; the volume scan is
+    /// capped), but every market is queryable by id. Rate-limited with a small delay; a non-200, a
+    /// 404, or a still-unresolved market simply contributes nothing.
+    pub async fn fetch_outcomes_for_ids(
+        &self,
+        ids: &[String],
+    ) -> std::collections::HashMap<String, f64> {
+        let mut out = std::collections::HashMap::new();
+        for id in ids {
+            match self.fetch_market_outcome(id).await {
+                Ok(Some(o)) => {
+                    out.insert(id.clone(), o);
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("  direct outcome lookup for {id} failed: {e}"),
+            }
+            // Gamma rate-limits bursts; keep the daily finalize gentle.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        out
+    }
+
+    /// Fetch one market by id and read its resolved outcome (None if unresolved / not found).
+    async fn fetch_market_outcome(&self, id: &str) -> Result<Option<f64>, reqwest::Error> {
+        let url = format!("{}/markets/{}", self.gamma_base_url, id);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let val = resp.json::<Value>().await?;
+        Ok(infer_actual_outcome(&val))
+    }
+
     /// Fetch the market's daily price series (one point per day). The CLOB rejects wide
     /// startTs/endTs spans ("interval too long"), so we ask for `interval=max` (the full traded
     /// history) and keep the OPENING (first) price of each day — the near-settlement price carries
@@ -357,8 +406,14 @@ impl PolymarketHistoryDownloader {
         _end_date: Option<NaiveDate>,
     ) -> Result<Vec<(NaiveDate, f64)>, reqwest::Error> {
         let candidates: [Vec<(&str, String)>; 2] = [
-            vec![("market", token_id.to_string()), ("interval", "max".to_string())],
-            vec![("token_id", token_id.to_string()), ("interval", "max".to_string())],
+            vec![
+                ("market", token_id.to_string()),
+                ("interval", "max".to_string()),
+            ],
+            vec![
+                ("token_id", token_id.to_string()),
+                ("interval", "max".to_string()),
+            ],
         ];
 
         let url = format!("{}/prices-history", self.clob_base_url);
@@ -372,7 +427,8 @@ impl PolymarketHistoryDownloader {
 
             let points = parse_price_history_points(&val); // time-ascending
             if !points.is_empty() {
-                let mut seen: std::collections::HashSet<NaiveDate> = std::collections::HashSet::new();
+                let mut seen: std::collections::HashSet<NaiveDate> =
+                    std::collections::HashSet::new();
                 let mut out = Vec::new();
                 for (d, p) in points {
                     if seen.insert(d) {
@@ -433,12 +489,12 @@ fn parse_price_history_points(v: &Value) -> Vec<(NaiveDate, f64)> {
         .collect()
 }
 
-fn json_str(v: &Value, keys: &[&str]) -> Option<String> {
+pub(crate) fn json_str(v: &Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| s.to_string()))
 }
 
-fn value_as_f64(v: &Value) -> Option<f64> {
+pub(crate) fn value_as_f64(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_i64().map(|x| x as f64))
         .or_else(|| v.as_u64().map(|x| x as f64))
@@ -489,10 +545,7 @@ fn infer_yes_token_id(market: &Value) -> Option<String> {
         }
 
         if let Some(arr) = raw.as_array() {
-            return arr
-                .first()
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            return arr.first().and_then(|v| v.as_str()).map(|s| s.to_string());
         }
     }
 
@@ -500,9 +553,15 @@ fn infer_yes_token_id(market: &Value) -> Option<String> {
 }
 
 fn infer_actual_outcome(market: &Value) -> Option<f64> {
-    let direct = ["resolvedOutcome", "resolution", "winner", "outcome", "result"]
-        .iter()
-        .find_map(|k| market.get(*k));
+    let direct = [
+        "resolvedOutcome",
+        "resolution",
+        "winner",
+        "outcome",
+        "result",
+    ]
+    .iter()
+    .find_map(|k| market.get(*k));
 
     if let Some(v) = direct {
         if let Some(outcome) = parse_binary_outcome(v) {
@@ -563,7 +622,11 @@ fn infer_actual_outcome(market: &Value) -> Option<f64> {
 
 fn parse_str_array(v: &Value) -> Option<Vec<String>> {
     if let Some(arr) = v.as_array() {
-        return Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+        return Some(
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect(),
+        );
     }
     if let Some(s) = v.as_str() {
         if let Ok(arr) = serde_json::from_str::<Vec<String>>(s) {
@@ -641,6 +704,7 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
         city,
         price,
         outcome: infer_actual_outcome(market),
+        source: "polymarket".to_string(),
     })
 }
 
@@ -653,11 +717,17 @@ fn market_target_date(market: &Value) -> Option<NaiveDate> {
 }
 
 fn fallback_market_point(market: &Value) -> Option<(NaiveDate, f64)> {
-    let date = ["endDate", "endDateIso", "closedTime", "resolveTime", "createdAt"]
-        .iter()
-        .find_map(|k| market.get(*k).and_then(|v| v.as_str()))
-        .and_then(parse_date)
-        .unwrap_or_else(|| Utc::now().date_naive());
+    let date = [
+        "endDate",
+        "endDateIso",
+        "closedTime",
+        "resolveTime",
+        "createdAt",
+    ]
+    .iter()
+    .find_map(|k| market.get(*k).and_then(|v| v.as_str()))
+    .and_then(parse_date)
+    .unwrap_or_else(|| Utc::now().date_naive());
 
     let price = market
         .get("yesPrice")
@@ -687,7 +757,7 @@ fn parse_outcome_prices(v: &Value) -> Option<Vec<f64>> {
     None
 }
 
-fn is_weather_like_market(title: &str) -> bool {
+pub(crate) fn is_weather_like_market(title: &str) -> bool {
     let keys = [
         "weather",
         "temperature",
@@ -715,7 +785,7 @@ fn infer_city(title: &str) -> Option<String> {
 ///   "N or higher" -> temp_at_least, "N or below" -> temp_at_most,
 ///   "between A-B" -> temp_bucket(A,B), "be N" -> temp_bucket(N,N).
 /// "lowest temperature" markets are skipped (None) — the model forecasts the high only.
-fn infer_market_type_and_threshold(
+pub(crate) fn infer_market_type_and_threshold(
     title: &str,
 ) -> Option<(String, f64, Option<f64>, Option<String>)> {
     let t = title.to_ascii_lowercase();
@@ -726,7 +796,11 @@ fn infer_market_type_and_threshold(
 
     if t.contains("temp") || t.contains("temperature") || t.contains('°') {
         // The model forecasts the daily high; it cannot price daily-low markets.
-        if t.contains("lowest") || t.contains("coldest") || t.contains("minimum temp") || t.contains("low temp") {
+        if t.contains("lowest")
+            || t.contains("coldest")
+            || t.contains("minimum temp")
+            || t.contains("low temp")
+        {
             return None;
         }
         let unit = detect_temp_unit(&t);
@@ -773,7 +847,11 @@ fn infer_market_type_and_threshold(
         return Some(("wind".to_string(), n, None, None));
     }
 
-    if t.contains("hurricane") || t.contains("storm") || t.contains("tornado") || t.contains("cyclone") {
+    if t.contains("hurricane")
+        || t.contains("storm")
+        || t.contains("tornado")
+        || t.contains("cyclone")
+    {
         return Some(("storm".to_string(), 0.5, None, None));
     }
 
@@ -822,7 +900,8 @@ fn detect_temp_unit(t: &str) -> String {
 fn extract_range(t: &str) -> Option<(f64, f64)> {
     let b = t.as_bytes();
     for i in 1..b.len() {
-        if b[i] == b'-' && b[i - 1].is_ascii_digit() && i + 1 < b.len() && b[i + 1].is_ascii_digit() {
+        if b[i] == b'-' && b[i - 1].is_ascii_digit() && i + 1 < b.len() && b[i + 1].is_ascii_digit()
+        {
             let mut lo = i;
             while lo > 0 && (b[lo - 1].is_ascii_digit() || b[lo - 1] == b'.') {
                 lo -= 1;
@@ -887,7 +966,12 @@ mod tests {
     fn test_infer_market_signature() {
         assert_eq!(
             infer_market_type_and_threshold("Will NYC temperature exceed 90F?"),
-            Some(("temp_at_least".to_string(), 90.0, None, Some("F".to_string())))
+            Some((
+                "temp_at_least".to_string(),
+                90.0,
+                None,
+                Some("F".to_string())
+            ))
         );
         assert_eq!(
             infer_market_type_and_threshold("Will it rain in LA tomorrow?"),
@@ -899,23 +983,51 @@ mod tests {
     fn test_infer_bucket_shapes() {
         // "or higher" -> temp_at_least, degC
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in Manila be 36°C or higher on July 1?"),
-            Some(("temp_at_least".to_string(), 36.0, None, Some("C".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in Manila be 36°C or higher on July 1?"
+            ),
+            Some((
+                "temp_at_least".to_string(),
+                36.0,
+                None,
+                Some("C".to_string())
+            ))
         );
         // "or below" -> temp_at_most, degC
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in Manila be 26°C or below on July 1?"),
-            Some(("temp_at_most".to_string(), 26.0, None, Some("C".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in Manila be 26°C or below on July 1?"
+            ),
+            Some((
+                "temp_at_most".to_string(),
+                26.0,
+                None,
+                Some("C".to_string())
+            ))
         );
         // exact "be N" -> temp_bucket with upper == lower, degC
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in London be 18°C on February 25?"),
-            Some(("temp_bucket".to_string(), 18.0, Some(18.0), Some("C".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in London be 18°C on February 25?"
+            ),
+            Some((
+                "temp_bucket".to_string(),
+                18.0,
+                Some(18.0),
+                Some("C".to_string())
+            ))
         );
         // "between A-B" -> temp_bucket, degF
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in Seattle be between 50-51°F on May 20?"),
-            Some(("temp_bucket".to_string(), 50.0, Some(51.0), Some("F".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in Seattle be between 50-51°F on May 20?"
+            ),
+            Some((
+                "temp_bucket".to_string(),
+                50.0,
+                Some(51.0),
+                Some("F".to_string())
+            ))
         );
     }
 
@@ -923,12 +1035,16 @@ mod tests {
     fn test_lowest_temperature_skipped() {
         // The model forecasts the daily high; low-temperature markets cannot be priced.
         assert_eq!(
-            infer_market_type_and_threshold("Will the lowest temperature in London be 24°C or higher on June 1?"),
+            infer_market_type_and_threshold(
+                "Will the lowest temperature in London be 24°C or higher on June 1?"
+            ),
             None
         );
         // "coldest" is the same daily-low event.
         assert_eq!(
-            infer_market_type_and_threshold("Will the coldest temperature in Denver be 2°C or higher?"),
+            infer_market_type_and_threshold(
+                "Will the coldest temperature in Denver be 2°C or higher?"
+            ),
             None
         );
     }
@@ -937,8 +1053,15 @@ mod tests {
     fn test_negative_range_not_inverted() {
         // "between -5-3" must keep the negative lower bound and order the bounds (was (5,3) -> 0).
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in London be between -5-3°C on Jan 5?"),
-            Some(("temp_bucket".to_string(), -5.0, Some(3.0), Some("C".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in London be between -5-3°C on Jan 5?"
+            ),
+            Some((
+                "temp_bucket".to_string(),
+                -5.0,
+                Some(3.0),
+                Some("C".to_string())
+            ))
         );
         assert_eq!(extract_range("between -5-3"), Some((-5.0, 3.0)));
         assert_eq!(extract_range("between 66-67"), Some((66.0, 67.0)));
@@ -960,8 +1083,15 @@ mod tests {
     fn test_directional_word_collision() {
         // "Dover" contains "over"; must not route to temp_at_least — it's an exact bucket.
         assert_eq!(
-            infer_market_type_and_threshold("Will the highest temperature in Dover be 70°C on May 1?"),
-            Some(("temp_bucket".to_string(), 70.0, Some(70.0), Some("C".to_string())))
+            infer_market_type_and_threshold(
+                "Will the highest temperature in Dover be 70°C on May 1?"
+            ),
+            Some((
+                "temp_bucket".to_string(),
+                70.0,
+                Some(70.0),
+                Some("C".to_string())
+            ))
         );
     }
 
@@ -982,7 +1112,10 @@ mod tests {
         assert_eq!(row.unit.as_deref(), Some("F"));
         assert!((row.price - 0.23).abs() < 1e-9);
         assert_eq!(row.outcome, Some(0.0)); // outcomePrices ["0","1"] -> NO won
-        assert_eq!(row.target_date, NaiveDate::from_ymd_opt(2026, 5, 20).unwrap());
+        assert_eq!(
+            row.target_date,
+            NaiveDate::from_ymd_opt(2026, 5, 20).unwrap()
+        );
 
         // Active market (unresolved) -> outcome None.
         let active = serde_json::json!({
@@ -992,7 +1125,10 @@ mod tests {
         assert_eq!(parse_weather_market_row(&active).unwrap().outcome, None);
 
         // Non-weather -> None.
-        assert!(parse_weather_market_row(&serde_json::json!({"question": "Will BTC hit 100k?"})).is_none());
+        assert!(
+            parse_weather_market_row(&serde_json::json!({"question": "Will BTC hit 100k?"}))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1038,7 +1174,10 @@ mod tests {
     #[test]
     fn test_city_inference_la_start_of_title() {
         // Regression: "LA" at start was previously skipped by " la " pattern.
-        assert_eq!(infer_city("LA temperature above 90F"), Some("LA".to_string()));
+        assert_eq!(
+            infer_city("LA temperature above 90F"),
+            Some("LA".to_string())
+        );
         assert_eq!(infer_city("LA rain this week"), Some("LA".to_string()));
     }
 
@@ -1051,21 +1190,51 @@ mod tests {
     #[test]
     fn test_city_inference_la_no_false_positives() {
         // "la" embedded in another city name must not match as LA.
-        assert_ne!(infer_city("Dallas temperature above 90F"), Some("LA".to_string()));
+        assert_ne!(
+            infer_city("Dallas temperature above 90F"),
+            Some("LA".to_string())
+        );
         assert_ne!(infer_city("Atlanta rain forecast"), Some("LA".to_string()));
     }
 
     #[test]
     fn test_city_inference_expanded() {
-        assert_eq!(infer_city("Seattle rain this week"), Some("Seattle".to_string()));
-        assert_eq!(infer_city("Atlanta temperature forecast"), Some("Atlanta".to_string()));
-        assert_eq!(infer_city("Houston hurricane risk"), Some("Houston".to_string()));
-        assert_eq!(infer_city("Phoenix heat advisory"), Some("Phoenix".to_string()));
-        assert_eq!(infer_city("Portland snow expected"), Some("Portland".to_string()));
-        assert_eq!(infer_city("San Francisco fog prediction"), Some("SF".to_string()));
-        assert_eq!(infer_city("Toronto temperature below freezing"), Some("Toronto".to_string()));
-        assert_eq!(infer_city("Tokyo typhoon season"), Some("Tokyo".to_string()));
-        assert_eq!(infer_city("Sydney rainfall record"), Some("Sydney".to_string()));
+        assert_eq!(
+            infer_city("Seattle rain this week"),
+            Some("Seattle".to_string())
+        );
+        assert_eq!(
+            infer_city("Atlanta temperature forecast"),
+            Some("Atlanta".to_string())
+        );
+        assert_eq!(
+            infer_city("Houston hurricane risk"),
+            Some("Houston".to_string())
+        );
+        assert_eq!(
+            infer_city("Phoenix heat advisory"),
+            Some("Phoenix".to_string())
+        );
+        assert_eq!(
+            infer_city("Portland snow expected"),
+            Some("Portland".to_string())
+        );
+        assert_eq!(
+            infer_city("San Francisco fog prediction"),
+            Some("SF".to_string())
+        );
+        assert_eq!(
+            infer_city("Toronto temperature below freezing"),
+            Some("Toronto".to_string())
+        );
+        assert_eq!(
+            infer_city("Tokyo typhoon season"),
+            Some("Tokyo".to_string())
+        );
+        assert_eq!(
+            infer_city("Sydney rainfall record"),
+            Some("Sydney".to_string())
+        );
     }
 
     #[test]
@@ -1106,11 +1275,21 @@ mod tests {
         // "below N" routes to temp_at_most; negative thresholds are extracted (not the date hyphen).
         assert_eq!(
             infer_market_type_and_threshold("Will temperature drop below -10°C?"),
-            Some(("temp_at_most".to_string(), -10.0, None, Some("C".to_string())))
+            Some((
+                "temp_at_most".to_string(),
+                -10.0,
+                None,
+                Some("C".to_string())
+            ))
         );
         assert_eq!(
             infer_market_type_and_threshold("Temperature below -32F tonight?"),
-            Some(("temp_at_most".to_string(), -32.0, None, Some("F".to_string())))
+            Some((
+                "temp_at_most".to_string(),
+                -32.0,
+                None,
+                Some("F".to_string())
+            ))
         );
     }
 
@@ -1362,7 +1541,10 @@ mod tests {
         assert!(!contains_word("atlanta rain", "la"));
         assert!(!contains_word("philadelphia storm", "la"));
         // Regression: must not panic on multi-byte chars (the '°' degree sign).
-        assert!(!contains_word("highest temperature in panama city be 39°c or higher", "la"));
+        assert!(!contains_word(
+            "highest temperature in panama city be 39°c or higher",
+            "la"
+        ));
         assert!(contains_word("will la reach 39°c", "la"));
     }
 }
