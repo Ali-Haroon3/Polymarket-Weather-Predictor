@@ -49,7 +49,9 @@ pub struct BacktestEngine {
 impl BacktestEngine {
     pub fn new(config: BacktestConfig) -> Self {
         let params = backtest_params();
-        let city_list = config.cities.unwrap_or_else(|| params.cities.keys().map(|k| (*k).to_string()).collect());
+        let city_list = config
+            .cities
+            .unwrap_or_else(|| params.cities.keys().map(|k| (*k).to_string()).collect());
 
         Self {
             cities: city_list,
@@ -77,7 +79,8 @@ impl BacktestEngine {
 
         let weather_data = weather_data_override.unwrap_or_else(|| {
             let fetch_start = start - Duration::days(self.model_lookback_days);
-            self.aggregator.aggregate_multiple(&self.cities, fetch_start, end)
+            self.aggregator
+                .aggregate_multiple(&self.cities, fetch_start, end)
         });
 
         let markets = self.generate_markets(&weather_data);
@@ -142,7 +145,10 @@ impl BacktestEngine {
         )
     }
 
-    fn generate_markets(&mut self, weather_data: &HashMap<String, Vec<WeatherRecord>>) -> Vec<SimulatedMarket> {
+    fn generate_markets(
+        &mut self,
+        weather_data: &HashMap<String, Vec<WeatherRecord>>,
+    ) -> Vec<SimulatedMarket> {
         let mut all = Vec::new();
         for (city, rows) in weather_data {
             let mut city_markets = self.market_sim.generate_markets(rows, city);
@@ -172,7 +178,8 @@ impl BacktestEngine {
         dates.dedup();
 
         for date in dates {
-            let day_markets: Vec<&SimulatedMarket> = sorted.iter().filter(|m| m.date == date).collect();
+            let day_markets: Vec<&SimulatedMarket> =
+                sorted.iter().filter(|m| m.date == date).collect();
 
             for market in day_markets {
                 let Some(city_data) = weather_data.get(&market.city) else {
@@ -205,7 +212,8 @@ impl BacktestEngine {
                     continue;
                 }
 
-                let position_size = self.kelly_position_size(our_estimate, market.market_price, capital);
+                let position_size =
+                    self.kelly_position_size(our_estimate, market.market_price, capital);
                 if position_size < 1.0 {
                     continue;
                 }
@@ -243,32 +251,23 @@ impl BacktestEngine {
         (all_trades, portfolio_values)
     }
 
-    fn get_model_estimate(&self, model: &BayesianWeatherModel, market: &SimulatedMarket) -> Option<f64> {
+    fn get_model_estimate(
+        &self,
+        model: &BayesianWeatherModel,
+        market: &SimulatedMarket,
+    ) -> Option<f64> {
         market_estimate(model, market)
     }
 
-    pub fn kelly_position_size(&self, probability: f64, market_price: f64, available_capital: f64) -> f64 {
-        let kelly = if probability > market_price {
-            let odds = 1.0 / market_price - 1.0;
-            if odds <= 0.0 {
-                0.0
-            } else {
-                (odds * probability - (1.0 - probability)) / odds
-            }
-        } else {
-            let inv_prob = 1.0 - probability;
-            let inv_price = 1.0 - market_price;
-            let odds = 1.0 / inv_price - 1.0;
-            if odds <= 0.0 {
-                0.0
-            } else {
-                (odds * inv_prob - probability) / odds
-            }
-        };
-
-        let kelly = (kelly * self.kelly_fraction).max(0.0);
+    pub fn kelly_position_size(
+        &self,
+        probability: f64,
+        market_price: f64,
+        available_capital: f64,
+    ) -> f64 {
+        let frac = kelly_fraction_of_capital(probability, market_price, self.kelly_fraction);
         let max_pos = available_capital * self.max_position_pct;
-        (kelly * available_capital).min(max_pos)
+        (frac * available_capital).min(max_pos)
     }
 
     fn build_results(
@@ -281,16 +280,26 @@ impl BacktestEngine {
         trades: Vec<TradeRecord>,
         portfolio_values: Vec<f64>,
     ) -> BacktestResults {
-        let metrics = PerformanceAnalyzer::compute_metrics(&trades, &portfolio_values, self.initial_capital);
+        let metrics =
+            PerformanceAnalyzer::compute_metrics(&trades, &portfolio_values, self.initial_capital);
 
         let mut config = HashMap::new();
         config.insert("market_mode".to_string(), market_mode.to_string());
         config.insert("start_date".to_string(), start.to_string());
         config.insert("end_date".to_string(), end.to_string());
         config.insert("cities".to_string(), self.cities.join(","));
-        config.insert("initial_capital".to_string(), self.initial_capital.to_string());
-        config.insert("edge_threshold".to_string(), self.edge_threshold.to_string());
-        config.insert("kelly_fraction".to_string(), self.kelly_fraction.to_string());
+        config.insert(
+            "initial_capital".to_string(),
+            self.initial_capital.to_string(),
+        );
+        config.insert(
+            "edge_threshold".to_string(),
+            self.edge_threshold.to_string(),
+        );
+        config.insert(
+            "kelly_fraction".to_string(),
+            self.kelly_fraction.to_string(),
+        );
         config.insert(
             "model_lookback_days".to_string(),
             self.model_lookback_days.to_string(),
@@ -302,7 +311,11 @@ impl BacktestEngine {
                 let mut sources = rows
                     .iter()
                     .filter_map(|r| r.sources.clone())
-                    .flat_map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>())
+                    .flat_map(|s| {
+                        s.split(',')
+                            .map(|x| x.trim().to_string())
+                            .collect::<Vec<_>>()
+                    })
                     .collect::<Vec<_>>();
                 sources.sort();
                 sources.dedup();
@@ -346,6 +359,32 @@ fn to_celsius(value: f64, unit: &Option<String>) -> f64 {
     }
 }
 
+/// Fractional-Kelly bet size as a fraction of available capital for a binary market, given the
+/// model's `probability`, the traded `market_price`, and the `kelly_fraction` multiplier. Handles
+/// both sides (BUY YES when richer, SELL / BUY NO when cheaper) and never returns negative. The
+/// caller multiplies by capital and applies any max-position cap. Single source of truth for the
+/// Kelly math shared by the backtest sizer and the dashboard's forward-PnL readout.
+pub fn kelly_fraction_of_capital(probability: f64, market_price: f64, kelly_fraction: f64) -> f64 {
+    let kelly = if probability > market_price {
+        let odds = 1.0 / market_price - 1.0;
+        if odds <= 0.0 {
+            0.0
+        } else {
+            (odds * probability - (1.0 - probability)) / odds
+        }
+    } else {
+        let inv_prob = 1.0 - probability;
+        let inv_price = 1.0 - market_price;
+        let odds = 1.0 / inv_price - 1.0;
+        if odds <= 0.0 {
+            0.0
+        } else {
+            (odds * inv_prob - probability) / odds
+        }
+    };
+    (kelly * kelly_fraction).max(0.0)
+}
+
 /// Price one market against a trained model: P(event) clipped to [0.01, 0.99], or None for shapes
 /// the model can't price. The bucket ±0.5 widening is applied in the title's unit, then converted to
 /// °C (the model's unit). The model forecasts the daily HIGH; callers train it before pricing.
@@ -358,7 +397,9 @@ pub fn market_estimate(model: &BayesianWeatherModel, market: &SimulatedMarket) -
     let clip01 = |p: f64| clip(p, PRICE_FLOOR, PRICE_CEIL);
     match market.market_type.as_str() {
         // Legacy exceed market: P(high >= threshold), threshold in °F, no bucket widening.
-        "temperature" => Some(clip01(model.prob_at_least(fahrenheit_to_celsius(market.threshold)))),
+        "temperature" => Some(clip01(
+            model.prob_at_least(fahrenheit_to_celsius(market.threshold)),
+        )),
         "temp_at_least" => {
             let lo = to_celsius(market.threshold - BUCKET_HALF_WIDTH, &market.unit);
             Some(clip01(model.prob_at_least(lo)))
@@ -420,7 +461,13 @@ pub fn evaluate_markets_with_forecast(
     forecasts: &HashMap<String, HashMap<NaiveDate, f64>>,
     forecast_sigma: f64,
 ) -> Vec<MarketEvaluation> {
-    evaluate_markets_inner(markets, weather_data, lookback_days, Some(forecasts), forecast_sigma)
+    evaluate_markets_inner(
+        markets,
+        weather_data,
+        lookback_days,
+        Some(forecasts),
+        forecast_sigma,
+    )
 }
 
 fn evaluate_markets_inner(
