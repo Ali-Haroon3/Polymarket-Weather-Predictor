@@ -34,6 +34,13 @@ pub struct WeatherMarketRow {
     /// Venue this market came from ("polymarket" / "kalshi").
     #[serde(default = "default_source")]
     pub source: String,
+    /// Top of the YES book at fetch time, when the venue exposes it. `price` is the last trade —
+    /// a BUY actually fills at the ask and a SELL at the bid, so these are what an executable-edge
+    /// readout needs. None ⇒ venue didn't report that side (empty book / legacy row).
+    #[serde(default)]
+    pub best_bid: Option<f64>,
+    #[serde(default)]
+    pub best_ask: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -685,6 +692,13 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
         .and_then(value_as_f64)
         .unwrap_or(0.5)
         .clamp(0.0, 1.0);
+    // Top of book straight from gamma; only in-range quotes count (0/1 = empty side).
+    let book_side = |key: &str| {
+        market
+            .get(key)
+            .and_then(value_as_f64)
+            .filter(|p| *p > 0.0 && *p < 1.0)
+    };
     Some(WeatherMarketRow {
         target_date,
         market_id,
@@ -697,6 +711,8 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
         price,
         outcome: infer_actual_outcome(market),
         source: "polymarket".to_string(),
+        best_bid: book_side("bestBid"),
+        best_ask: book_side("bestAsk"),
     })
 }
 
@@ -753,6 +769,10 @@ pub(crate) fn is_weather_like_market(title: &str) -> bool {
     let keys = [
         "weather",
         "temperature",
+        // Kalshi titles the daily series "high temp in NYC" / "max temp" — no "temperature".
+        "high temp",
+        "max temp",
+        "maximum temp",
         "rain",
         "precip",
         "snow",

@@ -1,11 +1,14 @@
 //! Kalshi weather-market downloader — the venue-B analog of [`super::polymarket_history`].
 //!
 //! Fetches Kalshi temperature/weather markets and maps them into the same [`WeatherMarketRow`] the
-//! capture daemon already consumes, so both venues flow through one pipeline. Defaults to Kalshi's
-//! DEMO/paper environment (`config::kalshi_base_url`). Kalshi's trade API has no anonymous access, so
-//! every request is signed with an RSA-PSS(SHA-256) signature over `timestamp + method + path`;
-//! without credentials the downloader reports `is_available() == false` and is silently skipped, the
-//! same graceful-degradation contract the API-keyed weather fetchers use.
+//! capture daemon already consumes, so both venues flow through one pipeline.
+//!
+//! MARKET DATA (all this module fetches) is anonymous: Kalshi's production market-data endpoints
+//! (`config::kalshi_public_base_url`, api.elections.kalshi.com) serve GET /markets without auth, and
+//! real production prices are what forward calibration needs — signed DEMO-env fetches would fill
+//! captures with paper prices. The RSA-PSS(SHA-256) signing support (`timestamp + method + path`)
+//! is kept for the credentialed trade endpoints (`config::kalshi_base_url`, orders/portfolio) that
+//! live trading will need; set `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`/`_PEM` for those.
 
 use std::collections::HashSet;
 
@@ -28,6 +31,27 @@ use crate::utils::parse_date;
 
 /// Path prefix that is part of the signed message (host lives in `base_url`).
 const API_PREFIX: &str = "/trade-api/v2";
+
+/// Daily high-temperature series to scan. An untargeted `/markets?status=open` scan never reaches
+/// them (thousands of non-weather markets come first), so fetching is per-series. These are the
+/// series whose settlement stations are verified in `stations::KALSHI_STATIONS`.
+const WEATHER_SERIES: &[&str] = &[
+    "KXHIGHNY",
+    "KXHIGHCHI",
+    "KXHIGHAUS",
+    "KXHIGHDEN",
+    "KXHIGHLAX",
+    "KXHIGHMIA",
+    "KXHIGHPHIL",
+    "KXHIGHTDAL",
+    "KXHIGHTSEA",
+    "KXHIGHTATL",
+    "KXHIGHTBOS",
+    "KXHIGHTPHX",
+    "KXHIGHTLV",
+    "KXHIGHTDC",
+    "KXHIGHTHOU",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum KalshiHistoryError {
@@ -96,7 +120,7 @@ impl Default for KalshiHistoryDownloader {
 impl KalshiHistoryDownloader {
     pub fn new() -> Self {
         Self {
-            base_url: config::kalshi_base_url(),
+            base_url: config::kalshi_public_base_url(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(20))
                 .build()
@@ -105,43 +129,117 @@ impl KalshiHistoryDownloader {
         }
     }
 
-    /// Whether Kalshi credentials are configured. The capture daemon checks this before fetching so
-    /// an unconfigured Kalshi never errors the run — it's simply absent, like an unset weather API key.
+    /// Market data is anonymous on Kalshi's public production API, so this downloader is always
+    /// available. (Credentials — `has_trade_auth` — are only needed for the trade endpoints.)
     pub fn is_available(&self) -> bool {
+        true
+    }
+
+    /// Whether signing credentials for the credentialed trade endpoints are configured.
+    pub fn has_trade_auth(&self) -> bool {
         self.auth.is_some()
     }
 
     /// Weather markets for the requested side: `active` ⇒ open/unresolved, else settled/resolved.
-    /// Returns an empty vec (never an error) when credentials aren't configured.
+    ///
+    /// The anonymous market list NULLS the price fields (`last_price`/`yes_bid`/`yes_ask`), but the
+    /// per-market ORDERBOOK is public — so for active markets the book is fetched per ticker, the
+    /// top of book fills `best_bid`/`best_ask`, and the mid replaces the 0.50 no-trade fallback.
     pub async fn download_weather_markets(
         &self,
         active: bool,
         limit: usize,
     ) -> Result<Vec<WeatherMarketRow>, KalshiHistoryError> {
         let status = if active { "open" } else { "settled" };
-        let raw = self.fetch_markets(status, limit).await?;
-
         let mut out: Vec<WeatherMarketRow> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        for m in &raw {
-            if let Some(row) = parse_kalshi_market(m) {
-                if active == row.outcome.is_none() && seen.insert(row.market_id.clone()) {
-                    out.push(row);
+        for series in WEATHER_SERIES {
+            if out.len() >= limit {
+                break;
+            }
+            let raw = self
+                .fetch_markets(series, status, limit - out.len())
+                .await?;
+            for m in &raw {
+                if let Some(mut row) = parse_kalshi_market(m) {
+                    if active == row.outcome.is_none() && seen.insert(row.market_id.clone()) {
+                        if active {
+                            let (bid, ask) = self.fetch_top_of_book(&row.market_id).await;
+                            row.best_bid = bid;
+                            row.best_ask = ask;
+                            let no_last = m
+                                .get("last_price")
+                                .and_then(value_as_f64)
+                                .filter(|&c| c > 0.0)
+                                .is_none();
+                            if no_last {
+                                if let (Some(b), Some(a)) = (bid, ask) {
+                                    row.price = (b + a) / 2.0;
+                                }
+                            }
+                            // gentle on the public API: ~10 req/s
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        out.push(row);
+                    }
                 }
             }
         }
         Ok(out)
     }
 
-    /// Cursor-paginate `GET /markets?status=<status>` up to `limit` raw markets.
+    /// Best (YES bid, YES ask) in [0,1] from the public per-market orderbook. Kalshi books rest
+    /// YES buys and NO buys: best YES ask = 1 − best NO bid. Either side may be empty; any fetch
+    /// or parse failure is just (None, None).
+    async fn fetch_top_of_book(&self, ticker: &str) -> (Option<f64>, Option<f64>) {
+        let url = format!("{}{API_PREFIX}/markets/{ticker}/orderbook", self.base_url);
+        let Ok(resp) = self.client.get(&url).send().await else {
+            return (None, None);
+        };
+        let Ok(val) = resp.json::<Value>().await else {
+            return (None, None);
+        };
+        // "orderbook_fp": {"yes_dollars": [["0.0100","751.00"],...], "no_dollars": [...]} — dollar
+        // strings; the legacy "orderbook" variant uses integer-cent pairs. Handle both.
+        let best = |levels: Option<&Value>, cents: bool| -> Option<f64> {
+            levels?
+                .as_array()?
+                .iter()
+                .filter_map(|lvl| {
+                    let p = lvl.get(0)?;
+                    let x = p
+                        .as_f64()
+                        .or_else(|| p.as_str().and_then(|s| s.parse::<f64>().ok()))?;
+                    Some(if cents { x / 100.0 } else { x })
+                })
+                .fold(None, |acc: Option<f64>, v| {
+                    Some(acc.map_or(v, |a| a.max(v)))
+                })
+        };
+        let (yes_best, no_best) = if let Some(fp) = val.get("orderbook_fp") {
+            (
+                best(fp.get("yes_dollars"), false),
+                best(fp.get("no_dollars"), false),
+            )
+        } else if let Some(ob) = val.get("orderbook") {
+            (best(ob.get("yes"), true), best(ob.get("no"), true))
+        } else {
+            (None, None)
+        };
+        let in_range = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+        (
+            yes_best.and_then(in_range),
+            no_best.map(|n| 1.0 - n).and_then(in_range),
+        )
+    }
+
+    /// Cursor-paginate `GET /markets?series_ticker=<series>&status=<status>` up to `limit` rows.
     async fn fetch_markets(
         &self,
+        series: &str,
         status: &str,
         limit: usize,
     ) -> Result<Vec<Value>, KalshiHistoryError> {
-        let Some(auth) = &self.auth else {
-            return Ok(Vec::new()); // no creds → silently absent
-        };
         let path = format!("{API_PREFIX}/markets");
         let url = format!("{}{path}", self.base_url);
 
@@ -153,15 +251,26 @@ impl KalshiHistoryDownloader {
             }
             let mut query: Vec<(&str, String)> = vec![
                 ("limit", "1000".to_string()),
+                ("series_ticker", series.to_string()),
                 ("status", status.to_string()),
             ];
+            if status == "settled" {
+                // Only recent resolutions matter (finalizing our own snapshots); each series
+                // accrues hundreds of settled strikes per season.
+                let since = Utc::now().timestamp() - 14 * 24 * 3600;
+                query.push(("min_close_ts", since.to_string()));
+            }
             if let Some(c) = &cursor {
                 query.push(("cursor", c.clone()));
             }
 
+            // Anonymous GET — the public host serves market data unauthenticated. Signed headers
+            // are still attached when creds exist (harmless there, required on the trade host).
             let mut req = self.client.get(&url).query(&query);
-            for (k, v) in auth.headers("GET", &path) {
-                req = req.header(k, v);
+            if let Some(auth) = &self.auth {
+                for (k, v) in auth.headers("GET", &path) {
+                    req = req.header(k, v);
+                }
             }
             let val = req.send().await?.json::<Value>().await?;
 
@@ -214,22 +323,36 @@ fn parse_kalshi_market(m: &Value) -> Option<WeatherMarketRow> {
         price: kalshi_price(m),
         outcome: kalshi_outcome(m),
         source: "kalshi".to_string(),
+        best_bid: kalshi_cents(m, "yes_bid"),
+        best_ask: kalshi_cents(m, "yes_ask"),
     })
+}
+
+/// One side of the YES book, cents → [0,1]. 0 (or 100 for the ask) means the side is empty.
+fn kalshi_cents(m: &Value, key: &str) -> Option<f64> {
+    m.get(key)
+        .and_then(value_as_f64)
+        .filter(|&c| c > 0.0 && c < 100.0)
+        .map(|c| c / 100.0)
 }
 
 /// Bucket shape from Kalshi's structured strikes (US temperature markets are in °F). None when the
 /// market has no usable strikes, so the caller can fall back to the shared title parser.
+///
+/// Kalshi's `greater`/`less` are STRICT: floor_strike 105 titled "106° or above" resolves YES iff
+/// the integer CLI high ≥ 106, and cap_strike 98 titled "97° or below" iff ≤ 97 — so strict shapes
+/// shift by one whole degree to the inclusive threshold our `temp_at_least`/`temp_at_most` mean.
+/// `between` floor/cap are already the inclusive integer bucket ends ("98° to 99°" ⇒ [98, 99]).
+/// Verified against 6,030 settled markets (100% consistent with NWS CLI highs).
 fn strike_shape(m: &Value) -> Option<(String, f64, Option<f64>, Option<String>)> {
     let floor = m.get("floor_strike").and_then(value_as_f64);
     let cap = m.get("cap_strike").and_then(value_as_f64);
     let unit = Some("F".to_string());
     match json_str(m, &["strike_type"]).as_deref() {
-        Some("greater") | Some("greater_or_equal") => {
-            Some(("temp_at_least".to_string(), floor?, None, unit))
-        }
-        Some("less") | Some("less_or_equal") => {
-            Some(("temp_at_most".to_string(), cap.or(floor)?, None, unit))
-        }
+        Some("greater") => Some(("temp_at_least".to_string(), floor? + 1.0, None, unit)),
+        Some("greater_or_equal") => Some(("temp_at_least".to_string(), floor?, None, unit)),
+        Some("less") => Some(("temp_at_most".to_string(), cap.or(floor)? - 1.0, None, unit)),
+        Some("less_or_equal") => Some(("temp_at_most".to_string(), cap.or(floor)?, None, unit)),
         Some("between") => Some(("temp_bucket".to_string(), floor?, Some(cap?), unit)),
         _ => None,
     }
@@ -260,12 +383,45 @@ fn kalshi_outcome(m: &Value) -> Option<f64> {
     }
 }
 
-/// The day the market resolves (≈ the target day whose high it's about).
+/// The day the market is ABOUT. The ticker embeds it (`KXHIGHNY-26JUL04-B98.5` ⇒ 2026-07-04);
+/// close/expiration times are the morning AFTER the target day, so parsing those (the old
+/// behavior, kept only as a fallback) put every Kalshi market one day late.
 fn kalshi_target_date(m: &Value) -> Option<NaiveDate> {
-    ["close_time", "expiration_time", "expected_expiration_time"]
-        .iter()
-        .find_map(|k| m.get(*k).and_then(|v| v.as_str()))
-        .and_then(parse_date)
+    json_str(m, &["ticker"])
+        .as_deref()
+        .and_then(ticker_date)
+        .or_else(|| {
+            ["close_time", "expiration_time", "expected_expiration_time"]
+                .iter()
+                .find_map(|k| m.get(*k).and_then(|v| v.as_str()))
+                .and_then(parse_date)
+        })
+}
+
+/// Parse the `YYMMMDD` segment of a Kalshi event/market ticker (`KXHIGHNY-26JUL04-…`).
+fn ticker_date(ticker: &str) -> Option<NaiveDate> {
+    let seg = ticker.split('-').nth(1)?;
+    if seg.len() != 7 || !seg.is_char_boundary(2) {
+        return None;
+    }
+    let yy: i32 = seg[0..2].parse().ok()?;
+    let month = match &seg[2..5] {
+        "JAN" => 1,
+        "FEB" => 2,
+        "MAR" => 3,
+        "APR" => 4,
+        "MAY" => 5,
+        "JUN" => 6,
+        "JUL" => 7,
+        "AUG" => 8,
+        "SEP" => 9,
+        "OCT" => 10,
+        "NOV" => 11,
+        "DEC" => 12,
+        _ => return None,
+    };
+    let dd: u32 = seg[5..7].parse().ok()?;
+    NaiveDate::from_ymd_opt(2000 + yy, month, dd)
 }
 
 #[cfg(test)]
@@ -309,9 +465,9 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
     #[test]
     fn parses_between_bucket_active() {
         let row = parse_kalshi_market(&market(
-            r#"{"ticker":"KXHIGHCHI-25JUN30-B71","title":"Highest temperature in Chicago",
+            r#"{"ticker":"KXHIGHCHI-26JUN30-B71.5","title":"Highest temperature in Chicago",
                 "yes_sub_title":"71° to 72°","strike_type":"between","floor_strike":71,"cap_strike":72,
-                "last_price":34,"result":"","close_time":"2026-06-30T23:00:00Z"}"#,
+                "last_price":34,"yes_bid":30,"yes_ask":37,"result":"","close_time":"2026-07-01T04:59:00Z"}"#,
         ))
         .expect("should parse");
         assert_eq!(row.source, "kalshi");
@@ -321,7 +477,10 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
         assert_eq!(row.threshold_upper, Some(72.0));
         assert_eq!(row.unit.as_deref(), Some("F"));
         assert!((row.price - 0.34).abs() < 1e-9, "cents → 0..1");
+        assert_eq!(row.best_bid, Some(0.30));
+        assert_eq!(row.best_ask, Some(0.37));
         assert_eq!(row.outcome, None);
+        // Target day comes from the TICKER; close_time is the morning after (would be off by one).
         assert_eq!(
             row.target_date,
             NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()
@@ -330,18 +489,42 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
 
     #[test]
     fn parses_greater_settled_yes() {
+        // Kalshi 'greater' is strict: floor 90 is titled "91° or above" ⇒ inclusive threshold 91.
         let row = parse_kalshi_market(&market(
-            r#"{"ticker":"KXHIGHMIA-25JUN29-T90","title":"High temperature in Miami",
-                "yes_sub_title":"90° or above","strike_type":"greater","floor_strike":90,
-                "yes_bid":0,"yes_ask":0,"result":"yes","close_time":"2026-06-29T23:00:00Z"}"#,
+            r#"{"ticker":"KXHIGHMIA-26JUN29-T90","title":"High temperature in Miami",
+                "yes_sub_title":"91° or above","strike_type":"greater","floor_strike":90,
+                "yes_bid":0,"yes_ask":0,"result":"yes","close_time":"2026-06-30T04:59:00Z"}"#,
         ))
         .expect("should parse");
         assert_eq!(row.market_type, "temp_at_least");
-        assert_eq!(row.threshold, 90.0);
+        assert_eq!(row.threshold, 91.0);
         assert_eq!(row.outcome, Some(1.0));
         assert!(
             (row.price - 0.50).abs() < 1e-9,
             "no trade / no book → 0.50 fallback"
+        );
+        assert_eq!(row.best_bid, None, "0-cent bid = empty side");
+        assert_eq!(row.best_ask, None);
+        assert_eq!(
+            row.target_date,
+            NaiveDate::from_ymd_opt(2026, 6, 29).unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_less_as_strict() {
+        // 'less' cap 98 is titled "97° or below" ⇒ inclusive temp_at_most threshold 97.
+        let row = parse_kalshi_market(&market(
+            r#"{"ticker":"KXHIGHNY-26JUL04-T98","title":"High temp in NYC",
+                "yes_sub_title":"97° or below","strike_type":"less","cap_strike":98,
+                "last_price":12,"result":"","close_time":"2026-07-05T04:59:00Z"}"#,
+        ))
+        .expect("should parse");
+        assert_eq!(row.market_type, "temp_at_most");
+        assert_eq!(row.threshold, 97.0);
+        assert_eq!(
+            row.target_date,
+            NaiveDate::from_ymd_opt(2026, 7, 4).unwrap()
         );
     }
 

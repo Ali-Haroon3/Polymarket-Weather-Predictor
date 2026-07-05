@@ -6,7 +6,9 @@ use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::data_pipeline::station_obs::{
     forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, Phase,
 };
-use polymarket_weather_predictor::stations::{station_for, Station, POST_SIGMA, STATIONS};
+use polymarket_weather_predictor::stations::{
+    station_for, Station, KALSHI_STATIONS, POST_SIGMA, STATIONS,
+};
 
 fn dt(s: &str) -> NaiveDateTime {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
@@ -17,13 +19,14 @@ fn d(s: &str) -> NaiveDate {
 }
 
 fn station(city: &str) -> &'static Station {
-    station_for(city).unwrap()
+    station_for(city, "polymarket").unwrap()
 }
 
 #[test]
 fn table_is_sane_and_cities_are_canonical() {
     assert!(!STATIONS.is_empty());
-    for s in STATIONS {
+    assert!(!KALSHI_STATIONS.is_empty());
+    for s in STATIONS.iter().chain(KALSHI_STATIONS) {
         assert!(
             cities::CITIES.iter().any(|c| c.key == s.city),
             "{} not a canonical city key",
@@ -34,10 +37,24 @@ fn table_is_sane_and_cities_are_canonical() {
             assert!(s.bias[k].abs() < 3.0, "{} bias[{k}] implausible", s.city);
         }
         assert!((-12..=14).contains(&s.utc_offset_hours));
+        assert!(s.post_sigma > 0.0);
     }
-    assert!(station_for("Denver").unwrap().iem_id == "BKF"); // Buckley SFB, not KDEN
-    assert!(station_for("London").unwrap().iem_id == "EGLC"); // City Airport, not Heathrow
-    assert!(station_for("Phoenix").is_none()); // unmapped city -> legacy path
+    assert!(station_for("Denver", "polymarket").unwrap().iem_id == "BKF"); // Buckley SFB, not KDEN
+    assert!(station_for("London", "polymarket").unwrap().iem_id == "EGLC"); // City Airport, not Heathrow
+    assert!(station_for("Phoenix", "polymarket").is_none()); // unmapped for this venue -> legacy path
+
+    // The venues settle the SAME city on different stations — routing by source is load-bearing.
+    assert_eq!(station_for("Denver", "kalshi").unwrap().iem_id, "DEN");
+    assert_eq!(station_for("Dallas", "kalshi").unwrap().iem_id, "DFW"); // Polymarket: DAL
+    assert_eq!(station_for("NYC", "kalshi").unwrap().iem_id, "NYC"); // Central Park, not LGA
+    assert_eq!(station_for("Houston", "kalshi").unwrap().iem_id, "HOU"); // Hobby, not IAH
+    assert!(station_for("Phoenix", "kalshi").is_some());
+    assert!(station_for("Tokyo", "kalshi").is_none());
+    assert!(station_for("Denver", "unknown-venue").is_none());
+
+    // Kalshi post-phase is the fitted CLI-vs-ob-max gap, not deterministic.
+    let kden = station_for("Denver", "kalshi").unwrap();
+    assert!(kden.post_bias > 0.0 && kden.post_sigma > POST_SIGMA);
 }
 
 #[test]
@@ -116,7 +133,11 @@ fn nowcast_fuses_obs_and_forecast_per_phase() {
     // Post: obs max is the answer, at POST_SIGMA.
     assert_eq!(
         nowcast_mu_sigma(denver, Phase::Post, Some(31.0), None),
-        Some((31.0, POST_SIGMA))
+        Some((31.0 + denver.post_bias, denver.post_sigma))
+    );
+    assert!(
+        (denver.post_sigma - POST_SIGMA).abs() < 1e-9,
+        "polymarket post is the WU ob-max"
     );
     assert_eq!(nowcast_mu_sigma(denver, Phase::Post, None, None), None);
 

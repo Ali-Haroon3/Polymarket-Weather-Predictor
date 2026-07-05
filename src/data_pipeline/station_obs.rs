@@ -10,7 +10,7 @@
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 
-use crate::stations::{Station, FAR_SIGMA, POST_SIGMA};
+use crate::stations::{Station, FAR_SIGMA};
 
 /// Where the capture instant falls relative to the market's target LOCAL day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,9 @@ pub fn nowcast_mu_sigma(
     rest_c: Option<f64>,
 ) -> Option<(f64, f64)> {
     match phase {
-        Phase::Post => runmax_c.map(|m| (m, POST_SIGMA)),
+        // Post-phase truth differs by venue: WU (Polymarket) IS the ob-max (bias 0, tiny sigma);
+        // Kalshi's CLI reads the continuous sensor, so its fitted ob-max gap applies here.
+        Phase::Post => runmax_c.map(|m| (m + station.post_bias, station.post_sigma)),
         Phase::DayOf => {
             let mu = match (runmax_c, rest_c) {
                 (Some(a), Some(b)) => a.max(b),
@@ -129,50 +131,52 @@ impl IemObsFetcher {
         }
     }
 
+    /// One `obhistory.json` call per UTC date — unlike the bulk asos.py archive (which lags a day
+    /// or more at some stations), this endpoint is near-real-time, which the day-of running max
+    /// depends on. A failed date contributes nothing.
     pub fn fetch_tmpf_utc(
         &self,
         station: &Station,
         start: NaiveDate,
         end: NaiveDate,
     ) -> Vec<(NaiveDateTime, f64)> {
-        let end_excl = end + Duration::days(1);
-        let query = [
-            ("station", station.iem_id.to_string()),
-            ("network", station.iem_network.to_string()),
-            ("data", "tmpf".to_string()),
-            ("year1", start.format("%Y").to_string()),
-            ("month1", start.format("%m").to_string()),
-            ("day1", start.format("%d").to_string()),
-            ("year2", end_excl.format("%Y").to_string()),
-            ("month2", end_excl.format("%m").to_string()),
-            ("day2", end_excl.format("%d").to_string()),
-            ("tz", "Etc/UTC".to_string()),
-            ("format", "onlycomma".to_string()),
-            ("latlon", "no".to_string()),
-            ("missing", "empty".to_string()),
-            ("trace", "empty".to_string()),
-        ];
-        let Ok(resp) = self
-            .client
-            .get("https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py")
-            .query(&query)
-            .send()
-        else {
-            return Vec::new();
-        };
-        let Ok(text) = resp.text() else {
-            return Vec::new();
-        };
-        text.lines()
-            .skip(1) // header: station,valid,tmpf
-            .filter_map(|line| {
-                let mut cols = line.split(',');
-                let (_, valid, tmpf) = (cols.next()?, cols.next()?, cols.next()?);
-                let t = NaiveDateTime::parse_from_str(valid.trim(), "%Y-%m-%d %H:%M").ok()?;
-                let f: f64 = tmpf.trim().parse().ok()?;
-                Some((t, f))
-            })
-            .collect()
+        let mut out = Vec::new();
+        let mut d = start;
+        while d <= end {
+            let query = [
+                ("station", station.iem_id.to_string()),
+                ("network", station.iem_network.to_string()),
+                ("date", d.to_string()),
+            ];
+            if let Ok(resp) = self
+                .client
+                .get("https://mesonet.agron.iastate.edu/api/1/obhistory.json")
+                .query(&query)
+                .send()
+            {
+                if let Ok(json) = resp.json::<serde_json::Value>() {
+                    for row in json
+                        .get("data")
+                        .and_then(|v| v.as_array())
+                        .unwrap_or(&Vec::new())
+                    {
+                        let Some(ts) = row.get("utc_valid").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let Ok(t) = NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%MZ")
+                            .or_else(|_| NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%SZ"))
+                        else {
+                            continue;
+                        };
+                        if let Some(f) = row.get("tmpf").and_then(|v| v.as_f64()) {
+                            out.push((t, f));
+                        }
+                    }
+                }
+            }
+            d += Duration::days(1);
+        }
+        out
     }
 }
 

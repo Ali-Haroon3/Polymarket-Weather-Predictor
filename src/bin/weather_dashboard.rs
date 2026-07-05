@@ -322,40 +322,52 @@ struct Trade {
     equity: f64, // bankroll after booking this trade
 }
 
-/// Decide a trade from one capture's (model estimate, entry price): the side and the fractional-Kelly
-/// stake as a fraction of capital. `None` when the price isn't tradable, the edge is too thin, or Kelly
-/// says don't bet. Shared by settled PnL and the open-book preview so both size positions identically.
+/// Decide a trade from one capture's model estimate and EXECUTABLE prices: a BUY fills at the ask,
+/// a SELL at the bid — the last trade (`entry_price`) is only the fallback when the venue reported
+/// no book (legacy rows). Returns (side, fractional-Kelly stake fraction, executable price); `None`
+/// when nothing is tradable, the edge net of spread is too thin, or Kelly says don't bet. Shared by
+/// settled PnL and the open-book preview so both size positions identically.
 fn decide(
     est: f64,
-    price: f64,
+    entry_price: f64,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
     market_type: &str,
     lead: i64,
     p: &StrategyParams,
-) -> Option<(&'static str, f64)> {
-    if price <= 0.0 || price >= 1.0 {
-        return None; // fabricated / resolved price, not a real entry
-    }
+) -> Option<(&'static str, f64, f64)> {
     if lead == 0 && !p.trade_day_of {
         return None; // day-of: the market's intraday information set beats ours (see StrategyParams)
     }
-    let edge = est - price;
-    if edge.abs() < p.edge_threshold {
+    let tradable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    let fallback = tradable(entry_price);
+    let buy_px = best_ask.and_then(tradable).or(fallback);
+    let sell_px = best_bid.and_then(tradable).or(fallback);
+
+    // Edge per side at its own executable price; take the better one.
+    let edge_buy = buy_px.map(|px| est - px).unwrap_or(f64::NEG_INFINITY);
+    let edge_sell = sell_px.map(|px| px - est).unwrap_or(f64::NEG_INFINITY);
+    let (side, edge, px) = if edge_buy >= edge_sell {
+        ("BUY", edge_buy, buy_px?)
+    } else {
+        ("SELL", edge_sell, sell_px?)
+    };
+    if edge < p.edge_threshold {
         return None;
     }
     if let Some(cap) = p.max_edge {
-        if edge.abs() > cap {
+        if edge > cap {
             return None; // oversized edge = model miscalibration, not opportunity
         }
     }
-    let side = if edge > 0.0 { "BUY" } else { "SELL" };
     if p.no_sell_buckets && side == "SELL" && market_type == "temp_bucket" {
         return None;
     }
-    let frac = kelly_fraction_of_capital(est, price, p.kelly_fraction);
+    let frac = kelly_fraction_of_capital(est, px, p.kelly_fraction);
     if frac <= 0.0 {
         return None;
     }
-    Some((side, frac))
+    Some((side, frac, px))
 }
 
 /// Cap the Kelly fraction to `max_position_pct` of capital and return the dollar stake.
@@ -378,7 +390,15 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     for c in settled {
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
-        let Some((side, frac)) = decide(est, c.entry_price, &c.market_type, c.lead(), p) else {
+        let Some((side, frac, px)) = decide(
+            est,
+            c.entry_price,
+            c.best_bid,
+            c.best_ask,
+            &c.market_type,
+            c.lead(),
+            p,
+        ) else {
             continue;
         };
         let stake = stake_dollars(frac, equity, p);
@@ -386,9 +406,9 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             continue;
         }
         let pnl = if side == "BUY" {
-            stake * (outcome - c.entry_price)
+            stake * (outcome - px)
         } else {
-            stake * (c.entry_price - outcome)
+            stake * (px - outcome)
         };
         equity += pnl;
         trades.push(Trade {
@@ -404,7 +424,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
                 c.unit.as_deref(),
             ),
             side,
-            price: c.entry_price,
+            price: px,
             est,
             stake,
             pnl,
@@ -473,6 +493,10 @@ struct Capture {
     outcome: Option<f64>,
     #[serde(default = "default_source")]
     source: String,
+    #[serde(default)]
+    best_bid: Option<f64>,
+    #[serde(default)]
+    best_ask: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -689,7 +713,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         }
     };
     s.push_str(&format!(
-        "<p class=\"muted\">Rule: trade when |model − price| ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of bankroll), compound a ${:.0} bankroll. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code>.</p>",
+        "<p class=\"muted\">Rule: trade when the edge at the EXECUTABLE price (BUY fills at the ask, SELL at the bid; last trade only when no book was captured) ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of bankroll), compound a ${:.0} bankroll. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code>.</p>",
         sp.edge_threshold * 100.0,
         sp.kelly_fraction,
         sp.max_position_pct * 100.0,
@@ -848,14 +872,22 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         s.push_str("</tbody></table>");
     }
 
-    // ── open book: positions the strategy would take today ───────────────────
-    let mut open: Vec<(&Capture, &'static str, f64)> = captures
+    // ── open book: positions the strategy would take today, at executable prices ──
+    let mut open: Vec<(&Capture, &'static str, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
         .filter_map(|c| {
             let est = c.model_estimate?;
-            let (side, frac) = decide(est, c.entry_price, &c.market_type, c.lead(), sp)?;
-            Some((c, side, stake_dollars(frac, sp.bankroll, sp)))
+            let (side, frac, px) = decide(
+                est,
+                c.entry_price,
+                c.best_bid,
+                c.best_ask,
+                &c.market_type,
+                c.lead(),
+                sp,
+            )?;
+            Some((c, side, stake_dollars(frac, sp.bankroll, sp), px))
         })
         .collect();
     open.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -866,11 +898,11 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // signals — a real read on the params, not double-counting. ponytail: no portfolio Kelly here.
     let downside: f64 = open
         .iter()
-        .map(|(c, side, st)| {
+        .map(|(_, side, st, px)| {
             if *side == "BUY" {
-                st * c.entry_price
+                st * px
             } else {
-                st * (1.0 - c.entry_price)
+                st * (1.0 - px)
             }
         })
         .sum();
@@ -882,14 +914,19 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     if open.is_empty() {
         s.push_str("<p class=\"muted\">No open captures clear the edge threshold right now.</p>");
     } else {
-        s.push_str("<table><thead><tr><th>Resolves</th><th>Venue</th><th>City</th><th>Bucket</th><th>Price</th><th>Model</th><th>Edge</th><th>Side</th><th>Stake</th></tr></thead><tbody>");
-        for (c, side, stake) in open.iter().take(25) {
+        s.push_str("<table><thead><tr><th>Resolves</th><th>Venue</th><th>City</th><th>Bucket</th><th>Bid / Ask</th><th>Fill</th><th>Model</th><th>Edge</th><th>Side</th><th>Stake</th></tr></thead><tbody>");
+        for (c, side, stake, px) in open.iter().take(25) {
             let est = c.model_estimate.unwrap();
-            let edge = est - c.entry_price;
+            let edge = est - px;
             let scls = if *side == "BUY" { "yes" } else { "miss" };
+            let ba = format!(
+                "{} / {}",
+                c.best_bid.map_or("—".into(), |b| format!("{b:.3}")),
+                c.best_ask.map_or("—".into(), |a| format!("{a:.3}")),
+            );
             s.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:+.3}</td><td class=\"{}\">{}</td><td>${:.0}</td></tr>",
-                c.target_date, esc(&c.source), esc(&c.city), esc(&label(&c.market_type, c.threshold, c.threshold_upper, c.unit.as_deref())), c.entry_price, est, edge, scls, side, stake
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:+.3}</td><td class=\"{}\">{}</td><td>${:.0}</td></tr>",
+                c.target_date, esc(&c.source), esc(&c.city), esc(&label(&c.market_type, c.threshold, c.threshold_upper, c.unit.as_deref())), ba, px, est, edge, scls, side, stake
             ));
         }
         s.push_str("</tbody></table>");
@@ -1233,7 +1270,20 @@ mod tests {
             model_estimate: est,
             outcome,
             source: "polymarket".into(),
+            best_bid: None,
+            best_ask: None,
         }
+    }
+
+    /// decide() with no book — executable price falls back to the entry price.
+    fn decide_nb(
+        est: f64,
+        price: f64,
+        mt: &str,
+        lead: i64,
+        p: &StrategyParams,
+    ) -> Option<(&'static str, f64, f64)> {
+        decide(est, price, None, None, mt, lead, p)
     }
 
     fn params() -> StrategyParams {
@@ -1282,28 +1332,46 @@ mod tests {
     fn decide_filters_thin_edges_and_untradable_prices() {
         let sp = params();
         let mt = "temp_bucket";
-        assert!(decide(0.60, 0.40, mt, 1, &sp).is_some_and(|(side, _)| side == "BUY"));
-        assert!(decide(0.20, 0.50, mt, 1, &sp).is_some_and(|(side, _)| side == "SELL"));
+        assert!(decide_nb(0.60, 0.40, mt, 1, &sp).is_some_and(|(side, _, _)| side == "BUY"));
+        assert!(decide_nb(0.20, 0.50, mt, 1, &sp).is_some_and(|(side, _, _)| side == "SELL"));
         assert!(
-            decide(0.52, 0.50, mt, 1, &sp).is_none(),
+            decide_nb(0.52, 0.50, mt, 1, &sp).is_none(),
             "edge below threshold"
         );
         assert!(
-            decide(0.60, 0.00, mt, 1, &sp).is_none(),
+            decide_nb(0.60, 0.00, mt, 1, &sp).is_none(),
             "0/1 price is not a real entry"
         );
-        assert!(decide(0.60, 1.00, mt, 1, &sp).is_none());
+        assert!(decide_nb(0.60, 1.00, mt, 1, &sp).is_none());
+    }
+
+    #[test]
+    fn decide_uses_executable_prices_when_book_present() {
+        let sp = params();
+        let mt = "temp_bucket";
+        // Entry-based edge (0.60 vs 0.50) clears the 5% threshold, but the BUY must fill at the
+        // 0.58 ask — 2% net of spread — so it is NOT a trade.
+        assert!(decide(0.60, 0.50, Some(0.48), Some(0.58), mt, 1, &sp).is_none());
+        // SELL fills at the bid: est 0.20 vs bid 0.45 → trade at 0.45, not the 0.50 last trade.
+        let (side, _, px) = decide(0.20, 0.50, Some(0.45), Some(0.55), mt, 1, &sp).unwrap();
+        assert_eq!(side, "SELL");
+        assert!((px - 0.45).abs() < 1e-9);
+        // One-sided book with an untradable last price: nothing executable → no trade.
+        assert!(decide(0.60, 0.0, Some(0.40), None, mt, 1, &sp).is_none());
+        // ...but the same book supports the SELL side.
+        assert!(decide(0.20, 0.0, Some(0.40), None, mt, 1, &sp)
+            .is_some_and(|(s, _, px)| s == "SELL" && (px - 0.40).abs() < 1e-9));
     }
 
     #[test]
     fn decide_gates_day_of_trades_by_default() {
         let sp = params();
         assert!(
-            decide(0.60, 0.40, "temp_bucket", 0, &sp).is_none(),
+            decide_nb(0.60, 0.40, "temp_bucket", 0, &sp).is_none(),
             "day-of gated by default"
         );
         assert!(
-            decide(0.60, 0.40, "temp_bucket", -1, &sp).is_some(),
+            decide_nb(0.60, 0.40, "temp_bucket", -1, &sp).is_some(),
             "post-day allowed"
         );
         let open = StrategyParams {
@@ -1311,7 +1379,7 @@ mod tests {
             ..params()
         };
         assert!(
-            decide(0.60, 0.40, "temp_bucket", 0, &open).is_some(),
+            decide_nb(0.60, 0.40, "temp_bucket", 0, &open).is_some(),
             "--trade-day-of re-enables"
         );
     }
@@ -1324,11 +1392,11 @@ mod tests {
             ..params()
         };
         assert!(
-            decide(0.20, 0.50, "temp_bucket", 1, &capped).is_some(),
+            decide_nb(0.20, 0.50, "temp_bucket", 1, &capped).is_some(),
             "0.30 edge is within cap"
         );
         assert!(
-            decide(0.05, 0.50, "temp_bucket", 1, &capped).is_none(),
+            decide_nb(0.05, 0.50, "temp_bucket", 1, &capped).is_none(),
             "0.45 edge exceeds cap"
         );
 
@@ -1338,15 +1406,15 @@ mod tests {
             ..params()
         };
         assert!(
-            decide(0.20, 0.50, "temp_bucket", 1, &nsb).is_none(),
+            decide_nb(0.20, 0.50, "temp_bucket", 1, &nsb).is_none(),
             "bucket SELL suppressed"
         );
         assert!(
-            decide(0.20, 0.50, "temp_at_most", 1, &nsb).is_some(),
+            decide_nb(0.20, 0.50, "temp_at_most", 1, &nsb).is_some(),
             "non-bucket SELL allowed"
         );
         assert!(
-            decide(0.60, 0.40, "temp_bucket", 1, &nsb).is_some_and(|(s, _)| s == "BUY"),
+            decide_nb(0.60, 0.40, "temp_bucket", 1, &nsb).is_some_and(|(s, _, _)| s == "BUY"),
             "bucket BUY allowed"
         );
     }

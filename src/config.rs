@@ -87,11 +87,20 @@ pub fn tomorrow_io_api_key() -> String {
     env_or("TOMORROW_IO_API_KEY", "")
 }
 
-/// Kalshi API host (no path). Defaults to the DEMO/paper environment so nothing touches real money
-/// until you point it at prod (`https://api.elections.kalshi.com`).
+/// Kalshi API host for CREDENTIALED trade endpoints (no path). Defaults to the DEMO/paper
+/// environment so nothing touches real money until you point it at prod.
 pub fn kalshi_base_url() -> String {
     dotenv().ok();
     env_or("KALSHI_BASE_URL", "https://demo-api.kalshi.co")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Kalshi host for anonymous MARKET DATA (production prices — what forward calibration needs).
+/// Public GETs, no credentials involved, so this defaults to prod deliberately.
+pub fn kalshi_public_base_url() -> String {
+    dotenv().ok();
+    env_or("KALSHI_PUBLIC_BASE_URL", "https://api.elections.kalshi.com")
         .trim_end_matches('/')
         .to_string()
 }

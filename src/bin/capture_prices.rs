@@ -73,6 +73,12 @@ struct Snapshot {
     forecast_high: Option<f64>,
     #[serde(default)]
     forecast_sigma: Option<f64>,
+    /// Top of the YES book at capture (entry_price is the last trade). What a BUY/SELL would
+    /// actually fill at — the dashboard evaluates executable edge from these when present.
+    #[serde(default)]
+    best_bid: Option<f64>,
+    #[serde(default)]
+    best_ask: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -135,40 +141,34 @@ async fn run() -> Result<(), String> {
         outcomes.extend(found);
     }
 
-    // Kalshi (demo by default) — additive and best-effort: no creds ⇒ skipped, a fetch error is
-    // logged but never aborts the Polymarket run (same degrade-by-design contract as the fetchers).
+    // Kalshi — market data is anonymous on the public production host, so this always runs; a
+    // fetch error is logged but never aborts the Polymarket run (degrade-by-design).
     let kalshi = KalshiHistoryDownloader::new();
-    if kalshi.is_available() {
-        println!(
-            "Fetching Kalshi weather markets ({})...",
-            config::kalshi_base_url()
-        );
-        match kalshi.download_weather_markets(true, 4000).await {
-            Ok(k) => {
-                println!("  {} active Kalshi weather markets", k.len());
-                active.extend(k);
-            }
-            Err(e) => eprintln!("  Kalshi active fetch failed, continuing without it: {e}"),
+    println!(
+        "Fetching Kalshi weather markets ({})...",
+        config::kalshi_public_base_url()
+    );
+    match kalshi.download_weather_markets(true, 4000).await {
+        Ok(k) => {
+            println!("  {} active Kalshi weather markets", k.len());
+            active.extend(k);
         }
-        match kalshi.download_weather_markets(false, 4000).await {
-            Ok(k) => {
-                let before = outcomes.len();
-                for r in k {
-                    if let Some(o) = r.outcome {
-                        outcomes.insert(r.market_id, o);
-                    }
+        Err(e) => eprintln!("  Kalshi active fetch failed, continuing without it: {e}"),
+    }
+    match kalshi.download_weather_markets(false, 4000).await {
+        Ok(k) => {
+            let before = outcomes.len();
+            for r in k {
+                if let Some(o) = r.outcome {
+                    outcomes.insert(r.market_id, o);
                 }
-                println!(
-                    "  {} Kalshi resolved outcomes added",
-                    outcomes.len() - before
-                );
             }
-            Err(e) => eprintln!("  Kalshi resolved fetch failed, continuing without it: {e}"),
+            println!(
+                "  {} Kalshi resolved outcomes added",
+                outcomes.len() - before
+            );
         }
-    } else {
-        println!(
-            "Kalshi not configured — skipping (set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH to enable)."
-        );
+        Err(e) => eprintln!("  Kalshi resolved fetch failed, continuing without it: {e}"),
     }
 
     // ── blocking: weather + model + file IO, off the async executor ──
@@ -306,6 +306,8 @@ fn process(
                 source: r.source.clone(),
                 forecast_high: fs.map(|(mu, _)| mu),
                 forecast_sigma: fs.map(|(_, sigma)| sigma),
+                best_bid: r.best_bid,
+                best_ask: r.best_ask,
             });
         }
     }
@@ -338,11 +340,13 @@ fn to_sim(r: &WeatherMarketRow) -> SimulatedMarket {
     }
 }
 
-/// Prices a market against its Polymarket resolution station: METAR obs (the very feed the market
-/// resolves on) for elapsed hours, the station-coordinate hourly forecast for the rest, and the
-/// per-(city, lead) fitted sigma/bias from `stations.rs`. Returns the (mu, sigma) in °C for
-/// `set_point_forecast`, or None to fall back to the legacy path. One obs fetch and one forecast
-/// fetch per city per run, cached.
+/// Prices a market against its venue's resolution station: METAR obs for elapsed hours (the very
+/// feed Polymarket resolves on; Kalshi's CLI gap is a fitted post/bias term), the
+/// station-coordinate hourly forecast for the rest, and the per-(city, lead) fitted sigma/bias
+/// from `stations.rs` — Polymarket and Kalshi have separate verified tables (different stations
+/// AND truth variables). Returns the (mu, sigma) in °C for `set_point_forecast`, or None to fall
+/// back to the legacy path. One obs fetch and one forecast fetch per STATION per run, cached
+/// (the same city can map to two stations across venues).
 struct StationPricer {
     now_utc: NaiveDateTime,
     today: chrono::NaiveDate,
@@ -365,10 +369,10 @@ impl StationPricer {
     }
 
     fn estimate(&mut self, r: &WeatherMarketRow) -> Option<(f64, f64)> {
-        if r.source != "polymarket" || !r.market_type.starts_with("temp") {
-            return None; // Kalshi resolves on NWS CLI (unverified mapping); precip has no station model
+        if !r.market_type.starts_with("temp") {
+            return None; // precip has no station model
         }
-        let st = station_for(&r.city)?;
+        let st = station_for(&r.city, &r.source)?;
         let phase = phase_for(self.now_utc, r.target_date, st);
         let (runmax, rest) = match phase {
             Phase::Post => (
@@ -395,17 +399,17 @@ impl StationPricer {
     }
 
     fn obs(&mut self, st: &Station, target: chrono::NaiveDate) -> Option<&[(NaiveDateTime, f64)]> {
-        if !self.obs_cache.contains_key(st.city) {
+        if !self.obs_cache.contains_key(st.iem_id) {
             let start = (target - Duration::days(1)).min(self.today - Duration::days(1));
             let got = self.obs_fetcher.fetch_tmpf_utc(st, start, self.today);
-            self.obs_cache.insert(st.city.to_string(), got);
+            self.obs_cache.insert(st.iem_id.to_string(), got);
         }
-        let v = self.obs_cache.get(st.city).unwrap();
+        let v = self.obs_cache.get(st.iem_id).unwrap();
         (!v.is_empty()).then_some(v.as_slice())
     }
 
     fn forecast(&mut self, st: &Station) -> Option<&[(NaiveDateTime, f64)]> {
-        if !self.forecast_cache.contains_key(st.city) {
+        if !self.forecast_cache.contains_key(st.iem_id) {
             // 16-day horizon; a target beyond it simply yields no hours -> legacy fallback.
             let got = self.open_meteo.fetch_forecast_hourly_utc(
                 st.lat,
@@ -413,9 +417,9 @@ impl StationPricer {
                 self.today - Duration::days(1),
                 self.today + Duration::days(15),
             );
-            self.forecast_cache.insert(st.city.to_string(), got);
+            self.forecast_cache.insert(st.iem_id.to_string(), got);
         }
-        let v = self.forecast_cache.get(st.city).unwrap();
+        let v = self.forecast_cache.get(st.iem_id).unwrap();
         (!v.is_empty()).then_some(v.as_slice())
     }
 }
