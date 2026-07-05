@@ -97,6 +97,7 @@ fn run() -> Result<(), String> {
         bankroll: args.bankroll,
         max_edge: args.max_edge,
         no_sell_buckets: args.no_sell_buckets,
+        trade_day_of: args.trade_day_of,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -297,6 +298,12 @@ struct StrategyParams {
     /// Suppress SELL trades on `temp_bucket` markets — the model systematically under-estimates narrow
     /// bucket probabilities, so its bucket-SELL signals are structurally its own errors.
     no_sell_buckets: bool,
+    /// Take trades captured ON the target day (lead 0). Off by default: at day-of the market prices
+    /// intraday information the daemon doesn't have — measured out-of-sample, the market's bucket
+    /// Brier beat even a leak-optimistic reconstruction of our day-of estimate (0.104 vs 0.127), and
+    /// day-of trades were the entire −8.1% loss. The model's edge is at lead ≥ 1 (model 0.034 vs
+    /// market 0.099) and post-day scraps. `--trade-day-of` re-enables for forward A/B.
+    trade_day_of: bool,
 }
 
 /// One booked trade: a settled capture that cleared the edge filter.
@@ -305,6 +312,7 @@ struct Trade {
     city: String,
     market_type: String,
     source: String,
+    lead: i64,
     label: String,
     side: &'static str, // BUY YES / SELL (buy NO)
     price: f64,
@@ -321,10 +329,14 @@ fn decide(
     est: f64,
     price: f64,
     market_type: &str,
+    lead: i64,
     p: &StrategyParams,
 ) -> Option<(&'static str, f64)> {
     if price <= 0.0 || price >= 1.0 {
         return None; // fabricated / resolved price, not a real entry
+    }
+    if lead == 0 && !p.trade_day_of {
+        return None; // day-of: the market's intraday information set beats ours (see StrategyParams)
     }
     let edge = est - price;
     if edge.abs() < p.edge_threshold {
@@ -366,7 +378,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     for c in settled {
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
-        let Some((side, frac)) = decide(est, c.entry_price, &c.market_type, p) else {
+        let Some((side, frac)) = decide(est, c.entry_price, &c.market_type, c.lead(), p) else {
             continue;
         };
         let stake = stake_dollars(frac, equity, p);
@@ -384,7 +396,13 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             city: c.city.clone(),
             market_type: c.market_type.clone(),
             source: c.source.clone(),
-            label: label(&c.market_type, c.threshold, c.threshold_upper, c.unit.as_deref()),
+            lead: c.lead(),
+            label: label(
+                &c.market_type,
+                c.threshold,
+                c.threshold_upper,
+                c.unit.as_deref(),
+            ),
             side,
             price: c.entry_price,
             est,
@@ -443,6 +461,7 @@ impl Agg {
 
 #[derive(serde::Deserialize)]
 struct Capture {
+    captured_at: NaiveDate,
     target_date: NaiveDate,
     market_type: String,
     threshold: f64,
@@ -458,6 +477,14 @@ struct Capture {
 
 fn default_source() -> String {
     "polymarket".to_string()
+}
+
+impl Capture {
+    /// Trading lead in days at capture: negative = captured after the target day (post), 0 =
+    /// day-of, ≥1 = genuine forecast lead.
+    fn lead(&self) -> i64 {
+        (self.target_date - self.captured_at).num_days()
+    }
 }
 
 fn load_captures(path: &PathBuf) -> Vec<Capture> {
@@ -652,6 +679,9 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         if sp.no_sell_buckets {
             f.push("no SELL on temp buckets".to_string());
         }
+        if !sp.trade_day_of {
+            f.push("skip day-of (lead 0) trades".to_string());
+        }
         if f.is_empty() {
             "no extra filters".to_string()
         } else {
@@ -666,6 +696,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         sp.bankroll,
         esc(&filters),
     ));
+    s.push_str("<p class=\"muted\" style=\"font-size:11px\">Day-of (lead 0) trades are skipped by default: out-of-sample the market's intraday information beats the daemon's morning snapshot there, while at lead ≥ 1 the model's bucket Brier beats the market ~3×. <code>--trade-day-of</code> re-enables.</p>");
 
     if captures.is_empty() {
         s.push_str("<p class=\"muted\">No captures yet. Polymarket purges price history after resolution, so real entry prices are only available live. Run <code>capture_prices</code> daily (cron / schedule) to snapshot active markets; PnL settles as they resolve.</p></div>");
@@ -716,10 +747,20 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     if resolved > 0 {
         let variants = [
             (
-                "Baseline (no filters)",
+                "Baseline (no filters, incl. day-of)",
                 StrategyParams {
                     max_edge: None,
                     no_sell_buckets: false,
+                    trade_day_of: true,
+                    ..*sp
+                },
+            ),
+            (
+                "Skip day-of (default)",
+                StrategyParams {
+                    max_edge: None,
+                    no_sell_buckets: false,
+                    trade_day_of: false,
                     ..*sp
                 },
             ),
@@ -728,6 +769,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 StrategyParams {
                     max_edge: Some(0.30),
                     no_sell_buckets: false,
+                    trade_day_of: true,
                     ..*sp
                 },
             ),
@@ -736,6 +778,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 StrategyParams {
                     max_edge: None,
                     no_sell_buckets: true,
+                    trade_day_of: true,
                     ..*sp
                 },
             ),
@@ -779,6 +822,16 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             "Type",
             group_trades(&trade_refs, |t| t.market_type.clone()),
         ));
+        s.push_str(&breakdown_table(
+            "By trading lead",
+            "Lead",
+            group_trades(&trade_refs, |t| match t.lead {
+                l if l < 0 => "post (after day)".to_string(),
+                0 => "day-of".to_string(),
+                1 => "lead 1".to_string(),
+                _ => "lead 2+".to_string(),
+            }),
+        ));
         s.push_str("</div>");
 
         // trade log (most recent first) — the auditable per-trade PnL
@@ -801,7 +854,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         .filter(|c| c.outcome.is_none())
         .filter_map(|c| {
             let est = c.model_estimate?;
-            let (side, frac) = decide(est, c.entry_price, &c.market_type, sp)?;
+            let (side, frac) = decide(est, c.entry_price, &c.market_type, c.lead(), sp)?;
             Some((c, side, stake_dollars(frac, sp.bankroll, sp)))
         })
         .collect();
@@ -939,7 +992,12 @@ fn usd_signed(v: f64) -> String {
 }
 
 /// Human-readable bucket label from a market's shape fields (shared by MarketEvaluation and Capture).
-fn label(market_type: &str, threshold: f64, threshold_upper: Option<f64>, unit: Option<&str>) -> String {
+fn label(
+    market_type: &str,
+    threshold: f64,
+    threshold_upper: Option<f64>,
+    unit: Option<&str>,
+) -> String {
     let u = unit.unwrap_or("F");
     match market_type {
         "temp_at_least" => format!("≥ {:.0}°{u}", threshold),
@@ -1075,6 +1133,7 @@ struct Args {
     bankroll: f64,
     max_edge: Option<f64>,
     no_sell_buckets: bool,
+    trade_day_of: bool,
 }
 
 impl Args {
@@ -1084,7 +1143,11 @@ impl Args {
         let mut i = 0;
         while i < argv.len() {
             let k = argv[i].clone();
-            if k == "--refresh" || k == "--forecast" || k == "--no-sell-buckets" {
+            if k == "--refresh"
+                || k == "--forecast"
+                || k == "--no-sell-buckets"
+                || k == "--trade-day-of"
+            {
                 flags.push(k);
                 i += 1;
                 continue;
@@ -1138,6 +1201,7 @@ impl Args {
                 .unwrap_or_else(config::initial_capital),
             max_edge: map.get("--max-edge").and_then(|v| v.parse().ok()),
             no_sell_buckets: flags.iter().any(|f| f == "--no-sell-buckets"),
+            trade_day_of: flags.iter().any(|f| f == "--trade-day-of"),
         })
     }
 }
@@ -1147,7 +1211,7 @@ fn usage() -> String {
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
-     [--max-edge 0.30] [--no-sell-buckets]"
+     [--max-edge 0.30] [--no-sell-buckets] [--trade-day-of]"
         .to_string()
 }
 
@@ -1156,8 +1220,10 @@ mod tests {
     use super::*;
 
     fn cap(date: &str, city: &str, price: f64, est: Option<f64>, outcome: Option<f64>) -> Capture {
+        let target: NaiveDate = date.parse().unwrap();
         Capture {
-            target_date: date.parse().unwrap(),
+            captured_at: target - chrono::Duration::days(1), // lead 1: the tradable regime
+            target_date: target,
             market_type: "temp_bucket".into(),
             threshold: 90.0,
             threshold_upper: Some(91.0),
@@ -1178,6 +1244,7 @@ mod tests {
             bankroll: 100_000.0,
             max_edge: None,
             no_sell_buckets: false,
+            trade_day_of: false,
         }
     }
 
@@ -1215,17 +1282,38 @@ mod tests {
     fn decide_filters_thin_edges_and_untradable_prices() {
         let sp = params();
         let mt = "temp_bucket";
-        assert!(decide(0.60, 0.40, mt, &sp).is_some_and(|(side, _)| side == "BUY"));
-        assert!(decide(0.20, 0.50, mt, &sp).is_some_and(|(side, _)| side == "SELL"));
+        assert!(decide(0.60, 0.40, mt, 1, &sp).is_some_and(|(side, _)| side == "BUY"));
+        assert!(decide(0.20, 0.50, mt, 1, &sp).is_some_and(|(side, _)| side == "SELL"));
         assert!(
-            decide(0.52, 0.50, mt, &sp).is_none(),
+            decide(0.52, 0.50, mt, 1, &sp).is_none(),
             "edge below threshold"
         );
         assert!(
-            decide(0.60, 0.00, mt, &sp).is_none(),
+            decide(0.60, 0.00, mt, 1, &sp).is_none(),
             "0/1 price is not a real entry"
         );
-        assert!(decide(0.60, 1.00, mt, &sp).is_none());
+        assert!(decide(0.60, 1.00, mt, 1, &sp).is_none());
+    }
+
+    #[test]
+    fn decide_gates_day_of_trades_by_default() {
+        let sp = params();
+        assert!(
+            decide(0.60, 0.40, "temp_bucket", 0, &sp).is_none(),
+            "day-of gated by default"
+        );
+        assert!(
+            decide(0.60, 0.40, "temp_bucket", -1, &sp).is_some(),
+            "post-day allowed"
+        );
+        let open = StrategyParams {
+            trade_day_of: true,
+            ..params()
+        };
+        assert!(
+            decide(0.60, 0.40, "temp_bucket", 0, &open).is_some(),
+            "--trade-day-of re-enables"
+        );
     }
 
     #[test]
@@ -1236,11 +1324,11 @@ mod tests {
             ..params()
         };
         assert!(
-            decide(0.20, 0.50, "temp_bucket", &capped).is_some(),
+            decide(0.20, 0.50, "temp_bucket", 1, &capped).is_some(),
             "0.30 edge is within cap"
         );
         assert!(
-            decide(0.05, 0.50, "temp_bucket", &capped).is_none(),
+            decide(0.05, 0.50, "temp_bucket", 1, &capped).is_none(),
             "0.45 edge exceeds cap"
         );
 
@@ -1250,15 +1338,15 @@ mod tests {
             ..params()
         };
         assert!(
-            decide(0.20, 0.50, "temp_bucket", &nsb).is_none(),
+            decide(0.20, 0.50, "temp_bucket", 1, &nsb).is_none(),
             "bucket SELL suppressed"
         );
         assert!(
-            decide(0.20, 0.50, "temp_at_most", &nsb).is_some(),
+            decide(0.20, 0.50, "temp_at_most", 1, &nsb).is_some(),
             "non-bucket SELL allowed"
         );
         assert!(
-            decide(0.60, 0.40, "temp_bucket", &nsb).is_some_and(|(s, _)| s == "BUY"),
+            decide(0.60, 0.40, "temp_bucket", 1, &nsb).is_some_and(|(s, _)| s == "BUY"),
             "bucket BUY allowed"
         );
     }

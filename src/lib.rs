@@ -4,6 +4,7 @@ pub mod cities;
 pub mod config;
 pub mod data_pipeline;
 pub mod models;
+pub mod stations;
 pub mod trading;
 pub mod types;
 pub mod utils;

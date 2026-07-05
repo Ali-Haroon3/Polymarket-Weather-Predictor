@@ -15,25 +15,33 @@ use std::path::PathBuf;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
+use chrono::NaiveDateTime;
+
 use polymarket_weather_predictor::api::{
     KalshiHistoryDownloader, PolymarketHistoryDownloader, WeatherMarketRow,
 };
-use polymarket_weather_predictor::backtesting::evaluate_markets_with_forecast;
+use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, market_estimate};
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
+use polymarket_weather_predictor::data_pipeline::station_obs::{
+    forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
+};
 use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
+use polymarket_weather_predictor::models::BayesianWeatherModel;
+use polymarket_weather_predictor::stations::{station_for, Station};
 use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 
-/// Forecast-error spread (degC) for pricing active markets from the live forecast.
+/// LEGACY forecast-error spread (degC): only for markets the station-aware path can't price —
+/// cities without a verified resolution station, Kalshi rows (different resolution source: NWS CLI
+/// day-high, not the WU ob-max; mapping unverified until Kalshi captures settle), and any row whose
+/// obs/forecast fetch came up empty.
 ///
-/// Kept at 2.0 deliberately. Open-Meteo's daily-high error is ~1.25 degC at SHORT lead (measured vs
-/// archive, n=336), and re-pricing the 50 settled captures found the best-Brier sigma ~1.5 — but that
-/// used near-final forecasts, whereas the daemon prices markets days out (bigger error), so 2.0 is the
-/// right order for the actual trading lead. More importantly, re-pricing showed NO sigma gets the model
-/// near the market's calibration on narrow buckets (best re-priced Brier ~0.12 vs market ~0.04): the
-/// bucket deficit is structural, not a mistuned constant, so tuning this knob is low-value. Per-city
-/// debiasing did not help either. `forecast_high`/`forecast_sigma` are now stored per snapshot so a
-/// lead-aware rolling estimate can be fit against realized highs once enough captures accrue.
+/// Mapped Polymarket cities are priced by `station_nowcast` instead: markets resolve on the max of
+/// whole-degree METAR obs at a specific airport station (verified 43/43 against settled outcomes),
+/// so post/day-of markets read the same METAR feed and lead-k markets use the station-coordinate
+/// forecast with per-(city, lead) sigma/bias fitted on Jan–Apr 2026 (see `src/stations.rs`). That
+/// removed the structural bucket miscalibration this constant could never fix: the old single-sigma
+/// grid model priced finished days as if still uncertain (fake edges) and the wrong microclimate.
 const FORECAST_SIGMA: f64 = 2.0;
 
 /// Only direct-lookup markets whose target day is within this many days behind today. A market that
@@ -209,8 +217,36 @@ fn process(
     println!("{} new active markets to snapshot", fresh.len());
 
     if !fresh.is_empty() {
-        let sims: Vec<SimulatedMarket> = fresh.iter().map(|r| to_sim(r)).collect();
-        // Price each market from the LIVE forecast of its target day (real trading lead, no leakage).
+        // Station-aware pricing first (verified Polymarket resolution stations); everything it
+        // can't price falls through to the legacy forecast/climatology path.
+        let mut est: HashMap<String, f64> = HashMap::new();
+        let mut used: HashMap<String, (f64, f64)> = HashMap::new(); // market_id -> (mu, sigma) °C
+        let mut legacy: Vec<&WeatherMarketRow> = Vec::new();
+        let mut pricer = StationPricer::new(today);
+        for r in &fresh {
+            match pricer.estimate(r) {
+                Some((mu, sigma)) => {
+                    let mut model = BayesianWeatherModel::default();
+                    model.set_point_forecast(mu, sigma);
+                    match market_estimate(&model, &to_sim(r)) {
+                        Some(p) => {
+                            est.insert(r.market_id.clone(), p);
+                            used.insert(r.market_id.clone(), (mu, sigma));
+                        }
+                        None => legacy.push(r),
+                    }
+                }
+                None => legacy.push(r),
+            }
+        }
+        println!(
+            "{} markets priced from resolution-station nowcast, {} on legacy path",
+            est.len(),
+            legacy.len()
+        );
+
+        let sims: Vec<SimulatedMarket> = legacy.iter().map(|r| to_sim(r)).collect();
+        // Price legacy markets from the LIVE forecast of their target day (real trading lead).
         let forecasts = load_forecasts(&sims);
         // Climatology is only the fallback for markets the forecast can't reach (beyond horizon).
         // Active markets are future-dated, so the archive returns nothing for the rest anyway — skip
@@ -241,17 +277,19 @@ fn process(
             &forecasts,
             FORECAST_SIGMA,
         );
-        let est: HashMap<&str, Option<f64>> = evals
-            .iter()
-            .map(|e| (e.market_id.as_str(), e.model_estimate))
-            .collect();
+        for e in &evals {
+            if let Some(p) = e.model_estimate {
+                est.insert(e.market_id.clone(), p);
+            }
+        }
+        for r in &sims {
+            if let Some(fh) = forecasts.get(&r.city).and_then(|m| m.get(&r.date)) {
+                used.insert(r.market_id.clone(), (*fh, FORECAST_SIGMA));
+            }
+        }
 
         for r in fresh {
-            // The forecast (°C) that priced this market, if one reached its city/date.
-            let fh = forecasts
-                .get(&r.city)
-                .and_then(|m| m.get(&r.target_date))
-                .copied();
+            let fs = used.get(r.market_id.as_str()).copied();
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -263,11 +301,11 @@ fn process(
                 unit: r.unit.clone(),
                 city: r.city.clone(),
                 entry_price: r.price,
-                model_estimate: est.get(r.market_id.as_str()).copied().flatten(),
+                model_estimate: est.get(r.market_id.as_str()).copied(),
                 outcome: outcomes.get(&r.market_id).copied(),
                 source: r.source.clone(),
-                forecast_high: fh,
-                forecast_sigma: fh.map(|_| FORECAST_SIGMA),
+                forecast_high: fs.map(|(mu, _)| mu),
+                forecast_sigma: fs.map(|(_, sigma)| sigma),
             });
         }
     }
@@ -297,6 +335,88 @@ fn to_sim(r: &WeatherMarketRow) -> SimulatedMarket {
         market_price: r.price,
         actual_outcome: 0.0, // unknown at capture time
         city: r.city.clone(),
+    }
+}
+
+/// Prices a market against its Polymarket resolution station: METAR obs (the very feed the market
+/// resolves on) for elapsed hours, the station-coordinate hourly forecast for the rest, and the
+/// per-(city, lead) fitted sigma/bias from `stations.rs`. Returns the (mu, sigma) in °C for
+/// `set_point_forecast`, or None to fall back to the legacy path. One obs fetch and one forecast
+/// fetch per city per run, cached.
+struct StationPricer {
+    now_utc: NaiveDateTime,
+    today: chrono::NaiveDate,
+    obs_fetcher: IemObsFetcher,
+    open_meteo: OpenMeteoFetcher,
+    obs_cache: HashMap<String, Vec<(NaiveDateTime, f64)>>,
+    forecast_cache: HashMap<String, Vec<(NaiveDateTime, f64)>>,
+}
+
+impl StationPricer {
+    fn new(today: chrono::NaiveDate) -> Self {
+        Self {
+            now_utc: Utc::now().naive_utc(),
+            today,
+            obs_fetcher: IemObsFetcher::new(),
+            open_meteo: OpenMeteoFetcher::new(),
+            obs_cache: HashMap::new(),
+            forecast_cache: HashMap::new(),
+        }
+    }
+
+    fn estimate(&mut self, r: &WeatherMarketRow) -> Option<(f64, f64)> {
+        if r.source != "polymarket" || !r.market_type.starts_with("temp") {
+            return None; // Kalshi resolves on NWS CLI (unverified mapping); precip has no station model
+        }
+        let st = station_for(&r.city)?;
+        let phase = phase_for(self.now_utc, r.target_date, st);
+        let (runmax, rest) = match phase {
+            Phase::Post => (
+                wu_running_max_c(self.obs(st, r.target_date)?, r.target_date, st, None),
+                None,
+            ),
+            Phase::DayOf => {
+                let cutoff = self.now_utc;
+                let run = wu_running_max_c(
+                    self.obs(st, r.target_date)?,
+                    r.target_date,
+                    st,
+                    Some(cutoff),
+                );
+                let rest = forecast_day_max_c(self.forecast(st)?, r.target_date, st, Some(cutoff));
+                (run, rest)
+            }
+            Phase::Lead(_) => (
+                None,
+                forecast_day_max_c(self.forecast(st)?, r.target_date, st, None),
+            ),
+        };
+        nowcast_mu_sigma(st, phase, runmax, rest)
+    }
+
+    fn obs(&mut self, st: &Station, target: chrono::NaiveDate) -> Option<&[(NaiveDateTime, f64)]> {
+        if !self.obs_cache.contains_key(st.city) {
+            let start = (target - Duration::days(1)).min(self.today - Duration::days(1));
+            let got = self.obs_fetcher.fetch_tmpf_utc(st, start, self.today);
+            self.obs_cache.insert(st.city.to_string(), got);
+        }
+        let v = self.obs_cache.get(st.city).unwrap();
+        (!v.is_empty()).then_some(v.as_slice())
+    }
+
+    fn forecast(&mut self, st: &Station) -> Option<&[(NaiveDateTime, f64)]> {
+        if !self.forecast_cache.contains_key(st.city) {
+            // 16-day horizon; a target beyond it simply yields no hours -> legacy fallback.
+            let got = self.open_meteo.fetch_forecast_hourly_utc(
+                st.lat,
+                st.lon,
+                self.today - Duration::days(1),
+                self.today + Duration::days(15),
+            );
+            self.forecast_cache.insert(st.city.to_string(), got);
+        }
+        let v = self.forecast_cache.get(st.city).unwrap();
+        (!v.is_empty()).then_some(v.as_slice())
     }
 }
 
