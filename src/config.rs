@@ -6,8 +6,6 @@ use dotenvy::dotenv;
 pub struct CityConfig {
     pub lat: f64,
     pub lon: f64,
-    pub noaa_station: Option<&'static str>,
-    pub nws_station: Option<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,13 +33,6 @@ pub struct MonteCarloParams {
     pub random_seed: u64,
     pub volatility_window: usize,
     pub correlation_lookback: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct DataPipelineParams {
-    pub batch_size: usize,
-    pub validation_threshold: f64,
-    pub missing_data_threshold: f64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -162,14 +153,6 @@ pub fn monte_carlo_params() -> MonteCarloParams {
     }
 }
 
-pub fn data_pipeline_params() -> DataPipelineParams {
-    DataPipelineParams {
-        batch_size: 1000,
-        validation_threshold: 0.95,
-        missing_data_threshold: 0.05,
-    }
-}
-
 pub fn backtest_params() -> BacktestParams {
     let mut cities = HashMap::new();
 
@@ -178,8 +161,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 40.71,
             lon: -74.01,
-            noaa_station: Some("GHCND:USW00023023"),
-            nws_station: Some("KNYC"),
         },
     );
 
@@ -188,8 +169,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 34.05,
             lon: -118.24,
-            noaa_station: Some("GHCND:USW00012918"),
-            nws_station: Some("KLAX"),
         },
     );
 
@@ -198,8 +177,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 51.51,
             lon: -0.13,
-            noaa_station: None,
-            nws_station: None,
         },
     );
 

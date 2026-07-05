@@ -13,7 +13,7 @@ cargo clippy --all-targets        # lint
 cargo fmt                         # format (no rustfmt.toml; uses defaults)
 ```
 
-Runnable binaries (`src/bin/`): `init_db`, `run_backtest` (simulated markets), `run_backtest_real` (real markets from CSV/JSON), `download_polymarket_history`, `capture_prices`, `weather_dashboard`, `example_workflow`, `live_trading_example`. CLI flags are parsed by hand (see gotchas). Two real-data flows:
+Runnable binaries (`src/bin/`): `run_backtest` (simulated markets), `run_backtest_real` (real markets from CSV/JSON), `download_polymarket_history`, `capture_prices`, `weather_dashboard`, `example_workflow`, `live_trading_example`. CLI flags are parsed by hand (see gotchas). Two real-data flows:
 
 - **Real-data backtest:** `download_polymarket_history` → CSV → `run_backtest_real --markets <csv>`.
 - **Forward calibration:** Polymarket purges price history shortly after a market resolves, so real entry prices only exist while markets are live. `capture_prices` (run daily; a launchd agent `com.polymarketweather.dailycapture` drives it via `scripts/daily_capture.sh`) snapshots every active weather market's price + model estimate to `data/captures.jsonl` and fills in outcomes as markets resolve. `weather_dashboard [--markets <csv>] --output dashboard.html` renders calibration (Brier / ECE / reliability) + the forward trading-strategy readout (edge threshold → fractional Kelly → compounding PnL, hit rate, per-venue/city/market-type breakdown, open book), fetching weather once per city into `data/weather_cache/` (`--refresh` re-fetches). `--markets` is optional: omit it to render the forward readout from captures alone. Strategy knobs: `--edge-threshold` / `--kelly-fraction` / `--max-position-pct` / `--bankroll` (default to `config`/`backtest_params`).
@@ -43,6 +43,5 @@ Rust port of a Python weather-market trading system. The Python original is arch
 - **Config is functions, not a loaded struct.** `src/config.rs` exposes `bayesian_model_params()`, `backtest_params()`, `initial_capital()`, etc. Env-backed accessors each call `dotenvy::dotenv()` and fall back to a hardcoded default — there is no global config object.
 - **Determinism is load-bearing.** Every RNG is a seeded `StdRng`. Tests and backtests rely on this; don't introduce `thread_rng()` or unseeded randomness in the model/sim/backtest paths.
 - **Blocking vs async split.** Weather fetchers use `reqwest::blocking`. Only the Polymarket history downloader (`api/polymarket_history.rs`) is async (`reqwest` + `tokio`); its bin is `#[tokio::main]`. Don't call blocking fetchers from an async context.
-- **The database layer is an in-memory abstraction** (`src/database/`), not a real DB connection, despite `DATABASE_URL` existing in config.
 - **CLI args are parsed by hand** (no `clap`): a `--key value` loop into a `HashMap`. Match that pattern when adding flags to a bin.
 - Errors that cross module boundaries use `thiserror` enums (`RealMarketLoadError`, `PolymarketHistoryError`); internal model/training errors are plain `Result<_, String>`.

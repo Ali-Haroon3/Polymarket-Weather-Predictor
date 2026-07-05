@@ -21,10 +21,7 @@ pub struct OpenMeteoFetcher {
 impl OpenMeteoFetcher {
     pub fn new() -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+            client: crate::data_pipeline::build_client(30),
             locations: default_locations(),
         }
     }
@@ -165,19 +162,6 @@ impl OpenMeteoFetcher {
         };
 
         self.fetch_daily_observations(*lat, *lon, start_date, end_date, &format!("OPEN_METEO_{location_key}"))
-    }
-
-    pub fn fetch_multiple_locations(
-        &self,
-        location_keys: &[String],
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-    ) -> Vec<WeatherRecord> {
-        let mut out = Vec::new();
-        for key in location_keys {
-            out.extend(self.fetch_location(key, start_date, end_date));
-        }
-        out
     }
 }
 

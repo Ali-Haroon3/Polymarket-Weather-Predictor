@@ -3,7 +3,6 @@ pub mod backtesting;
 pub mod cities;
 pub mod config;
 pub mod data_pipeline;
-pub mod database;
 pub mod models;
 pub mod trading;
 pub mod types;

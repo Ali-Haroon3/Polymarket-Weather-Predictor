@@ -157,38 +157,6 @@ impl MarketMaker {
         }
     }
 
-    pub fn hedge_position(
-        &mut self,
-        market_id: &str,
-        inventory: f64,
-        current_price: f64,
-        hedge_ratio: f64,
-    ) -> TradeExecution {
-        if inventory > 0.0 {
-            self.execute_market_orders(market_id, "SELL", inventory * hedge_ratio, current_price)
-        } else {
-            self.execute_market_orders(
-                market_id,
-                "BUY",
-                inventory.abs() * hedge_ratio,
-                current_price,
-            )
-        }
-    }
-
-    pub fn calculate_pnl_by_market(&self, current_prices: &HashMap<String, f64>) -> HashMap<String, f64> {
-        let mut pnl = HashMap::new();
-
-        for (market_id, inventory) in &self.inventory {
-            if *inventory != 0.0 {
-                let current = *current_prices.get(market_id).unwrap_or(&0.5);
-                pnl.insert(market_id.clone(), inventory * (current - 0.5) * 100.0);
-            }
-        }
-
-        pnl
-    }
-
     pub fn get_portfolio_metrics(&self) -> PortfolioMetrics {
         let total_position = self.inventory.values().map(|v| v.abs()).sum::<f64>();
         let net_exposure = self.inventory.values().sum::<f64>();

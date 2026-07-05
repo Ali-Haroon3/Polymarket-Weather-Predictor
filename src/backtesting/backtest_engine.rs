@@ -203,7 +203,7 @@ impl BacktestEngine {
                     continue;
                 }
 
-                let Some(our_estimate) = self.get_model_estimate(&model, market) else {
+                let Some(our_estimate) = market_estimate(&model, market) else {
                     continue;
                 };
 
@@ -251,13 +251,6 @@ impl BacktestEngine {
         (all_trades, portfolio_values)
     }
 
-    fn get_model_estimate(
-        &self,
-        model: &BayesianWeatherModel,
-        market: &SimulatedMarket,
-    ) -> Option<f64> {
-        market_estimate(model, market)
-    }
 
     pub fn kelly_position_size(
         &self,

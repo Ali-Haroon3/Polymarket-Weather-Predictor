@@ -3,7 +3,7 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};
 
 use polymarket_weather_predictor::api::LiveTrader;
-use polymarket_weather_predictor::types::{PricePoint, ProbabilityPoint, WeatherRecord};
+use polymarket_weather_predictor::types::WeatherRecord;
 
 fn generate_sample_weather_data(days: usize) -> Vec<WeatherRecord> {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
@@ -47,23 +47,6 @@ fn main() {
             stats.markets_scanned, stats.opportunities, stats.orders_placed, stats.positions
         );
     }
-
-    let prices: Vec<PricePoint> = (0..100)
-        .map(|i| PricePoint {
-            date: NaiveDate::from_ymd_opt(2023, 1, 1).unwrap() + Duration::days(i),
-            close: 0.4 + (i as f64 % 20.0) / 100.0,
-        })
-        .collect();
-
-    let forecasts: Vec<ProbabilityPoint> = (0..100)
-        .map(|i| ProbabilityPoint {
-            date: NaiveDate::from_ymd_opt(2023, 1, 1).unwrap() + Duration::days(i),
-            probability: 0.45 + (i as f64 % 10.0) / 100.0,
-        })
-        .collect();
-
-    let backtest = trader.run_backtest(&prices, &forecasts, 10);
-    println!("Backtest: {backtest}");
 
     if let Some(summary) = trader.get_performance_summary() {
         println!(

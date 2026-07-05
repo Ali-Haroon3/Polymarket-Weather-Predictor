@@ -384,7 +384,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             city: c.city.clone(),
             market_type: c.market_type.clone(),
             source: c.source.clone(),
-            label: cap_bucket_label(c),
+            label: label(&c.market_type, c.threshold, c.threshold_upper, c.unit.as_deref()),
             side,
             price: c.entry_price,
             est,
@@ -618,7 +618,7 @@ fn render_dashboard(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"{}\">{}</td><td>{}</td><td class=\"{}\">{}</td></tr>",
             e.date,
             esc(&e.city),
-            esc(&bucket_label(e)),
+            esc(&label(&e.market_type, e.threshold, e.threshold_upper, e.unit.as_deref())),
             estcls,
             est,
             price,
@@ -836,7 +836,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             let scls = if *side == "BUY" { "yes" } else { "miss" };
             s.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:+.3}</td><td class=\"{}\">{}</td><td>${:.0}</td></tr>",
-                c.target_date, esc(&c.source), esc(&c.city), esc(&cap_bucket_label(c)), c.entry_price, est, edge, scls, side, stake
+                c.target_date, esc(&c.source), esc(&c.city), esc(&label(&c.market_type, c.threshold, c.threshold_upper, c.unit.as_deref())), c.entry_price, est, edge, scls, side, stake
             ));
         }
         s.push_str("</tbody></table>");
@@ -938,34 +938,18 @@ fn usd_signed(v: f64) -> String {
     format!("{sign}${:.2}", v.abs())
 }
 
-fn bucket_label(e: &MarketEvaluation) -> String {
-    let u = e.unit.as_deref().unwrap_or("F");
-    match e.market_type.as_str() {
-        "temp_at_least" => format!("≥ {:.0}°{u}", e.threshold),
-        "temp_at_most" => format!("≤ {:.0}°{u}", e.threshold),
-        "temp_bucket" => match e.threshold_upper {
-            Some(hi) if (hi - e.threshold).abs() > 1e-9 => {
-                format!("{:.0}–{:.0}°{u}", e.threshold, hi)
-            }
-            _ => format!("= {:.0}°{u}", e.threshold),
+/// Human-readable bucket label from a market's shape fields (shared by MarketEvaluation and Capture).
+fn label(market_type: &str, threshold: f64, threshold_upper: Option<f64>, unit: Option<&str>) -> String {
+    let u = unit.unwrap_or("F");
+    match market_type {
+        "temp_at_least" => format!("≥ {:.0}°{u}", threshold),
+        "temp_at_most" => format!("≤ {:.0}°{u}", threshold),
+        "temp_bucket" => match threshold_upper {
+            Some(hi) if (hi - threshold).abs() > 1e-9 => format!("{:.0}–{:.0}°{u}", threshold, hi),
+            _ => format!("= {:.0}°{u}", threshold),
         },
-        "temperature" => format!("≥ {:.0}°F", e.threshold),
+        "temperature" => format!("≥ {:.0}°F", threshold),
         "precipitation" => "rain".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn cap_bucket_label(c: &Capture) -> String {
-    let u = c.unit.as_deref().unwrap_or("F");
-    match c.market_type.as_str() {
-        "temp_at_least" => format!("≥ {:.0}°{u}", c.threshold),
-        "temp_at_most" => format!("≤ {:.0}°{u}", c.threshold),
-        "temp_bucket" => match c.threshold_upper {
-            Some(hi) if (hi - c.threshold).abs() > 1e-9 => {
-                format!("{:.0}–{:.0}°{u}", c.threshold, hi)
-            }
-            _ => format!("= {:.0}°{u}", c.threshold),
-        },
         other => other.to_string(),
     }
 }

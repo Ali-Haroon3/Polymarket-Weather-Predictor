@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::models::CalibrationAnalyzer;
 use crate::types::TradeRecord;
 use crate::utils::{max_drawdown, mean, std_dev};
 
@@ -222,7 +223,7 @@ impl PerformanceAnalyzer {
             .sum::<f64>()
             / preds.len().max(1) as f64;
 
-        let ece = expected_calibration_error(&preds, &outs, 10);
+        let ece = CalibrationAnalyzer::expected_calibration_error(&preds, &outs, 10);
 
         ForecastMetrics {
             brier_score: brier,
@@ -283,33 +284,6 @@ fn summarize_buckets(
     out
 }
 
-fn expected_calibration_error(predictions: &[f64], outcomes: &[f64], n_bins: usize) -> f64 {
-    if predictions.is_empty() || predictions.len() != outcomes.len() {
-        return 0.0;
-    }
-
-    let mut ece = 0.0;
-    for i in 0..n_bins {
-        let lo = i as f64 / n_bins as f64;
-        let hi = (i + 1) as f64 / n_bins as f64;
-
-        let mut p_bin = Vec::new();
-        let mut y_bin = Vec::new();
-        for (p, y) in predictions.iter().zip(outcomes.iter()) {
-            if *p >= lo && *p < hi {
-                p_bin.push(*p);
-                y_bin.push(*y);
-            }
-        }
-
-        if !p_bin.is_empty() {
-            let w = p_bin.len() as f64 / predictions.len() as f64;
-            ece += w * (mean(&p_bin) - mean(&y_bin)).abs();
-        }
-    }
-
-    ece
-}
 
 pub fn make_trade_record(
     date: NaiveDate,

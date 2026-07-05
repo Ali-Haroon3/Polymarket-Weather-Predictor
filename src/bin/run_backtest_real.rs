@@ -134,12 +134,12 @@ impl CliArgs {
             .map(|d| parse_date(d).map_err(|e| format!("--end {e}")))
             .transpose()?;
 
-        let initial_capital = parse_f64_opt(&map, "--initial-capital", 100_000.0)?;
-        let max_position_pct = parse_f64_opt(&map, "--max-position-pct", 0.10)?;
-        let edge_threshold = parse_f64_opt(&map, "--edge-threshold", 0.05)?;
-        let kelly_fraction = parse_f64_opt(&map, "--kelly-fraction", 0.25)?;
-        let model_lookback_days = parse_i64_opt(&map, "--model-lookback-days", 60)?;
-        let seed = parse_u64_opt(&map, "--seed", 42)?;
+        let initial_capital = parse_opt(&map, "--initial-capital", 100_000.0_f64)?;
+        let max_position_pct = parse_opt(&map, "--max-position-pct", 0.10_f64)?;
+        let edge_threshold = parse_opt(&map, "--edge-threshold", 0.05_f64)?;
+        let kelly_fraction = parse_opt(&map, "--kelly-fraction", 0.25_f64)?;
+        let model_lookback_days = parse_opt(&map, "--model-lookback-days", 60_i64)?;
+        let seed = parse_opt(&map, "--seed", 42_u64)?;
         let output_dir = map.get("--output-dir").map(PathBuf::from);
 
         Ok(Self {
@@ -169,36 +169,17 @@ fn usage() -> String {
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map_err(|_| format!("invalid date '{value}', expected YYYY-MM-DD"))
+    polymarket_weather_predictor::utils::parse_date(value)
+        .ok_or_else(|| format!("invalid date '{value}', expected YYYY-MM-DD"))
 }
 
-fn parse_f64_opt(map: &HashMap<String, String>, key: &str, default: f64) -> Result<f64, String> {
+fn parse_opt<T: std::str::FromStr>(
+    map: &HashMap<String, String>,
+    key: &str,
+    default: T,
+) -> Result<T, String> {
     map.get(key)
-        .map(|v| {
-            v.parse::<f64>()
-                .map_err(|_| format!("invalid value for {key}: {v}"))
-        })
-        .transpose()
-        .map(|o| o.unwrap_or(default))
-}
-
-fn parse_i64_opt(map: &HashMap<String, String>, key: &str, default: i64) -> Result<i64, String> {
-    map.get(key)
-        .map(|v| {
-            v.parse::<i64>()
-                .map_err(|_| format!("invalid value for {key}: {v}"))
-        })
-        .transpose()
-        .map(|o| o.unwrap_or(default))
-}
-
-fn parse_u64_opt(map: &HashMap<String, String>, key: &str, default: u64) -> Result<u64, String> {
-    map.get(key)
-        .map(|v| {
-            v.parse::<u64>()
-                .map_err(|_| format!("invalid value for {key}: {v}"))
-        })
+        .map(|v| v.parse::<T>().map_err(|_| format!("invalid value for {key}: {v}")))
         .transpose()
         .map(|o| o.unwrap_or(default))
 }

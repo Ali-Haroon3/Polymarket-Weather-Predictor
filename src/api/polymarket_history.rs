@@ -48,16 +48,10 @@ pub struct PolymarketHistoryDownloader {
 }
 
 impl PolymarketHistoryDownloader {
-    pub fn new(gamma_base_url: Option<String>, clob_base_url: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
-            gamma_base_url: gamma_base_url
-                .unwrap_or_else(|| DEFAULT_GAMMA_BASE_URL.to_string())
-                .trim_end_matches('/')
-                .to_string(),
-            clob_base_url: clob_base_url
-                .unwrap_or_else(|| DEFAULT_CLOB_BASE_URL.to_string())
-                .trim_end_matches('/')
-                .to_string(),
+            gamma_base_url: DEFAULT_GAMMA_BASE_URL.to_string(),
+            clob_base_url: DEFAULT_CLOB_BASE_URL.to_string(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(20))
                 .build()
@@ -104,7 +98,7 @@ impl PolymarketHistoryDownloader {
 
             let token_id = infer_yes_token_id(&market);
             let history = if let Some(id) = token_id.as_deref() {
-                match self.fetch_price_history(id, start_date, end_date).await {
+                match self.fetch_price_history(id).await {
                     Ok(h) => h,
                     Err(e) => {
                         eprintln!(
@@ -402,8 +396,6 @@ impl PolymarketHistoryDownloader {
     async fn fetch_price_history(
         &self,
         token_id: &str,
-        _start_date: Option<NaiveDate>,
-        _end_date: Option<NaiveDate>,
     ) -> Result<Vec<(NaiveDate, f64)>, reqwest::Error> {
         let candidates: [Vec<(&str, String)>; 2] = [
             vec![
@@ -445,7 +437,7 @@ impl PolymarketHistoryDownloader {
 
 impl Default for PolymarketHistoryDownloader {
     fn default() -> Self {
-        Self::new(None, None)
+        Self::new()
     }
 }
 

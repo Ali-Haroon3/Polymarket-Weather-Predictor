@@ -218,28 +218,6 @@ impl PolymarketClient {
             .unwrap_or(false)
     }
 
-    pub fn get_orders(&self) -> Vec<Value> {
-        if !self.authenticated && !self.paper_trading {
-            return Vec::new();
-        }
-        if self.paper_trading {
-            return Vec::new();
-        }
-
-        let headers = [
-            ("POLY-API-KEY", self.api_key.clone()),
-            ("POLY-API-SECRET", self.api_secret.clone()),
-        ];
-
-        self.client
-            .get(format!("{}/orders", self.base_url))
-            .headers(headers_to_map(&headers))
-            .send()
-            .ok()
-            .and_then(|r| r.json::<Vec<Value>>().ok())
-            .unwrap_or_default()
-    }
-
     pub fn get_positions(&self) -> HashMap<String, f64> {
         if !self.authenticated && !self.paper_trading {
             return HashMap::new();
