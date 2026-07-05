@@ -19,10 +19,7 @@ impl TomorrowIOFetcher {
     pub fn new(api_key: Option<String>) -> Self {
         Self {
             api_key: api_key.unwrap_or_else(tomorrow_io_api_key),
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+            client: crate::data_pipeline::build_client(30),
             locations: default_locations(),
         }
     }

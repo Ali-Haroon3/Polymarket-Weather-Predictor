@@ -297,18 +297,6 @@ impl BayesianWeatherModel {
         Ok(self.prob_at_least(threshold))
     }
 
-    pub fn predict_temperature_range(
-        &self,
-        lower: f64,
-        upper: f64,
-        _n_samples: usize,
-    ) -> Result<f64, String> {
-        if !self.is_trained {
-            return Err("model must be trained before prediction".to_string());
-        }
-        Ok(self.prob_between(lower, upper))
-    }
-
     pub fn predict_precipitation_probability(
         &self,
         n_samples: usize,

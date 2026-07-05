@@ -126,16 +126,6 @@ impl MonteCarloSimulator {
         percentile(pnl_distribution, (1.0 - confidence_level) * 100.0)
     }
 
-    pub fn calculate_conditional_var(&self, pnl_distribution: &[f64], confidence_level: f64) -> f64 {
-        let threshold = self.calculate_value_at_risk(pnl_distribution, confidence_level);
-        let tail: Vec<f64> = pnl_distribution
-            .iter()
-            .copied()
-            .filter(|p| *p <= threshold)
-            .collect();
-        mean(&tail)
-    }
-
     pub fn optimize_position_size(
         &self,
         entry_price: f64,

@@ -14,8 +14,7 @@ A Rust port of the full Polymarket Weather Prediction System, including:
 - `src/trading/`: Monte Carlo simulator and market maker
 - `src/backtesting/`: market simulator, backtest engine, performance analytics
 - `src/api/`: Polymarket API client + live trading bot
-- `src/database/`: data model structs and connection/session abstractions
-- `src/bin/`: runnable binaries (examples, backtest, init_db)
+- `src/bin/`: runnable binaries (examples, backtest, capture, dashboard)
 - `tests/`: integration tests covering models/trading/backtesting/data/api
 
 ## Build
@@ -31,12 +30,6 @@ cargo test
 ```
 
 ## Run
-
-Initialize database abstraction:
-
-```bash
-cargo run --bin init_db
-```
 
 Run the full backtest example:
 

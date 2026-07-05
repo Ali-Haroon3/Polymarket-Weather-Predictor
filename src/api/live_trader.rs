@@ -6,8 +6,7 @@ use serde_json::Value;
 use crate::api::polymarket_client::PolymarketClient;
 use crate::config::{initial_capital, min_bid_ask_spread};
 use crate::models::BayesianWeatherModel;
-use crate::trading::MarketMaker;
-use crate::types::{PortfolioPnLPoint, PricePoint, ProbabilityPoint, WeatherRecord};
+use crate::types::{PortfolioPnLPoint, WeatherRecord};
 
 #[derive(Debug, Clone)]
 pub struct IterationStats {
@@ -33,7 +32,6 @@ pub struct PerformanceSummary {
 #[derive(Clone)]
 pub struct LiveTrader {
     pub client: PolymarketClient,
-    pub market_maker: MarketMaker,
     pub model: BayesianWeatherModel,
     pub initial_capital: f64,
     pub paper_trading: bool,
@@ -57,7 +55,6 @@ impl LiveTrader {
 
         Self {
             client: PolymarketClient::new(api_key, api_secret, private_key, None, paper_trading),
-            market_maker: MarketMaker::new(capital),
             model: BayesianWeatherModel::default(),
             initial_capital: capital,
             paper_trading,
@@ -281,29 +278,6 @@ impl LiveTrader {
             pnl,
             pnl_pct,
         });
-    }
-
-    pub fn run_backtest(
-        &mut self,
-        historical_prices: &[PricePoint],
-        probability_forecasts: &[ProbabilityPoint],
-        max_iterations: usize,
-    ) -> Value {
-        let iterations = max_iterations
-            .min(historical_prices.len())
-            .min(probability_forecasts.len());
-
-        for _ in 0..iterations {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-
-        serde_json::json!({
-            "total_trades": 0,
-            "winning_trades": 0,
-            "win_rate": 0.0,
-            "final_pnl": 0.0,
-            "pnl_history": self.pnl_history,
-        })
     }
 
     pub fn get_performance_summary(&self) -> Option<PerformanceSummary> {

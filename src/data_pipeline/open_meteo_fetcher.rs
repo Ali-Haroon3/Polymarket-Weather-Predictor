@@ -21,10 +21,7 @@ pub struct OpenMeteoFetcher {
 impl OpenMeteoFetcher {
     pub fn new() -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+            client: crate::data_pipeline::build_client(30),
             locations: default_locations(),
         }
     }
@@ -50,7 +47,55 @@ impl OpenMeteoFetcher {
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Vec<(NaiveDate, f64)> {
-        self.fetch_forecast_max_at(FORECAST_LIVE_BASE_URL, latitude, longitude, start_date, end_date)
+        self.fetch_forecast_max_at(
+            FORECAST_LIVE_BASE_URL,
+            latitude,
+            longitude,
+            start_date,
+            end_date,
+        )
+    }
+
+    /// LIVE hourly temperature forecast (°C) with UTC timestamps, `start`..=`end` UTC dates. The
+    /// station nowcast maxes these over a local-day window (whole day at lead ≥ 1, remaining hours
+    /// on the target day itself). Empty vec on any failure.
+    pub fn fetch_forecast_hourly_utc(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Vec<(chrono::NaiveDateTime, f64)> {
+        let query = [
+            ("latitude", latitude.to_string()),
+            ("longitude", longitude.to_string()),
+            ("start_date", start_date.to_string()),
+            ("end_date", end_date.to_string()),
+            ("hourly", "temperature_2m".to_string()),
+            ("timezone", "UTC".to_string()),
+        ];
+        let Ok(resp) = self.client.get(FORECAST_LIVE_BASE_URL).query(&query).send() else {
+            return Vec::new();
+        };
+        let Ok(json) = resp.json::<Value>() else {
+            return Vec::new();
+        };
+        let hourly = json.get("hourly").cloned().unwrap_or(Value::Null);
+        let times = hourly
+            .get("time")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let temps = as_opt_f64_vec(hourly.get("temperature_2m"));
+        times
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tv)| {
+                let ts = tv.as_str()?;
+                let t = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M").ok()?;
+                Some((t, temps.get(i).copied().flatten()?))
+            })
+            .collect()
     }
 
     fn fetch_forecast_max_at(
@@ -159,25 +204,23 @@ impl OpenMeteoFetcher {
         out
     }
 
-    pub fn fetch_location(&self, location_key: &str, start_date: NaiveDate, end_date: NaiveDate) -> Vec<WeatherRecord> {
+    pub fn fetch_location(
+        &self,
+        location_key: &str,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Vec<WeatherRecord> {
         let Some((lat, lon, _name)) = self.locations.get(location_key) else {
             return Vec::new();
         };
 
-        self.fetch_daily_observations(*lat, *lon, start_date, end_date, &format!("OPEN_METEO_{location_key}"))
-    }
-
-    pub fn fetch_multiple_locations(
-        &self,
-        location_keys: &[String],
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-    ) -> Vec<WeatherRecord> {
-        let mut out = Vec::new();
-        for key in location_keys {
-            out.extend(self.fetch_location(key, start_date, end_date));
-        }
-        out
+        self.fetch_daily_observations(
+            *lat,
+            *lon,
+            start_date,
+            end_date,
+            &format!("OPEN_METEO_{location_key}"),
+        )
     }
 }
 

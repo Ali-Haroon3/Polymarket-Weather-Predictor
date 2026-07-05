@@ -1,0 +1,51 @@
+# Daily forward capture in the cloud — replaces the laptop launchd agent so data accrues even when
+# the machine is closed. Runs at 15:00 UTC: the exact capture geometry the per-(city, lead) sigma
+# tables in src/stations.rs were fitted at (launchd's 9:00 Denver drifts an hour with DST; this
+# doesn't). Every API the daemon touches is anonymous, so there are no secrets here.
+name: daily-capture
+
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bin capture_prices --bin weather_dashboard
+
+      - name: Capture prices
+        # Tolerate transient fetch failures (same contract as scripts/daily_capture.sh): the
+        # dashboard still re-renders from the last-good captures.jsonl.
+        continue-on-error: true
+        run: ./target/release/capture_prices
+
+      - name: Render dashboard
+        run: ./target/release/weather_dashboard --output dashboard.html
+
+      - name: Commit data
+        run: |
+          git config user.name "daily-capture"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/captures.jsonl dashboard.html
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "Daily capture $(date -u +%F)"
+            git pull --rebase origin main
+            git push
+          fi

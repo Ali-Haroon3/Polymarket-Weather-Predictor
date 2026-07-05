@@ -6,8 +6,6 @@ use dotenvy::dotenv;
 pub struct CityConfig {
     pub lat: f64,
     pub lon: f64,
-    pub noaa_station: Option<&'static str>,
-    pub nws_station: Option<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,13 +33,6 @@ pub struct MonteCarloParams {
     pub random_seed: u64,
     pub volatility_window: usize,
     pub correlation_lookback: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct DataPipelineParams {
-    pub batch_size: usize,
-    pub validation_threshold: f64,
-    pub missing_data_threshold: f64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -96,6 +87,44 @@ pub fn tomorrow_io_api_key() -> String {
     env_or("TOMORROW_IO_API_KEY", "")
 }
 
+/// Kalshi API host for CREDENTIALED trade endpoints (no path). Defaults to the DEMO/paper
+/// environment so nothing touches real money until you point it at prod.
+pub fn kalshi_base_url() -> String {
+    dotenv().ok();
+    env_or("KALSHI_BASE_URL", "https://demo-api.kalshi.co")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Kalshi host for anonymous MARKET DATA (production prices — what forward calibration needs).
+/// Public GETs, no credentials involved, so this defaults to prod deliberately.
+pub fn kalshi_public_base_url() -> String {
+    dotenv().ok();
+    env_or("KALSHI_PUBLIC_BASE_URL", "https://api.elections.kalshi.com")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+pub fn kalshi_api_key_id() -> String {
+    dotenv().ok();
+    env_or("KALSHI_API_KEY_ID", "")
+}
+
+/// The RSA private key PEM used to sign Kalshi requests: inline `KALSHI_PRIVATE_KEY_PEM` wins, else
+/// read the file at `KALSHI_PRIVATE_KEY_PATH`. Empty when neither is set (Kalshi then silently skipped).
+pub fn kalshi_private_key_pem() -> String {
+    dotenv().ok();
+    let inline = env_or("KALSHI_PRIVATE_KEY_PEM", "");
+    if !inline.is_empty() {
+        return inline;
+    }
+    let path = env_or("KALSHI_PRIVATE_KEY_PATH", "");
+    if path.is_empty() {
+        return String::new();
+    }
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
 pub fn initial_capital() -> f64 {
     dotenv().ok();
     env_or("INITIAL_CAPITAL", "100000")
@@ -133,14 +162,6 @@ pub fn monte_carlo_params() -> MonteCarloParams {
     }
 }
 
-pub fn data_pipeline_params() -> DataPipelineParams {
-    DataPipelineParams {
-        batch_size: 1000,
-        validation_threshold: 0.95,
-        missing_data_threshold: 0.05,
-    }
-}
-
 pub fn backtest_params() -> BacktestParams {
     let mut cities = HashMap::new();
 
@@ -149,8 +170,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 40.71,
             lon: -74.01,
-            noaa_station: Some("GHCND:USW00023023"),
-            nws_station: Some("KNYC"),
         },
     );
 
@@ -159,8 +178,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 34.05,
             lon: -118.24,
-            noaa_station: Some("GHCND:USW00012918"),
-            nws_station: Some("KLAX"),
         },
     );
 
@@ -169,8 +186,6 @@ pub fn backtest_params() -> BacktestParams {
         CityConfig {
             lat: 51.51,
             lon: -0.13,
-            noaa_station: None,
-            nws_station: None,
         },
     );
 

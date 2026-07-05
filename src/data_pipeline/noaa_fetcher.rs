@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use chrono::NaiveDate;
 use serde_json::Value;
 
@@ -18,10 +16,7 @@ impl NOAAFetcher {
         Self {
             api_key: noaa_api_key(),
             base_url: noaa_base_url(),
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+            client: crate::data_pipeline::build_client(30),
         }
     }
 
@@ -78,27 +73,6 @@ impl NOAAFetcher {
             .collect()
     }
 
-    pub fn fetch_bulk_data(
-        &self,
-        station_ids: &[String],
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-    ) -> Vec<RawObservation> {
-        let mut out = Vec::new();
-        for station_id in station_ids {
-            out.extend(self.fetch_daily_observations(station_id, start_date, end_date, None));
-        }
-        out
-    }
-
-    pub fn fetch_major_us_stations(&self, start_date: NaiveDate, end_date: NaiveDate) -> Vec<RawObservation> {
-        let ids = major_stations().keys().cloned().collect::<Vec<_>>();
-        self.fetch_bulk_data(&ids, start_date, end_date)
-    }
-
-    pub fn get_station_metadata(&self, station_id: &str) -> Option<StationMeta> {
-        major_stations().get(station_id).cloned()
-    }
 }
 
 impl Default for NOAAFetcher {
@@ -107,73 +81,3 @@ impl Default for NOAAFetcher {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct StationMeta {
-    pub name: &'static str,
-    pub lat: f64,
-    pub lon: f64,
-}
-
-pub fn major_stations() -> HashMap<String, StationMeta> {
-    [
-        (
-            "GHCND:USW00023023",
-            StationMeta {
-                name: "NEW YORK, NY",
-                lat: 40.77,
-                lon: -73.87,
-            },
-        ),
-        (
-            "GHCND:USW00094846",
-            StationMeta {
-                name: "CHICAGO, IL",
-                lat: 41.99,
-                lon: -87.93,
-            },
-        ),
-        (
-            "GHCND:USW00012918",
-            StationMeta {
-                name: "LOS ANGELES, CA",
-                lat: 34.05,
-                lon: -118.24,
-            },
-        ),
-        (
-            "GHCND:USW00013060",
-            StationMeta {
-                name: "DALLAS, TX",
-                lat: 32.85,
-                lon: -96.85,
-            },
-        ),
-        (
-            "GHCND:USW00014827",
-            StationMeta {
-                name: "DENVER, CO",
-                lat: 39.74,
-                lon: -104.99,
-            },
-        ),
-        (
-            "GHCND:USW00093017",
-            StationMeta {
-                name: "MIAMI, FL",
-                lat: 25.80,
-                lon: -80.27,
-            },
-        ),
-        (
-            "GHCND:USW00024234",
-            StationMeta {
-                name: "BOSTON, MA",
-                lat: 42.36,
-                lon: -71.01,
-            },
-        ),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
-}

@@ -121,8 +121,8 @@ impl CliArgs {
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map_err(|_| format!("invalid date '{value}', expected YYYY-MM-DD"))
+    polymarket_weather_predictor::utils::parse_date(value)
+        .ok_or_else(|| format!("invalid date '{value}', expected YYYY-MM-DD"))
 }
 
 fn usage() -> String {
