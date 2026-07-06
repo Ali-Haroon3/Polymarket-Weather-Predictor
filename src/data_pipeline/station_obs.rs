@@ -86,6 +86,22 @@ pub fn forecast_day_max_c(
         })
 }
 
+/// Equal-weight blend of per-model forecast day-maxes (°C): the estimator the sigma/bias tables
+/// are fitted against. Mean of each model's own max over the window; requires ≥2 models with data
+/// (the fit did), else None so the caller degrades to the legacy path.
+pub fn blend_forecast_day_max_c(
+    model_series: &[Vec<(NaiveDateTime, f64)>],
+    target: NaiveDate,
+    station: &Station,
+    from_utc: Option<NaiveDateTime>,
+) -> Option<f64> {
+    let maxes: Vec<f64> = model_series
+        .iter()
+        .filter_map(|s| forecast_day_max_c(s, target, station, from_utc))
+        .collect();
+    (maxes.len() >= 2).then(|| maxes.iter().sum::<f64>() / maxes.len() as f64)
+}
+
 /// Assemble the phase-aware (mu, sigma) in °C. `runmax_c` = obs so far (Post/DayOf), `rest_c` =
 /// forecast max of the not-yet-elapsed part (DayOf) or of the whole day (Lead). None when the
 /// needed inputs are missing — callers fall back to the legacy pricing path.

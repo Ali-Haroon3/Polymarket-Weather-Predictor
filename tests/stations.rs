@@ -4,7 +4,8 @@ use chrono::{NaiveDate, NaiveDateTime};
 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::data_pipeline::station_obs::{
-    forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, Phase,
+    blend_forecast_day_max_c, forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c,
+    Phase,
 };
 use polymarket_weather_predictor::stations::{
     station_for, Station, KALSHI_STATIONS, POST_SIGMA, STATIONS,
@@ -160,4 +161,20 @@ fn nowcast_fuses_obs_and_forecast_per_phase() {
     let (_, sig) = nowcast_mu_sigma(denver, Phase::Lead(5), None, Some(28.0)).unwrap();
     assert!((sig - polymarket_weather_predictor::stations::FAR_SIGMA).abs() < 1e-9);
     assert_eq!(nowcast_mu_sigma(denver, Phase::Lead(1), None, None), None);
+}
+
+#[test]
+fn blend_averages_per_model_maxes_and_needs_two_models() {
+    let denver = station("Denver");
+    let m1 = vec![
+        (dt("2026-06-30 18:00"), 30.0),
+        (dt("2026-06-30 21:00"), 32.0),
+    ];
+    let m2 = vec![(dt("2026-06-30 19:00"), 28.0)];
+    // mean of per-model maxes (32, 28) — NOT the max of the pooled hours (32).
+    let b = blend_forecast_day_max_c(&[m1.clone(), m2], d("2026-06-30"), denver, None).unwrap();
+    assert!((b - 30.0).abs() < 1e-9);
+    // a single surviving model is not the fitted estimator — degrade instead of misprice
+    assert!(blend_forecast_day_max_c(&[m1], d("2026-06-30"), denver, None).is_none());
+    assert!(blend_forecast_day_max_c(&[], d("2026-06-30"), denver, None).is_none());
 }

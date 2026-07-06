@@ -24,7 +24,7 @@ use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::station_obs::{
-    forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
+    blend_forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
 };
 use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
 use polymarket_weather_predictor::models::BayesianWeatherModel;
@@ -353,7 +353,7 @@ struct StationPricer {
     obs_fetcher: IemObsFetcher,
     open_meteo: OpenMeteoFetcher,
     obs_cache: HashMap<String, Vec<(NaiveDateTime, f64)>>,
-    forecast_cache: HashMap<String, Vec<(NaiveDateTime, f64)>>,
+    forecast_cache: HashMap<String, Vec<Vec<(NaiveDateTime, f64)>>>,
 }
 
 impl StationPricer {
@@ -387,12 +387,13 @@ impl StationPricer {
                     st,
                     Some(cutoff),
                 );
-                let rest = forecast_day_max_c(self.forecast(st)?, r.target_date, st, Some(cutoff));
+                let rest =
+                    blend_forecast_day_max_c(self.forecast(st)?, r.target_date, st, Some(cutoff));
                 (run, rest)
             }
             Phase::Lead(_) => (
                 None,
-                forecast_day_max_c(self.forecast(st)?, r.target_date, st, None),
+                blend_forecast_day_max_c(self.forecast(st)?, r.target_date, st, None),
             ),
         };
         nowcast_mu_sigma(st, phase, runmax, rest)
@@ -408,10 +409,10 @@ impl StationPricer {
         (!v.is_empty()).then_some(v.as_slice())
     }
 
-    fn forecast(&mut self, st: &Station) -> Option<&[(NaiveDateTime, f64)]> {
+    fn forecast(&mut self, st: &Station) -> Option<&[Vec<(NaiveDateTime, f64)>]> {
         if !self.forecast_cache.contains_key(st.iem_id) {
             // 16-day horizon; a target beyond it simply yields no hours -> legacy fallback.
-            let got = self.open_meteo.fetch_forecast_hourly_utc(
+            let got = self.open_meteo.fetch_forecast_hourly_models_utc(
                 st.lat,
                 st.lon,
                 self.today - Duration::days(1),

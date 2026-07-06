@@ -11,6 +11,16 @@ pub const BASE_URL: &str = "https://archive-api.open-meteo.com/v1/archive";
 pub const FORECAST_BASE_URL: &str = "https://historical-forecast-api.open-meteo.com/v1/forecast";
 /// Live forecast (future dates), for pricing active markets at real trading lead.
 pub const FORECAST_LIVE_BASE_URL: &str = "https://api.open-meteo.com/v1/forecast";
+/// The equal-weight blend the station error model (`stations.rs`) is fitted against. Measured
+/// 10–40% lower daily-high error than any single member (ECMWF-heavy weights did WORSE than equal
+/// weights — ifs025 is the weakest member at station scale). Changing this list invalidates the
+/// fitted sigma/bias tables.
+pub const BLEND_MODELS: &[&str] = &[
+    "ecmwf_ifs025",
+    "gfs_seamless",
+    "ukmo_seamless",
+    "icon_seamless",
+];
 
 #[derive(Clone)]
 pub struct OpenMeteoFetcher {
@@ -56,22 +66,24 @@ impl OpenMeteoFetcher {
         )
     }
 
-    /// LIVE hourly temperature forecast (°C) with UTC timestamps, `start`..=`end` UTC dates. The
-    /// station nowcast maxes these over a local-day window (whole day at lead ≥ 1, remaining hours
-    /// on the target day itself). Empty vec on any failure.
-    pub fn fetch_forecast_hourly_utc(
+    /// LIVE hourly temperature forecast (°C) with UTC timestamps, one series PER MODEL of the
+    /// equal-weight blend the station error tables were fitted against (`BLEND_MODELS`). The
+    /// station nowcast maxes each series over a local-day window and averages the maxes. Models
+    /// with no data are dropped; empty vec on total failure.
+    pub fn fetch_forecast_hourly_models_utc(
         &self,
         latitude: f64,
         longitude: f64,
         start_date: NaiveDate,
         end_date: NaiveDate,
-    ) -> Vec<(chrono::NaiveDateTime, f64)> {
+    ) -> Vec<Vec<(chrono::NaiveDateTime, f64)>> {
         let query = [
             ("latitude", latitude.to_string()),
             ("longitude", longitude.to_string()),
             ("start_date", start_date.to_string()),
             ("end_date", end_date.to_string()),
             ("hourly", "temperature_2m".to_string()),
+            ("models", BLEND_MODELS.join(",")),
             ("timezone", "UTC".to_string()),
         ];
         let Ok(resp) = self.client.get(FORECAST_LIVE_BASE_URL).query(&query).send() else {
@@ -86,14 +98,20 @@ impl OpenMeteoFetcher {
             .and_then(|x| x.as_array())
             .cloned()
             .unwrap_or_default();
-        let temps = as_opt_f64_vec(hourly.get("temperature_2m"));
-        times
+        BLEND_MODELS
             .iter()
-            .enumerate()
-            .filter_map(|(i, tv)| {
-                let ts = tv.as_str()?;
-                let t = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M").ok()?;
-                Some((t, temps.get(i).copied().flatten()?))
+            .filter_map(|m| {
+                let temps = as_opt_f64_vec(hourly.get(format!("temperature_2m_{m}").as_str()));
+                let series: Vec<(chrono::NaiveDateTime, f64)> = times
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, tv)| {
+                        let ts = tv.as_str()?;
+                        let t = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M").ok()?;
+                        Some((t, temps.get(i).copied().flatten()?))
+                    })
+                    .collect();
+                (!series.is_empty()).then_some(series)
             })
             .collect()
     }
