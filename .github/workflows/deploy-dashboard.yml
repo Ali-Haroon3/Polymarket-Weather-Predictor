@@ -1,0 +1,49 @@
+# Publish dashboard.html to GitHub Pages so the daily readout has a stable URL
+# (https://ali-haroon3.github.io/Polymarket-Weather-Predictor/). Triggered by workflow_run —
+# NOT `push` — because daily-capture commits with GITHUB_TOKEN, and token-pushed commits never
+# fire push events. Deploys only this repo's project site; other Pages sites on the account are
+# separate deployments and are unaffected.
+name: deploy-dashboard
+
+on:
+  workflow_run:
+    workflows: [daily-capture]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # On workflow_run, deploy only after a successful capture; manual dispatch always deploys.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main # the capture run commits dashboard.html to main before this fires
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true # create the Pages site (build_type=workflow) on first run
+
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          cp dashboard.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
