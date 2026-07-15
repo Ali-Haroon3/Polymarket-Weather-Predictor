@@ -34,9 +34,14 @@ jobs:
         with:
           ref: main # the capture run commits dashboard.html to main before this fires
 
+      # REQUIRES a one-time manual step: Settings → Pages → Source → "GitHub Actions"
+      # (or `gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow`). A workflow's
+      # GITHUB_TOKEN cannot create the Pages site itself — without the site, this step fails with
+      # "Create Pages site failed: Resource not accessible by integration". See README "Deployment".
+      # `enablement: true` is kept so the workflow self-heals once the token is allowed to create it.
       - uses: actions/configure-pages@v5
         with:
-          enablement: true # create the Pages site (build_type=workflow) on first run
+          enablement: true # configure (or, when permitted, create) the Pages site on first run
 
       - name: Stage site
         run: |

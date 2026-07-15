@@ -116,6 +116,40 @@ cargo run --release --bin capture_prices    # run daily (cron / schedule)
 It appends to `data/captures.jsonl`, which the dashboard reads to populate the forward-PnL panel and
 the live model-vs-market disagreement signals.
 
+## Deployment (GitHub Pages)
+
+The dashboard is published to a stable URL by two chained workflows:
+
+- `.github/workflows/daily-capture.yml` — runs 15:00 UTC daily (and on manual dispatch): builds
+  `capture_prices` + `weather_dashboard`, captures prices, re-renders `dashboard.html`, and commits
+  it to `main`.
+- `.github/workflows/deploy-dashboard.yml` — runs after a successful `daily-capture` (via
+  `workflow_run`) or on manual dispatch: publishes `dashboard.html` as `index.html` to GitHub Pages.
+
+Live URL: <https://ali-haroon3.github.io/Polymarket-Weather-Predictor/>
+
+### One-time setup (required before the first deploy can succeed)
+
+The deploy uses the **"GitHub Actions"** Pages source, which needs the Pages site to exist. A
+workflow's `GITHUB_TOKEN` is **not allowed to create the site the first time** — that is the
+`Create Pages site failed: Resource not accessible by integration` error you get if this step is
+skipped. Enable Pages once, as the repo owner:
+
+- **In the UI:** Settings → Pages → Build and deployment → **Source: "GitHub Actions"**.
+- **Or via the API** (with a token that has Pages admin / `repo` scope — a workflow token will not
+  work here):
+
+  ```bash
+  gh api -X POST repos/Ali-Haroon3/Polymarket-Weather-Predictor/pages -f build_type=workflow
+  ```
+
+Once Pages is enabled, deploys succeed automatically after each daily capture. To publish immediately
+without waiting for 15:00 UTC, trigger a deploy manually:
+
+```bash
+gh workflow run deploy-dashboard.yml       # Actions → deploy-dashboard → Run workflow
+```
+
 ## Environment Variables
 
 Optional variables (defaults are provided in `src/config.rs`):
