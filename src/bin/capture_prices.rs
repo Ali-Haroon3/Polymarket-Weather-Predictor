@@ -22,7 +22,7 @@ use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
-    AirQualityByDay, AI_LOG_MODELS,
+    AirQualityByDay, AI_LOG_CANDIDATES,
 };
 use polymarket_weather_predictor::data_pipeline::{
     MultiSourceAggregator, OpenMeteoFetcher, StationPricer,
@@ -414,8 +414,9 @@ impl SignalLogger {
             .unwrap_or((None, None))
     }
 
-    /// Target-day daily high (°C) per model in `AI_LOG_MODELS`, at the coords the row was priced
-    /// at: the venue's resolution station when mapped, else the city registry.
+    /// Target-day daily high (°C) per logical model in `AI_LOG_CANDIDATES` (0 = AIFS,
+    /// 1 = GraphCast), at the coords the row was priced at: the venue's resolution station when
+    /// mapped, else the city registry.
     fn ai_forecasts(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
         let coords = station_for(&r.city, &r.source)
             .map(|st| (st.lat, st.lon))
@@ -425,16 +426,16 @@ impl SignalLogger {
         };
         let key = format!("{lat:.3},{lon:.3}");
         if !self.ai_cache.contains_key(&key) {
-            let maps: Vec<HashMap<NaiveDate, f64>> = AI_LOG_MODELS
+            let maps: Vec<HashMap<NaiveDate, f64>> = AI_LOG_CANDIDATES
                 .iter()
-                .map(|m| {
+                .map(|cands| {
                     self.open_meteo
-                        .fetch_forecast_max_live_model(
+                        .fetch_forecast_max_live_candidates(
                             lat,
                             lon,
                             self.today,
                             self.today + Duration::days(15),
-                            m,
+                            cands,
                         )
                         .into_iter()
                         .collect()
