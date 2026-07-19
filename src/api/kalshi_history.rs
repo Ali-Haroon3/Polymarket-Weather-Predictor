@@ -61,14 +61,15 @@ pub enum KalshiHistoryError {
     BadKey,
 }
 
-/// Signs Kalshi requests. Present only when both a key id and a parseable private key are configured.
-struct KalshiAuth {
+/// Signs Kalshi requests. Present only when both a key id and a parseable private key are
+/// configured. Shared with the credentialed trade client (`kalshi_trade`).
+pub(crate) struct KalshiAuth {
     key_id: String,
     signing_key: SigningKey<Sha256>,
 }
 
 impl KalshiAuth {
-    fn from_env() -> Option<Self> {
+    pub(crate) fn from_env() -> Option<Self> {
         let key_id = config::kalshi_api_key_id();
         let pem = config::kalshi_private_key_pem();
         if key_id.is_empty() || pem.trim().is_empty() {
@@ -89,7 +90,7 @@ impl KalshiAuth {
 
     /// The three auth headers for `method path` at the current time. Signs `timestamp+method+path`
     /// with RSA-PSS(SHA-256) — the query string is NOT part of the signed message.
-    fn headers(&self, method: &str, path: &str) -> Vec<(&'static str, String)> {
+    pub(crate) fn headers(&self, method: &str, path: &str) -> Vec<(&'static str, String)> {
         let ts = Utc::now().timestamp_millis().to_string();
         let msg = format!("{ts}{method}{path}");
         // PSS salt is randomized by design; this is network auth, not a deterministic model path.
