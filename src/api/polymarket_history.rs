@@ -41,6 +41,18 @@ pub struct WeatherMarketRow {
     pub best_bid: Option<f64>,
     #[serde(default)]
     pub best_ask: Option<f64>,
+    /// Attention/liquidity proxies as the venue reports them, logged for sentiment research
+    /// (does market hype predict mispricing?). Log-only — nothing in the trading path reads
+    /// them. None ⇒ the venue doesn't expose that field (Polymarket has no open interest;
+    /// Kalshi's anonymous list may null any of them).
+    #[serde(default)]
+    pub volume: Option<f64>,
+    #[serde(default)]
+    pub volume_24h: Option<f64>,
+    #[serde(default)]
+    pub open_interest: Option<f64>,
+    #[serde(default)]
+    pub liquidity: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -699,6 +711,11 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
             .and_then(value_as_f64)
             .filter(|p| *p > 0.0 && *p < 1.0)
     };
+    // Gamma serves these as either numbers or numeric strings depending on endpoint/age.
+    let num = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| market.get(*k).and_then(value_as_f64))
+    };
     Some(WeatherMarketRow {
         target_date,
         market_id,
@@ -713,6 +730,10 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
         source: "polymarket".to_string(),
         best_bid: book_side("bestBid"),
         best_ask: book_side("bestAsk"),
+        volume: num(&["volumeNum", "volume"]),
+        volume_24h: num(&["volume24hr"]),
+        open_interest: None,
+        liquidity: num(&["liquidityNum", "liquidity"]),
     })
 }
 
@@ -1114,7 +1135,10 @@ mod tests {
             "lastTradePrice": 0.23,
             "endDate": "2026-05-20T12:00:00Z",
             "outcomes": "[\"Yes\", \"No\"]",
-            "outcomePrices": "[\"0\", \"1\"]"
+            "outcomePrices": "[\"0\", \"1\"]",
+            "volumeNum": 15423.7,
+            "volume24hr": "812.25",
+            "liquidityNum": 9051.0
         });
         let row = parse_weather_market_row(&m).expect("should parse");
         assert_eq!(row.city, "London");
@@ -1128,6 +1152,10 @@ mod tests {
             row.target_date,
             NaiveDate::from_ymd_opt(2026, 5, 20).unwrap()
         );
+        assert_eq!(row.volume, Some(15423.7));
+        assert_eq!(row.volume_24h, Some(812.25), "gamma numeric strings parse");
+        assert_eq!(row.liquidity, Some(9051.0));
+        assert_eq!(row.open_interest, None, "Polymarket has no open interest");
 
         // Active market (unresolved) -> outcome None.
         let active = serde_json::json!({

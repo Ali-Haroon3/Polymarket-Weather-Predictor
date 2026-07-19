@@ -325,6 +325,10 @@ fn parse_kalshi_market(m: &Value) -> Option<WeatherMarketRow> {
         source: "kalshi".to_string(),
         best_bid: kalshi_cents(m, "yes_bid"),
         best_ask: kalshi_cents(m, "yes_ask"),
+        volume: m.get("volume").and_then(value_as_f64),
+        volume_24h: m.get("volume_24h").and_then(value_as_f64),
+        open_interest: m.get("open_interest").and_then(value_as_f64),
+        liquidity: m.get("liquidity").and_then(value_as_f64),
     })
 }
 
@@ -467,7 +471,8 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
         let row = parse_kalshi_market(&market(
             r#"{"ticker":"KXHIGHCHI-26JUN30-B71.5","title":"Highest temperature in Chicago",
                 "yes_sub_title":"71° to 72°","strike_type":"between","floor_strike":71,"cap_strike":72,
-                "last_price":34,"yes_bid":30,"yes_ask":37,"result":"","close_time":"2026-07-01T04:59:00Z"}"#,
+                "last_price":34,"yes_bid":30,"yes_ask":37,"result":"","close_time":"2026-07-01T04:59:00Z",
+                "volume":5120,"volume_24h":301,"open_interest":2214}"#,
         ))
         .expect("should parse");
         assert_eq!(row.source, "kalshi");
@@ -480,6 +485,10 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
         assert_eq!(row.best_bid, Some(0.30));
         assert_eq!(row.best_ask, Some(0.37));
         assert_eq!(row.outcome, None);
+        assert_eq!(row.volume, Some(5120.0));
+        assert_eq!(row.volume_24h, Some(301.0));
+        assert_eq!(row.open_interest, Some(2214.0));
+        assert_eq!(row.liquidity, None, "absent field stays None");
         // Target day comes from the TICKER; close_time is the morning after (would be off by one).
         assert_eq!(
             row.target_date,

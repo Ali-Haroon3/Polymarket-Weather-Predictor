@@ -26,6 +26,9 @@ use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::station_obs::{
     blend_forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
 };
+use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
+    AirQualityByDay, AI_LOG_MODELS,
+};
 use polymarket_weather_predictor::data_pipeline::{MultiSourceAggregator, OpenMeteoFetcher};
 use polymarket_weather_predictor::models::BayesianWeatherModel;
 use polymarket_weather_predictor::stations::{station_for, Station};
@@ -79,6 +82,33 @@ struct Snapshot {
     best_bid: Option<f64>,
     #[serde(default)]
     best_ask: Option<f64>,
+    /// Attention proxies as the venue reported them at capture (sentiment research: does hype
+    /// money widen mispricing?). Log-only — the trading path never reads them. None ⇒ captured
+    /// before these were logged, or the venue omits the field.
+    #[serde(default)]
+    volume: Option<f64>,
+    #[serde(default)]
+    volume_24h: Option<f64>,
+    #[serde(default)]
+    open_interest: Option<f64>,
+    #[serde(default)]
+    liquidity: Option<f64>,
+    /// Forecast smoke for the TARGET day at the city (UTC-day max of hourly PM2.5 µg/m³ / US AQI):
+    /// wildfire smoke measurably suppresses daily highs and the blend only partly prices it, so
+    /// this is the covariate needed to test a smoke-day bias correction. None ⇒ beyond the ~week
+    /// air-quality horizon or fetch failed. Log-only.
+    #[serde(default)]
+    pm25_max: Option<f64>,
+    #[serde(default)]
+    us_aqi_max: Option<f64>,
+    /// Daily-high forecasts (°C) for the target day from the AI models in `AI_LOG_MODELS`, at the
+    /// same coords the row was priced at (resolution station when mapped, else city). Log-only:
+    /// they must beat the blend on accrued captures BEFORE entering it — changing `BLEND_MODELS`
+    /// invalidates the fitted sigma/bias tables.
+    #[serde(default)]
+    forecast_high_aifs: Option<f64>,
+    #[serde(default)]
+    forecast_high_graphcast: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -288,8 +318,11 @@ fn process(
             }
         }
 
+        let mut signals = SignalLogger::new(today);
         for r in fresh {
             let fs = used.get(r.market_id.as_str()).copied();
+            let (pm25_max, us_aqi_max) = signals.air_quality(r);
+            let (forecast_high_aifs, forecast_high_graphcast) = signals.ai_forecasts(r);
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -308,6 +341,14 @@ fn process(
                 forecast_sigma: fs.map(|(_, sigma)| sigma),
                 best_bid: r.best_bid,
                 best_ask: r.best_ask,
+                volume: r.volume,
+                volume_24h: r.volume_24h,
+                open_interest: r.open_interest,
+                liquidity: r.liquidity,
+                pm25_max,
+                us_aqi_max,
+                forecast_high_aifs,
+                forecast_high_graphcast,
             });
         }
     }
@@ -425,6 +466,78 @@ impl StationPricer {
     }
 }
 
+/// Log-only extra signals for fresh snapshots (attention / smoke / AI-model fields). One fetch per
+/// city (air quality) or per priced coordinate per model (AI forecasts) per run, cached; any
+/// failure is just None fields — never blocks the capture.
+struct SignalLogger {
+    today: NaiveDate,
+    open_meteo: OpenMeteoFetcher,
+    aq_cache: HashMap<String, AirQualityByDay>,
+    ai_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+}
+
+impl SignalLogger {
+    fn new(today: NaiveDate) -> Self {
+        Self {
+            today,
+            open_meteo: OpenMeteoFetcher::new(),
+            aq_cache: HashMap::new(),
+            ai_cache: HashMap::new(),
+        }
+    }
+
+    /// (pm2.5 max, US AQI max) forecast for the row's target day at the CITY coords — smoke is
+    /// regional, so downtown vs airport doesn't matter the way it does for temperature.
+    fn air_quality(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
+        let Some((lat, lon)) = cities::coords(&r.city) else {
+            return (None, None);
+        };
+        if !self.aq_cache.contains_key(&r.city) {
+            let got = self.open_meteo.fetch_air_quality_day_max(lat, lon);
+            self.aq_cache.insert(r.city.clone(), got);
+        }
+        self.aq_cache[&r.city]
+            .get(&r.target_date)
+            .copied()
+            .unwrap_or((None, None))
+    }
+
+    /// Target-day daily high (°C) per model in `AI_LOG_MODELS`, at the coords the row was priced
+    /// at: the venue's resolution station when mapped, else the city registry.
+    fn ai_forecasts(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
+        let coords = station_for(&r.city, &r.source)
+            .map(|st| (st.lat, st.lon))
+            .or_else(|| cities::coords(&r.city));
+        let Some((lat, lon)) = coords else {
+            return (None, None);
+        };
+        let key = format!("{lat:.3},{lon:.3}");
+        if !self.ai_cache.contains_key(&key) {
+            let maps: Vec<HashMap<NaiveDate, f64>> = AI_LOG_MODELS
+                .iter()
+                .map(|m| {
+                    self.open_meteo
+                        .fetch_forecast_max_live_model(
+                            lat,
+                            lon,
+                            self.today,
+                            self.today + Duration::days(15),
+                            m,
+                        )
+                        .into_iter()
+                        .collect()
+                })
+                .collect();
+            self.ai_cache.insert(key.clone(), maps);
+        }
+        let maps = &self.ai_cache[&key];
+        (
+            maps.first().and_then(|m| m.get(&r.target_date)).copied(),
+            maps.get(1).and_then(|m| m.get(&r.target_date)).copied(),
+        )
+    }
+}
+
 fn load_snapshots(path: &PathBuf) -> Vec<Snapshot> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -508,4 +621,35 @@ fn load_forecasts(markets: &[SimulatedMarket]) -> HashMap<String, HashMap<NaiveD
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_capture_rows_deserialize_with_new_fields_none() {
+        // A pre-signal-logging line, verbatim shape from data/captures.jsonl.
+        let line = r#"{"captured_at":"2026-07-01","target_date":"2026-07-02","market_id":"m1",
+            "market_title":"Highest temperature in NYC on July 2?","market_type":"temp_bucket",
+            "threshold":88.0,"threshold_upper":89.0,"unit":"F","city":"NYC","entry_price":0.3,
+            "model_estimate":0.25,"outcome":null,"source":"polymarket",
+            "forecast_high":31.2,"forecast_sigma":1.1,"best_bid":0.28,"best_ask":0.33}"#;
+        let s: Snapshot = serde_json::from_str(line).expect("old rows must keep parsing");
+        assert_eq!(s.volume, None);
+        assert_eq!(s.open_interest, None);
+        assert_eq!(s.pm25_max, None);
+        assert_eq!(s.forecast_high_aifs, None);
+
+        // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
+        let mut s2 = s;
+        s2.volume = Some(1234.5);
+        s2.us_aqi_max = Some(158.0);
+        s2.forecast_high_graphcast = Some(33.1);
+        let round: Snapshot =
+            serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
+        assert_eq!(round.volume, Some(1234.5));
+        assert_eq!(round.us_aqi_max, Some(158.0));
+        assert_eq!(round.forecast_high_graphcast, Some(33.1));
+    }
 }
