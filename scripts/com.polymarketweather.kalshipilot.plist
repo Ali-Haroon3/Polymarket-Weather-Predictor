@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.polymarketweather.kalshipilot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/aliharoon/Documents/Polymarket-Weather-Predictor/scripts/pilot_run.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/aliharoon/Documents/Polymarket-Weather-Predictor</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>11</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/aliharoon/Documents/Polymarket-Weather-Predictor/logs/pilot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/aliharoon/Documents/Polymarket-Weather-Predictor/logs/pilot.log</string>
+</dict>
+</plist>
