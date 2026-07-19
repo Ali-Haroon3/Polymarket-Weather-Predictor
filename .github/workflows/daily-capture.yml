@@ -1,12 +1,14 @@
 # Daily forward capture in the cloud — replaces the laptop launchd agent so data accrues even when
-# the machine is closed. Runs at 15:00 UTC: the exact capture geometry the per-(city, lead) sigma
+# the machine is closed. Targets ~15:00 UTC: the exact capture geometry the per-(city, lead) sigma
 # tables in src/stations.rs were fitted at (launchd's 9:00 Denver drifts an hour with DST; this
-# doesn't). Every API the daemon touches is anonymous, so there are no secrets here.
+# doesn't). Scheduled at 14:50, not 15:00 — top-of-hour crons queue behind GitHub's rush and can
+# slip badly (the Jul 13 run fired at 16:01); an off-peak minute lands closer to the target hour
+# on average. Every API the daemon touches is anonymous, so there are no secrets here.
 name: daily-capture
 
 on:
   schedule:
-    - cron: "0 15 * * *"
+    - cron: "50 14 * * *"
   workflow_dispatch:
 
 permissions:
