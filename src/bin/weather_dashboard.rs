@@ -822,7 +822,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         }
     };
     s.push_str(&format!(
-        "<p class=\"muted\">Rule: trade when the edge at the EXECUTABLE price (BUY fills at the ask, SELL at the bid; last trade only when no book was captured) ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of bankroll), compound a ${:.0} bankroll. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code> / <code>--sell-only</code> / <code>--shrink-edge</code>.</p>",
+        "<p class=\"muted\">Rule: trade when the edge at the EXECUTABLE price (BUY fills at the ask, SELL at the bid; last trade only when no book was captured) ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of bankroll), compound a ${:.0} bankroll. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code> / <code>--sell-only</code> / <code>--raw-edge</code>.</p>",
         sp.edge_threshold * 100.0,
         sp.kelly_fraction,
         sp.max_position_pct * 100.0,
@@ -901,7 +901,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         let variants = [
             ("Baseline (no filters, incl. day-of)", base),
             (
-                "Skip day-of (default)",
+                "Skip day-of (old default)",
                 StrategyParams {
                     trade_day_of: false,
                     ..base
@@ -938,7 +938,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 },
             ),
             (
-                "Skip day-of + shrunk edge (walk-forward λ)",
+                "Skip day-of + shrunk edge (default since 07-19; walk-forward λ)",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -987,7 +987,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 ));
             }
             s.push_str(&format!(
-                "</tbody></table><p class=\"muted\" style=\"font-size:11px\">Through-origin regression of realized (outcome − price) on predicted (model − price) over resolved lead ≥ 1 captures; lead ≤ 0 rows are excluded (their prices already embed the outcome). λ = 1 would mean the model's disagreements are fully real. The trading value is clamped to [0, 1] and falls back to pooled-then-1.0 under {} rows. <code>--shrink-edge</code> trades on λ·edge.</p>",
+                "</tbody></table><p class=\"muted\" style=\"font-size:11px\">Through-origin regression of realized (outcome − price) on predicted (model − price) over resolved lead ≥ 1 captures; lead ≤ 0 rows are excluded (their prices already embed the outcome). λ = 1 would mean the model's disagreements are fully real. The trading value is clamped to [0, 1] and falls back to pooled-then-1.0 under {} rows. Shrunk-edge (λ·edge) has been the DEFAULT since 2026-07-19; <code>--raw-edge</code> restores raw edges.</p>",
                 ShrinkageFit::MIN_N,
             ));
         }
@@ -1383,6 +1383,7 @@ impl Args {
                 || k == "--trade-day-of"
                 || k == "--sell-only"
                 || k == "--shrink-edge"
+                || k == "--raw-edge"
             {
                 flags.push(k);
                 i += 1;
@@ -1439,7 +1440,12 @@ impl Args {
             no_sell_buckets: flags.iter().any(|f| f == "--no-sell-buckets"),
             trade_day_of: flags.iter().any(|f| f == "--trade-day-of"),
             sell_only: flags.iter().any(|f| f == "--sell-only"),
-            shrink_edge: flags.iter().any(|f| f == "--shrink-edge"),
+            // Promoted to DEFAULT 2026-07-19: shrunk-edge led the A/B tracker every day of its
+            // two-week window (+5.0% ROI / 35% capture vs +2.2% / 11% for the raw-edge default at
+            // the July 19 checkpoint, 631 settled trades) and is walk-forward, so its lead is
+            // out-of-sample by construction. `--raw-edge` restores the old behavior;
+            // `--shrink-edge` is still accepted as a (now redundant) no-op.
+            shrink_edge: !flags.iter().any(|f| f == "--raw-edge"),
         })
     }
 }
@@ -1449,7 +1455,7 @@ fn usage() -> String {
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
-     [--max-edge 0.30] [--no-sell-buckets] [--trade-day-of] [--sell-only] [--shrink-edge]"
+     [--max-edge 0.30] [--no-sell-buckets] [--trade-day-of] [--sell-only] [--raw-edge]"
         .to_string()
 }
 

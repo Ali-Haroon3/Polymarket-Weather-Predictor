@@ -25,7 +25,21 @@ pub const BLEND_MODELS: &[&str] = &[
 /// any beats the blend at station scale BEFORE it earns a slot in `BLEND_MODELS` (see the warning
 /// above: changing the blend invalidates the fitted sigma/bias tables). Queried one model per
 /// request so a renamed/unavailable model degrades to no data without failing the others.
-pub const AI_LOG_MODELS: &[&str] = &["ecmwf_aifs025", "gfs_graphcast025"];
+///
+/// Each logical model is a CANDIDATE LIST of (endpoint, model-string) pairs tried in order until
+/// one returns data — the July 19 capture proved the sandbox-unverifiable single guesses wrong
+/// (`ecmwf_aifs025` is the stale pre-operational AIFS name; the current registry says
+/// `ecmwf_aifs025_single`), and family endpoints (`/v1/ecmwf`, `/v1/gfs`) are covered in case the
+/// generic `/v1/forecast` doesn't route a model. Order is stable: index 0 = AIFS, 1 = GraphCast.
+pub const AI_LOG_MODELS: &[&str] = &["ecmwf_aifs025_single", "gfs_graphcast025"];
+pub const AI_LOG_CANDIDATES: &[&[(&str, &str)]] = &[
+    &[
+        ("forecast", "ecmwf_aifs025_single"),
+        ("ecmwf", "ecmwf_aifs025_single"),
+        ("forecast", "ecmwf_aifs025"),
+    ],
+    &[("forecast", "gfs_graphcast025"), ("gfs", "gfs_graphcast025")],
+];
 /// Air-quality forecast endpoint (separate host from the weather API). Used to log forecast smoke
 /// (PM2.5 / US AQI) for market target days: heavy wildfire smoke measurably suppresses daily highs
 /// and the blend models only partly price the effect.
@@ -127,17 +141,20 @@ impl OpenMeteoFetcher {
             .collect()
     }
 
-    /// LIVE daily-high forecast (degC) from a single named model (e.g. one of `AI_LOG_MODELS`),
-    /// for logging alongside the blend. Empty vec on any failure — including an unknown model
-    /// name, which the API rejects for the whole request (why callers pass one model at a time).
+    /// LIVE daily-high forecast (degC) from a single named model at the given API endpoint
+    /// ("forecast", "ecmwf", "gfs", …), for logging alongside the blend. Empty vec on any failure
+    /// — including an unknown model name, which the API rejects for the whole request (why
+    /// callers pass one model at a time).
     pub fn fetch_forecast_max_live_model(
         &self,
         latitude: f64,
         longitude: f64,
         start_date: NaiveDate,
         end_date: NaiveDate,
+        endpoint: &str,
         model: &str,
     ) -> Vec<(NaiveDate, f64)> {
+        let url = format!("https://api.open-meteo.com/v1/{endpoint}");
         let query = [
             ("latitude", latitude.to_string()),
             ("longitude", longitude.to_string()),
@@ -147,13 +164,73 @@ impl OpenMeteoFetcher {
             ("models", model.to_string()),
             ("timezone", "auto".to_string()),
         ];
-        let Ok(resp) = self.client.get(FORECAST_LIVE_BASE_URL).query(&query).send() else {
+        let Ok(resp) = self.client.get(&url).query(&query).send() else {
             return Vec::new();
         };
         let Ok(json) = resp.json::<Value>() else {
             return Vec::new();
         };
         parse_daily_max(&json, Some(model))
+    }
+
+    /// First non-empty result across a candidate list of (endpoint, model) pairs, with a final
+    /// hourly-series fallback (collapsed to per-local-date maxima client-side) in case a model
+    /// serves hourly but not daily aggregation. Empty when every candidate fails.
+    pub fn fetch_forecast_max_live_candidates(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        candidates: &[(&str, &str)],
+    ) -> Vec<(NaiveDate, f64)> {
+        for (endpoint, model) in candidates {
+            let got = self.fetch_forecast_max_live_model(
+                latitude, longitude, start_date, end_date, endpoint, model,
+            );
+            if !got.is_empty() {
+                return got;
+            }
+        }
+        for (endpoint, model) in candidates {
+            let got = self.fetch_hourly_day_max(
+                latitude, longitude, start_date, end_date, endpoint, model,
+            );
+            if !got.is_empty() {
+                return got;
+            }
+        }
+        Vec::new()
+    }
+
+    /// Hourly temperature for one model collapsed to per-date maxima (the model's own timezone via
+    /// `timezone=auto`, matching how daily aggregation would bucket hours).
+    fn fetch_hourly_day_max(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        endpoint: &str,
+        model: &str,
+    ) -> Vec<(NaiveDate, f64)> {
+        let url = format!("https://api.open-meteo.com/v1/{endpoint}");
+        let query = [
+            ("latitude", latitude.to_string()),
+            ("longitude", longitude.to_string()),
+            ("start_date", start_date.to_string()),
+            ("end_date", end_date.to_string()),
+            ("hourly", "temperature_2m".to_string()),
+            ("models", model.to_string()),
+            ("timezone", "auto".to_string()),
+        ];
+        let Ok(resp) = self.client.get(&url).query(&query).send() else {
+            return Vec::new();
+        };
+        let Ok(json) = resp.json::<Value>() else {
+            return Vec::new();
+        };
+        parse_hourly_day_max(&json, model)
     }
 
     /// Forecast PM2.5 (µg/m³) and US AQI at these coords, collapsed to per-UTC-date hourly maxima
@@ -328,6 +405,36 @@ fn parse_daily_max(json: &Value, model: Option<&str>) -> Vec<(NaiveDate, f64)> {
     out
 }
 
+/// Hourly temperature_2m for one model collapsed to per-date maxima. Accepts the plain key or the
+/// model-suffixed variant, like `parse_daily_max`.
+fn parse_hourly_day_max(json: &Value, model: &str) -> Vec<(NaiveDate, f64)> {
+    let hourly = json.get("hourly").cloned().unwrap_or(Value::Null);
+    let times = hourly
+        .get("time")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let field = hourly
+        .get("temperature_2m")
+        .or_else(|| hourly.get(format!("temperature_2m_{model}").as_str()));
+    let temps = as_opt_f64_vec(field);
+
+    let mut by_date: HashMap<NaiveDate, f64> = HashMap::new();
+    for (i, tv) in times.iter().enumerate() {
+        let Some(ts) = tv.as_str() else { continue };
+        let Ok(t) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M") else {
+            continue;
+        };
+        if let Some(v) = temps.get(i).copied().flatten() {
+            let e = by_date.entry(t.date()).or_insert(f64::NEG_INFINITY);
+            *e = e.max(v);
+        }
+    }
+    let mut out: Vec<(NaiveDate, f64)> = by_date.into_iter().collect();
+    out.sort_by_key(|(d, _)| *d);
+    out
+}
+
 /// Hourly pm2_5/us_aqi series collapsed to per-UTC-date maxima. A date appears whenever it has any
 /// hour of either series; a series absent for that date stays None.
 fn parse_air_quality_day_max(json: &Value) -> AirQualityByDay {
@@ -396,6 +503,34 @@ mod tests {
             parse_daily_max(&suffixed, None).is_empty(),
             "no model given ⇒ suffixed key is not searched"
         );
+    }
+
+    #[test]
+    fn parse_hourly_day_max_collapses_and_accepts_suffixed_key() {
+        let json = serde_json::json!({"hourly": {
+            "time": ["2026-07-20T00:00", "2026-07-20T14:00", "2026-07-21T13:00"],
+            "temperature_2m_gfs_graphcast025": [24.1, 33.7, null]
+        }});
+        let got = parse_hourly_day_max(&json, "gfs_graphcast025");
+        assert_eq!(
+            got,
+            vec![(NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(), 33.7)],
+            "hours collapse to the day max; all-null days are dropped"
+        );
+        assert!(parse_hourly_day_max(&serde_json::json!({}), "x").is_empty());
+    }
+
+    #[test]
+    fn ai_log_candidates_align_with_model_names() {
+        // Snapshot fields are positional (0 = AIFS, 1 = GraphCast) — keep the two constants in
+        // lockstep so a reorder can't silently swap which model lands in which field.
+        assert_eq!(AI_LOG_CANDIDATES.len(), AI_LOG_MODELS.len());
+        for (i, name) in AI_LOG_MODELS.iter().enumerate() {
+            assert!(
+                AI_LOG_CANDIDATES[i].iter().any(|(_, m)| m == name),
+                "AI_LOG_MODELS[{i}] = {name} missing from its candidate list"
+            );
+        }
     }
 
     #[test]
