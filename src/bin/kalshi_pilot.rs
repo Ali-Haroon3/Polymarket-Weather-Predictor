@@ -168,6 +168,13 @@ async fn run() -> Result<(), String> {
         positions.len(),
         resting.len()
     );
+    // Live orders can never commit more than the funds actually there, whatever --max-exposure
+    // says. Dry runs keep the configured cap so the ledger shows what a funded account would do.
+    let exposure_cap = if cfg.live {
+        cfg.max_exposure.min(balance)
+    } else {
+        cfg.max_exposure
+    };
 
     // Dedupe set: anything held, resting, or ever decided "order" in the ledger.
     let mut committed: HashSet<String> = positions.iter().map(|p| p.ticker.clone()).collect();
@@ -223,7 +230,7 @@ async fn run() -> Result<(), String> {
                 let cost = contracts as f64 * no_price;
                 if contracts == 0 {
                     row.decision = "skip_stake_below_one_contract".into();
-                } else if exposure + cost > cfg.max_exposure {
+                } else if exposure + cost > exposure_cap {
                     row.decision = "skip_exposure_cap".into();
                 } else {
                     row.contracts = contracts;
@@ -278,7 +285,7 @@ async fn run() -> Result<(), String> {
         "\n{} orders {} · ${:.2} committed exposure · full decision log appended to {}",
         placed,
         if cfg.live { "PLACED" } else { "would be placed (dry run)" },
-        exposure,
+        exposure.max(0.0), // .max(0.0) irons out "-0.00" (negative-zero display artifact)
         cfg.ledger_path.display()
     );
     Ok(())
