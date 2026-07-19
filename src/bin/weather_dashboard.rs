@@ -945,6 +945,19 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // Gate 2 (BUYs ≈ zero profit) confirmed on both the pre- and post-Jul-13 samples, so
+            // the next promotion candidate stacks SELL-only ON the shrunk default. This is also the
+            // kalshi_pilot's shape (minus its Kalshi-only venue filter) — the row doubles as the
+            // paper twin of the real-money config.
+            (
+                "Skip day-of + shrunk + SELL only (pilot-shaped)",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    sell_only: true,
+                    ..base
+                },
+            ),
         ];
         s.push_str("<h3 class=\"sub-h\">Filter A/B — forward tracker</h3>");
         s.push_str("<table><thead><tr><th>Config</th><th>Trades</th><th>PnL</th><th>ROI</th><th>Capture</th><th>Win</th></tr></thead><tbody>");
