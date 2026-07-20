@@ -44,6 +44,17 @@ use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 /// grid model priced finished days as if still uncertain (fake edges) and the wrong microclimate.
 const FORECAST_SIGMA: f64 = 2.0;
 
+/// Summer bias (°C, ADDED to the forecast) for legacy-path cities, measured Jul 2026 against
+/// realized highs recovered from winning bucket markets and shrunk toward 0 by n/(n+6). These
+/// cities have no station mapping, so the seasonal drift the station tables absorbed in their
+/// 2026-07-20 refit has to live here. Istanbul's −1.5 °C is the whole reason its markets kept
+/// producing fake SELL edges. Hong Kong had too little settled data to fit (n=2) — left at 0.
+const LEGACY_SUMMER_BIAS_C: &[(&str, f64)] = &[
+    ("Moscow", -0.48),
+    ("Istanbul", -1.55),
+    ("Tel Aviv", 0.62),
+];
+
 /// Only direct-lookup markets whose target day is within this many days behind today. A market that
 /// hasn't resolved this long after its date is voided/stuck; stop re-querying it every run.
 const RESOLVE_WINDOW_DAYS: i64 = 45;
@@ -273,8 +284,16 @@ fn process(
         );
 
         let sims: Vec<SimulatedMarket> = legacy.iter().map(|r| to_sim(r)).collect();
-        // Price legacy markets from the LIVE forecast of their target day (real trading lead).
-        let forecasts = load_forecasts(&sims);
+        // Price legacy markets from the LIVE forecast of their target day (real trading lead),
+        // debiased by the fitted per-city summer offset (see LEGACY_SUMMER_BIAS_C).
+        let mut forecasts = load_forecasts(&sims);
+        for (city, delta) in LEGACY_SUMMER_BIAS_C {
+            if let Some(days) = forecasts.get_mut(*city) {
+                for v in days.values_mut() {
+                    *v += delta;
+                }
+            }
+        }
         // Climatology is only the fallback for markets the forecast can't reach (beyond horizon).
         // Active markets are future-dated, so the archive returns nothing for the rest anyway — skip
         // the slow multi-source aggregator entirely when every market already has a forecast.
