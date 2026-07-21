@@ -329,23 +329,103 @@ fn ref_price(c: &Capture) -> Option<f64> {
     (px > 0.0 && px < 1.0).then_some(px)
 }
 
+/// The resolved lead ≥ 1 observations the shrinkage fit runs on, as
+/// (target_date, venue, claimed edge, realized edge), sorted by target date. Shared by the
+/// full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is fitted
+/// on exactly the same rows.
+fn shrinkage_obs(captures: &[Capture]) -> Vec<(NaiveDate, String, f64, f64)> {
+    let mut obs: Vec<(NaiveDate, String, f64, f64)> = captures
+        .iter()
+        .filter_map(|c| {
+            let (est, outcome) = (c.model_estimate?, c.outcome?);
+            if c.lead() < 1 {
+                return None; // lead ≤ 0 prices already embed the outcome — see ShrinkageFit docs
+            }
+            let px = ref_price(c)?;
+            Some((c.target_date, c.source.clone(), est - px, outcome - px))
+        })
+        .collect();
+    obs.sort_by(|a, b| a.0.cmp(&b.0));
+    obs
+}
+
 /// Fit shrinkage on every resolved lead ≥ 1 capture (full sample). Causal for the OPEN book —
 /// everything observed resolved strictly before any open market will — and the source of the
 /// diagnostics table. The settled-PnL replay in `run_strategy` uses its own walk-forward fit.
 fn fit_shrinkage(captures: &[Capture]) -> ShrinkageFit {
     let mut fit = ShrinkageFit::default();
-    for c in captures {
-        let (Some(est), Some(outcome)) = (c.model_estimate, c.outcome) else {
-            continue;
-        };
-        if c.lead() < 1 {
-            continue; // lead ≤ 0 prices already embed the outcome — see ShrinkageFit docs
-        }
-        if let Some(px) = ref_price(c) {
-            fit.observe(&c.source, est - px, outcome - px);
-        }
+    for (_, venue, x, y) in shrinkage_obs(captures) {
+        fit.observe(&venue, x, y);
     }
     fit
+}
+
+/// Trailing window (in days of resolved target dates) for the λ-drift diagnostics. The
+/// full-sample slope grows sluggish as history accrues — a two-week anti-signal stretch barely
+/// moves it — so the trailing slope is the early-warning view.
+const TRAIL_WINDOW_DAYS: i64 = 14;
+/// Minimum window rows before a trailing slope is shown; under this the slope is mostly noise.
+const TRAIL_MIN_N: usize = 20;
+
+/// Raw through-origin slope over one venue's observations with target date in [from, to]:
+/// (slope, n). Unlike `ShrinkageFit::lambda` this is unclamped and has no fallback chain — it is
+/// a diagnostic, not a trading value.
+fn window_slope(
+    obs: &[(NaiveDate, String, f64, f64)],
+    venue: &str,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> (f64, usize) {
+    let (mut xx, mut xy, mut n) = (0.0, 0.0, 0usize);
+    for (d, v, x, y) in obs {
+        if v == venue && *d >= from && *d <= to {
+            xx += x * x;
+            xy += x * y;
+            n += 1;
+        }
+    }
+    (if xx > 0.0 { xy / xx } else { 0.0 }, n)
+}
+
+/// Per-resolved-date λ series for the drift chart: for each date, the walk-forward trading λ
+/// (expanding fit through that date, i.e. exactly what `run_strategy` would trade the NEXT date
+/// on) and the trailing `TRAIL_WINDOW_DAYS` raw slope (None under `TRAIL_MIN_N` rows).
+struct LambdaSeries {
+    dates: Vec<NaiveDate>,
+    /// venue → (expanding trading λ, trailing window slope) per date, same indexing as `dates`.
+    by_venue: BTreeMap<String, (Vec<f64>, Vec<Option<f64>>)>,
+}
+
+fn lambda_series(obs: &[(NaiveDate, String, f64, f64)]) -> LambdaSeries {
+    let mut dates: Vec<NaiveDate> = obs.iter().map(|o| o.0).collect();
+    dates.sort();
+    dates.dedup();
+    let venues: Vec<String> = {
+        let mut v: Vec<String> = obs.iter().map(|o| o.1.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let mut by_venue: BTreeMap<String, (Vec<f64>, Vec<Option<f64>>)> = venues
+        .iter()
+        .map(|v| (v.clone(), (Vec::new(), Vec::new())))
+        .collect();
+    let mut fit = ShrinkageFit::default();
+    let mut i = 0;
+    for d in &dates {
+        while i < obs.len() && obs[i].0 == *d {
+            fit.observe(&obs[i].1, obs[i].2, obs[i].3);
+            i += 1;
+        }
+        for venue in &venues {
+            let (slope, n) =
+                window_slope(obs, venue, *d - Duration::days(TRAIL_WINDOW_DAYS - 1), *d);
+            let e = by_venue.get_mut(venue).unwrap();
+            e.0.push(fit.lambda(venue));
+            e.1.push((n >= TRAIL_MIN_N).then_some(slope));
+        }
+    }
+    LambdaSeries { dates, by_venue }
 }
 
 /// One booked trade: a settled capture that cleared the edge filter.
@@ -983,26 +1063,52 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
 
         // Edge-shrinkage diagnostics: how much of its claimed edge does the model actually realize,
         // per venue? Fitted on resolved lead ≥ 1 captures only (lead ≤ 0 prices embed the outcome).
+        let obs = shrinkage_obs(captures);
         let fit = fit_shrinkage(captures);
         let rows = fit.rows();
         if !rows.is_empty() {
+            let last = obs.last().map(|o| o.0).unwrap();
             s.push_str(
                 "<h3 class=\"sub-h\">Edge shrinkage λ — realized per unit of claimed edge</h3>",
             );
-            s.push_str("<table><thead><tr><th>Venue</th><th>Fitted λ (raw slope)</th><th>Resolved rows</th><th>Used for trading</th></tr></thead><tbody>");
+            s.push_str(&format!("<table><thead><tr><th>Venue</th><th>Fitted λ (raw slope)</th><th>Resolved rows</th><th>Trailing {TRAIL_WINDOW_DAYS}d slope</th><th>Window rows</th><th>Used for trading</th></tr></thead><tbody>"));
             for (venue, slope, n) in &rows {
+                let (tslope, tn) = window_slope(
+                    &obs,
+                    venue,
+                    last - Duration::days(TRAIL_WINDOW_DAYS - 1),
+                    last,
+                );
+                let tcell = if tn >= TRAIL_MIN_N {
+                    format!("{tslope:.2}")
+                } else {
+                    "–".to_string()
+                };
                 s.push_str(&format!(
-                    "<tr><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td></tr>",
+                    "<tr><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td></tr>",
                     esc(venue),
                     slope,
                     n,
+                    tcell,
+                    tn,
                     fit.lambda(venue),
                 ));
             }
             s.push_str(&format!(
-                "</tbody></table><p class=\"muted\" style=\"font-size:11px\">Through-origin regression of realized (outcome − price) on predicted (model − price) over resolved lead ≥ 1 captures; lead ≤ 0 rows are excluded (their prices already embed the outcome). λ = 1 would mean the model's disagreements are fully real. The trading value is clamped to [0, 1] and falls back to pooled-then-1.0 under {} rows. Shrunk-edge (λ·edge) has been the DEFAULT since 2026-07-19; <code>--raw-edge</code> restores raw edges.</p>",
+                "</tbody></table><p class=\"muted\" style=\"font-size:11px\">Through-origin regression of realized (outcome − price) on predicted (model − price) over resolved lead ≥ 1 captures; lead ≤ 0 rows are excluded (their prices already embed the outcome). λ = 1 would mean the model's disagreements are fully real. The trading value is clamped to [0, 1] and falls back to pooled-then-1.0 under {} rows. The trailing {TRAIL_WINDOW_DAYS}-day slope is the drift early-warning: the full-sample fit barely moves on a bad fortnight once history accrues. Shrunk-edge (λ·edge) has been the DEFAULT since 2026-07-19; <code>--raw-edge</code> restores raw edges.</p>",
                 ShrinkageFit::MIN_N,
             ));
+
+            // λ drift over time: is the model's realized edge decaying, and would the pilot's
+            // λ floor see it in time?
+            let series = lambda_series(&obs);
+            if series.dates.len() >= 2 {
+                s.push_str("<h3 class=\"sub-h\">Edge shrinkage λ over time</h3>");
+                s.push_str(&lambda_svg(&series));
+                s.push_str(&format!(
+                    "<p class=\"muted\" style=\"font-size:11px\">Solid: the walk-forward trading λ (expanding fit through each resolved date — what the strategy trades the next date on). Dashed: the trailing {TRAIL_WINDOW_DAYS}-day raw slope (shown once its window has ≥ {TRAIL_MIN_N} rows) — the drift signal. Dotted line at 0.2 is the pilot's <code>--lambda-floor</code> circuit breaker; at 0 the model's disagreement carries no information, below 0 it is anti-signal.</p>"
+                ));
+            }
         }
     }
 
@@ -1228,6 +1334,143 @@ fn equity_svg(bankroll: f64, trades: &[Trade]) -> String {
         bankroll
     ));
     p.push_str("</svg>");
+    p
+}
+
+/// Per-venue series color for the λ chart. Validated CVD-safe pair against the panel surface
+/// (#11151d): worst-case adjacent ΔE ≥ 22 across protan/deutan/tritan, both ≥ 3:1 contrast.
+fn venue_color(venue: &str) -> &'static str {
+    match venue {
+        "polymarket" => "#5b8def",
+        "kalshi" => "#c08a1f",
+        _ => "#8a93a6",
+    }
+}
+
+/// λ-drift chart: per venue, the walk-forward trading λ (solid) and the trailing-window raw
+/// slope (dashed) over resolved target dates, with reference lines at 1 (edges fully real),
+/// 0.2 (the pilot's λ-floor circuit breaker) and 0 (no information).
+fn lambda_svg(series: &LambdaSeries) -> String {
+    // Extra right padding reserves a gutter for the venue direct labels beside the line ends.
+    let (w, h, pad, pad_r) = (640.0, 200.0, 32.0, 100.0);
+    let d0 = series.dates[0];
+    let dspan = (*series.dates.last().unwrap() - d0).num_days().max(1) as f64;
+    let x = |d: NaiveDate| pad + (d - d0).num_days() as f64 / dspan * (w - pad - pad_r);
+    // Fixed display domain: trading λ lives in [0, 1]; the raw trailing slope can exceed it and
+    // is clamped to the domain rather than rescaling the chart around outliers.
+    let (lo, hi) = (-0.35, 1.15);
+    let y = |v: f64| h - pad - (v.clamp(lo, hi) - lo) / (hi - lo) * (h - 2.0 * pad);
+
+    let mut p = format!(
+        "<svg viewBox=\"0 0 {w} {h}\" width=\"100%\" height=\"{h}\" style=\"max-width:{w}px\">"
+    );
+    // reference lines + y labels
+    for (v, dash, label) in [
+        (1.0, "4 4", "1.0 — edges fully real"),
+        (0.2, "2 3", "0.2 pilot λ floor"),
+        (0.0, "", "0"),
+    ] {
+        let dash_attr = if dash.is_empty() {
+            String::new()
+        } else {
+            format!(" stroke-dasharray=\"{dash}\"")
+        };
+        p.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"#3a4253\"{dash_attr}/>",
+            pad,
+            y(v),
+            w - pad_r,
+            y(v)
+        ));
+        p.push_str(&format!(
+            "<text x=\"{}\" y=\"{:.1}\" fill=\"#6b7488\" font-size=\"10\">{label}</text>",
+            pad + 2.0,
+            y(v) - 4.0
+        ));
+    }
+    // x-axis date labels: first and last resolved date
+    for (d, anchor) in [(d0, "start"), (*series.dates.last().unwrap(), "end")] {
+        p.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"#6b7488\" font-size=\"10\" text-anchor=\"{anchor}\">{d}</text>",
+            x(d),
+            h - 8.0
+        ));
+    }
+    for (venue, (expanding, trailing)) in &series.by_venue {
+        let color = venue_color(venue);
+        let pts: String = series
+            .dates
+            .iter()
+            .zip(expanding)
+            .map(|(d, v)| format!("{:.1},{:.1}", x(*d), y(*v)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        p.push_str(&format!(
+            "<polyline points=\"{pts}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>"
+        ));
+        // trailing slope: dashed, split into runs so gaps (window under TRAIL_MIN_N) stay gaps
+        let mut run: Vec<String> = Vec::new();
+        for (d, v) in series.dates.iter().zip(trailing) {
+            match v {
+                Some(v) => run.push(format!("{:.1},{:.1}", x(*d), y(*v))),
+                None => {
+                    if run.len() >= 2 {
+                        p.push_str(&format!("<polyline points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"1.5\" stroke-dasharray=\"5 4\" stroke-opacity=\"0.85\"/>", run.join(" ")));
+                    }
+                    run.clear();
+                }
+            }
+        }
+        if run.len() >= 2 {
+            p.push_str(&format!("<polyline points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"1.5\" stroke-dasharray=\"5 4\" stroke-opacity=\"0.85\"/>", run.join(" ")));
+        }
+        // native hover tooltips on the trading-λ points
+        for ((d, e), t) in series.dates.iter().zip(expanding).zip(trailing) {
+            let trail = t.map_or(String::new(), |t| format!(", trailing {t:.2}"));
+            p.push_str(&format!(
+                "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"6\" fill=\"transparent\"><title>{d} {venue}: trading λ {e:.2}{trail}</title></circle>",
+                x(*d),
+                y(*e)
+            ));
+        }
+        // end-dot per series; the direct labels are drawn after the loop with collision spacing
+        let (last_d, last_v) = (*series.dates.last().unwrap(), *expanding.last().unwrap());
+        p.push_str(&format!(
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"3\" fill=\"{color}\"/>",
+            x(last_d),
+            y(last_v)
+        ));
+    }
+    // direct labels at the line ends, pushed apart when series end close together
+    let last_d = *series.dates.last().unwrap();
+    let mut labels: Vec<(&String, f64)> = series
+        .by_venue
+        .iter()
+        .map(|(venue, (expanding, _))| (venue, y(*expanding.last().unwrap()) - 5.0))
+        .collect();
+    labels.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for i in 1..labels.len() {
+        labels[i].1 = labels[i].1.max(labels[i - 1].1 + 12.0);
+    }
+    for (venue, ly) in labels {
+        p.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"#cfd5e1\" font-size=\"10\">{}</text>",
+            x(last_d) + 8.0,
+            ly + 8.0,
+            esc(venue)
+        ));
+    }
+    p.push_str("</svg>");
+    // legend: colored swatch per venue (identity) + line-style key (which λ view)
+    p.push_str("<p class=\"muted\" style=\"font-size:11px;margin:4px 0 0\">");
+    for venue in series.by_venue.keys() {
+        p.push_str(&format!(
+            "<span style=\"display:inline-block;width:14px;height:3px;background:{};vertical-align:middle;margin-right:5px\"></span>{}&nbsp;&nbsp;&nbsp;",
+            venue_color(venue),
+            esc(venue)
+        ));
+    }
+    p.push_str("solid = trading λ (expanding) · dashed = trailing window slope</p>");
     p
 }
 
@@ -1706,6 +1949,53 @@ mod tests {
             anti.observe("kalshi", 0.10, -0.08);
         }
         assert!(anti.lambda("kalshi").abs() < 1e-9);
+    }
+
+    #[test]
+    fn lambda_series_walks_forward_and_gates_trailing_window() {
+        // 20 rows/date over 3 dates, every row claiming edge 0.10 and realizing 0.05 (slope 0.5).
+        let mut caps = Vec::new();
+        for date in ["2026-06-10", "2026-06-11", "2026-06-12"] {
+            for _ in 0..20 {
+                caps.push(cap(date, "Denver", 0.40, Some(0.50), Some(0.45)));
+            }
+        }
+        let obs = shrinkage_obs(&caps);
+        let series = lambda_series(&obs);
+        assert_eq!(series.dates.len(), 3);
+        let (expanding, trailing) = &series.by_venue["polymarket"];
+        // Expanding is the TRADING λ: 1.0 (no shrink) until MIN_N=40 rows, then the fitted 0.5.
+        assert!(
+            (expanding[0] - 1.0).abs() < 1e-9,
+            "n=20 < MIN_N → no shrink"
+        );
+        assert!((expanding[1] - 0.5).abs() < 1e-9, "n=40 → fitted slope");
+        assert!((expanding[2] - 0.5).abs() < 1e-9);
+        // Trailing window covers all dates here and has ≥ TRAIL_MIN_N rows from date 1 on.
+        assert!((trailing[0].unwrap() - 0.5).abs() < 1e-9);
+        assert!((trailing[2].unwrap() - 0.5).abs() < 1e-9);
+        // A thin venue (single date, 5 rows) gets no trailing point at all.
+        let thin: Vec<Capture> = (0..5)
+            .map(|_| cap("2026-06-10", "Denver", 0.40, Some(0.50), Some(0.45)))
+            .collect();
+        let thin_series = lambda_series(&shrinkage_obs(&thin));
+        assert_eq!(thin_series.by_venue["polymarket"].1, vec![None]);
+    }
+
+    #[test]
+    fn window_slope_excludes_rows_outside_the_window() {
+        // An old anti-signal row must not leak into a later window.
+        let caps = vec![
+            cap("2026-06-01", "Denver", 0.40, Some(0.50), Some(0.30)), // slope −1 if included
+            cap("2026-06-20", "Denver", 0.40, Some(0.50), Some(0.45)), // slope 0.5
+        ];
+        let obs = shrinkage_obs(&caps);
+        let to: NaiveDate = "2026-06-20".parse().unwrap();
+        let (slope, n) = window_slope(&obs, "polymarket", to - Duration::days(13), to);
+        assert_eq!(n, 1);
+        assert!((slope - 0.5).abs() < 1e-9);
+        let (_, n_all) = window_slope(&obs, "polymarket", "2026-06-01".parse().unwrap(), to);
+        assert_eq!(n_all, 2);
     }
 
     #[test]
