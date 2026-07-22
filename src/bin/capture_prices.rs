@@ -22,7 +22,7 @@ use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
-    AirQualityByDay, AI_LOG_CANDIDATES,
+    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS,
 };
 use polymarket_weather_predictor::data_pipeline::{
     MultiSourceAggregator, OpenMeteoFetcher, StationPricer,
@@ -115,8 +115,10 @@ struct Snapshot {
     /// invalidates the fitted sigma/bias tables.
     #[serde(default)]
     forecast_high_aifs: Option<f64>,
+    /// Replaced `forecast_high_graphcast` on 2026-07-22: NCEP discontinued GraphCastGFS in
+    /// Dec 2025 (the old field never held a value), and AIGFS is its operational successor.
     #[serde(default)]
-    forecast_high_graphcast: Option<f64>,
+    forecast_high_aigfs: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -207,6 +209,32 @@ async fn run() -> Result<(), String> {
             );
         }
         Err(e) => eprintln!("  Kalshi resolved fetch failed, continuing without it: {e}"),
+    }
+
+    // Kalshi direct-ticker finalize, mirroring the Polymarket direct-id lookup above: the bulk
+    // `status=settled` series scan silently dropped some series in mid-July 2026 (AUS/LAX/MIA
+    // accrued a week of unresolved snapshots while other series kept resolving), but every settled
+    // market still answers a direct ticker lookup. Only past-dated snapshots the bulk scan didn't
+    // just resolve are queried.
+    let kalshi_need: Vec<String> = load_snapshots(&out_path)
+        .into_iter()
+        .filter(|s| {
+            s.outcome.is_none()
+                && s.source == "kalshi"
+                && s.target_date < today
+                && s.target_date >= today - Duration::days(RESOLVE_WINDOW_DAYS)
+                && !outcomes.contains_key(&s.market_id)
+        })
+        .map(|s| s.market_id)
+        .collect();
+    if !kalshi_need.is_empty() {
+        println!(
+            "Finalizing {} past-dated unresolved Kalshi snapshots by direct ticker lookup...",
+            kalshi_need.len()
+        );
+        let found = kalshi.fetch_outcomes_for_tickers(&kalshi_need).await;
+        println!("  {} newly resolved via direct lookup", found.len());
+        outcomes.extend(found);
     }
 
     // ── blocking: weather + model + file IO, off the async executor ──
@@ -338,7 +366,7 @@ fn process(
         for r in fresh {
             let fs = used.get(r.market_id.as_str()).copied();
             let (pm25_max, us_aqi_max) = signals.air_quality(r);
-            let (forecast_high_aifs, forecast_high_graphcast) = signals.ai_forecasts(r);
+            let (forecast_high_aifs, forecast_high_aigfs) = signals.ai_forecasts(r);
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -364,7 +392,7 @@ fn process(
                 pm25_max,
                 us_aqi_max,
                 forecast_high_aifs,
-                forecast_high_graphcast,
+                forecast_high_aigfs,
             });
         }
     }
@@ -405,6 +433,7 @@ struct SignalLogger {
     open_meteo: OpenMeteoFetcher,
     aq_cache: HashMap<String, AirQualityByDay>,
     ai_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+    ai_diag_done: bool,
 }
 
 impl SignalLogger {
@@ -414,6 +443,7 @@ impl SignalLogger {
             open_meteo: OpenMeteoFetcher::new(),
             aq_cache: HashMap::new(),
             ai_cache: HashMap::new(),
+            ai_diag_done: false,
         }
     }
 
@@ -433,8 +463,8 @@ impl SignalLogger {
             .unwrap_or((None, None))
     }
 
-    /// Target-day daily high (°C) per logical model in `AI_LOG_CANDIDATES` (0 = AIFS,
-    /// 1 = GraphCast), at the coords the row was priced at: the venue's resolution station when
+    /// Target-day daily high (°C) per logical model in `AI_LOG_CANDIDATES` (0 = ECMWF AIFS,
+    /// 1 = NOAA AIGFS), at the coords the row was priced at: the venue's resolution station when
     /// mapped, else the city registry.
     fn ai_forecasts(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
         let coords = station_for(&r.city, &r.source)
@@ -447,19 +477,36 @@ impl SignalLogger {
         if !self.ai_cache.contains_key(&key) {
             let maps: Vec<HashMap<NaiveDate, f64>> = AI_LOG_CANDIDATES
                 .iter()
-                .map(|cands| {
-                    self.open_meteo
-                        .fetch_forecast_max_live_candidates(
+                .enumerate()
+                .map(|(i, cands)| {
+                    let (got, served_by) =
+                        self.open_meteo.fetch_forecast_max_live_candidates_tagged(
                             lat,
                             lon,
                             self.today,
                             self.today + Duration::days(15),
                             cands,
-                        )
-                        .into_iter()
-                        .collect()
+                        );
+                    // Once per run, say which candidate actually served each logical model — a
+                    // rename/delisting upstream otherwise just logs null forever (July 19 lesson).
+                    if !self.ai_diag_done {
+                        let name = AI_LOG_MODELS.get(i).copied().unwrap_or("?");
+                        match &served_by {
+                            Some((endpoint, model)) => {
+                                println!(
+                                    "  AI model {name}: served by /v1/{endpoint} models={model}"
+                                )
+                            }
+                            None => eprintln!(
+                                "  AI model {name}: ALL candidates failed — likely renamed or \
+                                 delisted upstream; field will be null this run"
+                            ),
+                        }
+                    }
+                    got.into_iter().collect()
                 })
                 .collect();
+            self.ai_diag_done = true;
             self.ai_cache.insert(key.clone(), maps);
         }
         let maps = &self.ai_cache[&key];
@@ -566,22 +613,26 @@ mod tests {
             "market_title":"Highest temperature in NYC on July 2?","market_type":"temp_bucket",
             "threshold":88.0,"threshold_upper":89.0,"unit":"F","city":"NYC","entry_price":0.3,
             "model_estimate":0.25,"outcome":null,"source":"polymarket",
-            "forecast_high":31.2,"forecast_sigma":1.1,"best_bid":0.28,"best_ask":0.33}"#;
+            "forecast_high":31.2,"forecast_sigma":1.1,"best_bid":0.28,"best_ask":0.33,
+            "forecast_high_graphcast":null}"#;
         let s: Snapshot = serde_json::from_str(line).expect("old rows must keep parsing");
         assert_eq!(s.volume, None);
         assert_eq!(s.open_interest, None);
         assert_eq!(s.pm25_max, None);
         assert_eq!(s.forecast_high_aifs, None);
+        // The retired GraphCast field (never held a value; NCEP killed the model Dec 2025) is
+        // simply ignored on read and dropped on the next rewrite.
+        assert_eq!(s.forecast_high_aigfs, None);
 
         // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
         let mut s2 = s;
         s2.volume = Some(1234.5);
         s2.us_aqi_max = Some(158.0);
-        s2.forecast_high_graphcast = Some(33.1);
+        s2.forecast_high_aigfs = Some(33.1);
         let round: Snapshot =
             serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
         assert_eq!(round.volume, Some(1234.5));
         assert_eq!(round.us_aqi_max, Some(158.0));
-        assert_eq!(round.forecast_high_graphcast, Some(33.1));
+        assert_eq!(round.forecast_high_aigfs, Some(33.1));
     }
 }
