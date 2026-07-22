@@ -30,26 +30,22 @@ pub const BLEND_MODELS: &[&str] = &[
 /// one returns data — the July 19 capture proved the sandbox-unverifiable single guesses wrong
 /// (`ecmwf_aifs025` is the stale pre-operational AIFS name; the current registry says
 /// `ecmwf_aifs025_single`), and family endpoints (`/v1/ecmwf`, `/v1/gfs`) are covered in case the
-/// generic `/v1/forecast` doesn't route a model. Order is stable: index 0 = AIFS, 1 = GraphCast.
-pub const AI_LOG_MODELS: &[&str] = &["ecmwf_aifs025_single", "gfs_graphcast025"];
+/// generic `/v1/forecast` doesn't route a model. Order is stable: index 0 = ECMWF AIFS,
+/// 1 = NOAA AIGFS.
+///
+/// Slot 1 was GraphCast (`gfs_graphcast025`) until 2026-07-22: it logged null on every capture
+/// because NCEP DISCONTINUED the experimental GraphCastGFS/EAGLE runs on 2025-12-17/18 — before
+/// this logging even existed — and Open-Meteo's `gfs_graphcast025` alias still parses but serves
+/// no data. NOAA's operational replacement is AIGFS (live on Open-Meteo as `ncep_aigfs025` since
+/// 2026-01-07, per open-meteo/open-meteo#1633 / PR #1655), so slot 1 logs that instead.
+pub const AI_LOG_MODELS: &[&str] = &["ecmwf_aifs025_single", "ncep_aigfs025"];
 pub const AI_LOG_CANDIDATES: &[&[(&str, &str)]] = &[
     &[
         ("forecast", "ecmwf_aifs025_single"),
         ("ecmwf", "ecmwf_aifs025_single"),
         ("forecast", "ecmwf_aifs025"),
     ],
-    &[
-        ("forecast", "gfs_graphcast025"),
-        ("gfs", "gfs_graphcast025"),
-        // Every name above returned nothing on the Jul 19–21 captures while AIFS flowed fine, so
-        // GraphCast was renamed or delisted upstream (NCEP's GraphCastGFS feed was experimental).
-        // Plausible registry renames tried before concluding it's gone; the capture daemon now
-        // prints which candidate served each logical model (or that all failed), so the next run
-        // with real network access settles it instead of logging null silently.
-        ("forecast", "ncep_gfs_graphcast025"),
-        ("gfs", "ncep_gfs_graphcast025"),
-        ("forecast", "graphcast025"),
-    ],
+    &[("forecast", "ncep_aigfs025"), ("gfs", "ncep_aigfs025")],
 ];
 /// Air-quality forecast endpoint (separate host from the weather API). Used to log forecast smoke
 /// (PM2.5 / US AQI) for market target days: heavy wildfire smoke measurably suppresses daily highs
