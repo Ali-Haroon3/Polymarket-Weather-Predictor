@@ -22,7 +22,7 @@ use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
-    AirQualityByDay, AI_LOG_CANDIDATES,
+    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS,
 };
 use polymarket_weather_predictor::data_pipeline::{
     MultiSourceAggregator, OpenMeteoFetcher, StationPricer,
@@ -207,6 +207,32 @@ async fn run() -> Result<(), String> {
             );
         }
         Err(e) => eprintln!("  Kalshi resolved fetch failed, continuing without it: {e}"),
+    }
+
+    // Kalshi direct-ticker finalize, mirroring the Polymarket direct-id lookup above: the bulk
+    // `status=settled` series scan silently dropped some series in mid-July 2026 (AUS/LAX/MIA
+    // accrued a week of unresolved snapshots while other series kept resolving), but every settled
+    // market still answers a direct ticker lookup. Only past-dated snapshots the bulk scan didn't
+    // just resolve are queried.
+    let kalshi_need: Vec<String> = load_snapshots(&out_path)
+        .into_iter()
+        .filter(|s| {
+            s.outcome.is_none()
+                && s.source == "kalshi"
+                && s.target_date < today
+                && s.target_date >= today - Duration::days(RESOLVE_WINDOW_DAYS)
+                && !outcomes.contains_key(&s.market_id)
+        })
+        .map(|s| s.market_id)
+        .collect();
+    if !kalshi_need.is_empty() {
+        println!(
+            "Finalizing {} past-dated unresolved Kalshi snapshots by direct ticker lookup...",
+            kalshi_need.len()
+        );
+        let found = kalshi.fetch_outcomes_for_tickers(&kalshi_need).await;
+        println!("  {} newly resolved via direct lookup", found.len());
+        outcomes.extend(found);
     }
 
     // ── blocking: weather + model + file IO, off the async executor ──
@@ -405,6 +431,7 @@ struct SignalLogger {
     open_meteo: OpenMeteoFetcher,
     aq_cache: HashMap<String, AirQualityByDay>,
     ai_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+    ai_diag_done: bool,
 }
 
 impl SignalLogger {
@@ -414,6 +441,7 @@ impl SignalLogger {
             open_meteo: OpenMeteoFetcher::new(),
             aq_cache: HashMap::new(),
             ai_cache: HashMap::new(),
+            ai_diag_done: false,
         }
     }
 
@@ -447,19 +475,36 @@ impl SignalLogger {
         if !self.ai_cache.contains_key(&key) {
             let maps: Vec<HashMap<NaiveDate, f64>> = AI_LOG_CANDIDATES
                 .iter()
-                .map(|cands| {
-                    self.open_meteo
-                        .fetch_forecast_max_live_candidates(
+                .enumerate()
+                .map(|(i, cands)| {
+                    let (got, served_by) =
+                        self.open_meteo.fetch_forecast_max_live_candidates_tagged(
                             lat,
                             lon,
                             self.today,
                             self.today + Duration::days(15),
                             cands,
-                        )
-                        .into_iter()
-                        .collect()
+                        );
+                    // Once per run, say which candidate actually served each logical model — a
+                    // rename/delisting upstream otherwise just logs null forever (July 19 lesson).
+                    if !self.ai_diag_done {
+                        let name = AI_LOG_MODELS.get(i).copied().unwrap_or("?");
+                        match &served_by {
+                            Some((endpoint, model)) => {
+                                println!(
+                                    "  AI model {name}: served by /v1/{endpoint} models={model}"
+                                )
+                            }
+                            None => eprintln!(
+                                "  AI model {name}: ALL candidates failed — likely renamed or \
+                                 delisted upstream; field will be null this run"
+                            ),
+                        }
+                    }
+                    got.into_iter().collect()
                 })
                 .collect();
+            self.ai_diag_done = true;
             self.ai_cache.insert(key.clone(), maps);
         }
         let maps = &self.ai_cache[&key];

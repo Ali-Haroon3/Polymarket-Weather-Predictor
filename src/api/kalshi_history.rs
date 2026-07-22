@@ -234,6 +234,42 @@ impl KalshiHistoryDownloader {
         )
     }
 
+    /// Resolve outcomes for specific tickers via direct `GET /markets/<ticker>` lookups — the
+    /// Kalshi analog of `PolymarketHistoryDownloader::fetch_outcomes_for_ids`. The bulk
+    /// `status=settled` series scan silently stopped returning some series in mid-July 2026
+    /// (AUS/LAX/MIA accrued unresolved snapshots for a week while NY/CHI/DEN/PHIL kept resolving),
+    /// but a settled market always answers a direct ticker lookup, which is exactly what the
+    /// capture daemon stored. Unresolved, voided, or missing tickers contribute nothing.
+    pub async fn fetch_outcomes_for_tickers(
+        &self,
+        tickers: &[String],
+    ) -> std::collections::HashMap<String, f64> {
+        let mut out = std::collections::HashMap::new();
+        for ticker in tickers {
+            let path = format!("{API_PREFIX}/markets/{ticker}");
+            let url = format!("{}{path}", self.base_url);
+            let mut req = self.client.get(&url);
+            if let Some(auth) = &self.auth {
+                for (k, v) in auth.headers("GET", &path) {
+                    req = req.header(k, v);
+                }
+            }
+            match req.send().await {
+                Ok(resp) => {
+                    if let Ok(val) = resp.json::<Value>().await {
+                        if let Some(o) = settled_outcome_from_market_response(&val) {
+                            out.insert(ticker.clone(), o);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("  direct Kalshi outcome lookup for {ticker} failed: {e}"),
+            }
+            // gentle on the public API: ~10 req/s
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        out
+    }
+
     /// Cursor-paginate `GET /markets?series_ticker=<series>&status=<status>` up to `limit` rows.
     async fn fetch_markets(
         &self,
@@ -377,6 +413,12 @@ fn kalshi_price(m: &Value) -> f64 {
         })
         .unwrap_or(50.0);
     (cents / 100.0).clamp(0.0, 1.0)
+}
+
+/// Outcome from a single-market response, which nests the market under `"market"` (a bare market
+/// object is accepted too, matching the bulk-list element shape).
+fn settled_outcome_from_market_response(val: &Value) -> Option<f64> {
+    kalshi_outcome(val.get("market").unwrap_or(val))
 }
 
 /// Realized outcome from Kalshi's `result` (yes/no), or None while unresolved / voided.
@@ -544,6 +586,23 @@ b1qMwu767YVXiVRAobFRB/Gy\n\
             r#"{"ticker":"X","title":"Will the Fed cut rates","close_time":"2026-06-30T23:00:00Z"}"#
         ))
         .is_none());
+    }
+
+    #[test]
+    fn settled_outcome_handles_wrapped_and_bare_market() {
+        let wrapped: Value =
+            serde_json::from_str(r#"{"market":{"ticker":"KXHIGHLAX-26JUL14-T81","result":"no"}}"#)
+                .unwrap();
+        assert_eq!(settled_outcome_from_market_response(&wrapped), Some(0.0));
+
+        let bare: Value =
+            serde_json::from_str(r#"{"ticker":"KXHIGHLAX-26JUL14-T81","result":"yes"}"#).unwrap();
+        assert_eq!(settled_outcome_from_market_response(&bare), Some(1.0));
+
+        let unresolved: Value =
+            serde_json::from_str(r#"{"market":{"ticker":"KXHIGHLAX-26JUL22-T81","result":""}}"#)
+                .unwrap();
+        assert_eq!(settled_outcome_from_market_response(&unresolved), None);
     }
 
     #[test]

@@ -38,7 +38,18 @@ pub const AI_LOG_CANDIDATES: &[&[(&str, &str)]] = &[
         ("ecmwf", "ecmwf_aifs025_single"),
         ("forecast", "ecmwf_aifs025"),
     ],
-    &[("forecast", "gfs_graphcast025"), ("gfs", "gfs_graphcast025")],
+    &[
+        ("forecast", "gfs_graphcast025"),
+        ("gfs", "gfs_graphcast025"),
+        // Every name above returned nothing on the Jul 19–21 captures while AIFS flowed fine, so
+        // GraphCast was renamed or delisted upstream (NCEP's GraphCastGFS feed was experimental).
+        // Plausible registry renames tried before concluding it's gone; the capture daemon now
+        // prints which candidate served each logical model (or that all failed), so the next run
+        // with real network access settles it instead of logging null silently.
+        ("forecast", "ncep_gfs_graphcast025"),
+        ("gfs", "ncep_gfs_graphcast025"),
+        ("forecast", "graphcast025"),
+    ],
 ];
 /// Air-quality forecast endpoint (separate host from the weather API). Used to log forecast smoke
 /// (PM2.5 / US AQI) for market target days: heavy wildfire smoke measurably suppresses daily highs
@@ -46,6 +57,9 @@ pub const AI_LOG_CANDIDATES: &[&[(&str, &str)]] = &[
 pub const AIR_QUALITY_BASE_URL: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 /// Per-UTC-date (max PM2.5 µg/m³, max US AQI) — the shape `fetch_air_quality_day_max` returns.
 pub type AirQualityByDay = HashMap<NaiveDate, (Option<f64>, Option<f64>)>;
+/// Daily-max series plus the `(endpoint, model)` candidate that served it (`None` = all failed) —
+/// the shape `fetch_forecast_max_live_candidates_tagged` returns.
+pub type TaggedDailyMax = (Vec<(NaiveDate, f64)>, Option<(String, String)>);
 
 #[derive(Clone)]
 pub struct OpenMeteoFetcher {
@@ -184,12 +198,30 @@ impl OpenMeteoFetcher {
         end_date: NaiveDate,
         candidates: &[(&str, &str)],
     ) -> Vec<(NaiveDate, f64)> {
+        self.fetch_forecast_max_live_candidates_tagged(
+            latitude, longitude, start_date, end_date, candidates,
+        )
+        .0
+    }
+
+    /// Like [`Self::fetch_forecast_max_live_candidates`], but also reports WHICH
+    /// `(endpoint, model)` candidate served the data — `None` when every candidate failed — so
+    /// callers can surface upstream model renames/delistings instead of logging null forever
+    /// (the July 19 silent-failure lesson).
+    pub fn fetch_forecast_max_live_candidates_tagged(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        candidates: &[(&str, &str)],
+    ) -> TaggedDailyMax {
         for (endpoint, model) in candidates {
             let got = self.fetch_forecast_max_live_model(
                 latitude, longitude, start_date, end_date, endpoint, model,
             );
             if !got.is_empty() {
-                return got;
+                return (got, Some((endpoint.to_string(), model.to_string())));
             }
         }
         for (endpoint, model) in candidates {
@@ -197,10 +229,10 @@ impl OpenMeteoFetcher {
                 latitude, longitude, start_date, end_date, endpoint, model,
             );
             if !got.is_empty() {
-                return got;
+                return (got, Some((endpoint.to_string(), model.to_string())));
             }
         }
-        Vec::new()
+        (Vec::new(), None)
     }
 
     /// Hourly temperature for one model collapsed to per-date maxima (the model's own timezone via
