@@ -22,7 +22,7 @@ use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
-    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS,
+    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS, ENSEMBLE_LOG_CANDIDATES, ENSEMBLE_LOG_MODELS,
 };
 use polymarket_weather_predictor::data_pipeline::{
     MultiSourceAggregator, OpenMeteoFetcher, StationPricer,
@@ -119,6 +119,17 @@ struct Snapshot {
     /// Dec 2025 (the old field never held a value), and AIGFS is its operational successor.
     #[serde(default)]
     forecast_high_aigfs: Option<f64>,
+    /// Day-specific uncertainty candidates (°C): std-dev across ensemble members' daily highs for
+    /// the TARGET day at the coords the row was priced at (0 = ECMWF ENS ~51 members, 1 = NOAA
+    /// GEFS ~31; `ENSEMBLE_LOG_MODELS`). The pricing σ is a per-(city, lead) CONSTANT, so it
+    /// prices a locked-in ridge day and a frontal coin-flip day identically — member spread is
+    /// the standard signal for that difference. Log-only: a spread→σ mapping must be fitted
+    /// walk-forward on accrued captures and beat the constant-σ tables BEFORE any dynamic σ
+    /// enters pricing. None ⇒ pre-logging row, fetch failed, or under the member floor.
+    #[serde(default)]
+    ensemble_spread_ecmwf: Option<f64>,
+    #[serde(default)]
+    ensemble_spread_gfs: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -367,6 +378,7 @@ fn process(
             let fs = used.get(r.market_id.as_str()).copied();
             let (pm25_max, us_aqi_max) = signals.air_quality(r);
             let (forecast_high_aifs, forecast_high_aigfs) = signals.ai_forecasts(r);
+            let (ensemble_spread_ecmwf, ensemble_spread_gfs) = signals.ensemble_spreads(r);
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -393,6 +405,8 @@ fn process(
                 us_aqi_max,
                 forecast_high_aifs,
                 forecast_high_aigfs,
+                ensemble_spread_ecmwf,
+                ensemble_spread_gfs,
             });
         }
     }
@@ -434,6 +448,13 @@ struct SignalLogger {
     aq_cache: HashMap<String, AirQualityByDay>,
     ai_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
     ai_diag_done: bool,
+    ens_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+    ens_diag_done: bool,
+    /// Per-slot circuit breaker: a slot whose FIRST coordinate came back all-candidates-failed is
+    /// skipped for every later coordinate this run. Without it, an unreachable-but-hanging
+    /// ensemble host (a separate host nothing else uses) costs its full candidate matrix × the
+    /// 30 s client timeout at EVERY station — hours of stall for fields that are log-only.
+    ens_slot_dead: Vec<bool>,
 }
 
 impl SignalLogger {
@@ -444,6 +465,9 @@ impl SignalLogger {
             aq_cache: HashMap::new(),
             ai_cache: HashMap::new(),
             ai_diag_done: false,
+            ens_cache: HashMap::new(),
+            ens_diag_done: false,
+            ens_slot_dead: vec![false; ENSEMBLE_LOG_CANDIDATES.len()],
         }
     }
 
@@ -510,6 +534,65 @@ impl SignalLogger {
             self.ai_cache.insert(key.clone(), maps);
         }
         let maps = &self.ai_cache[&key];
+        (
+            maps.first().and_then(|m| m.get(&r.target_date)).copied(),
+            maps.get(1).and_then(|m| m.get(&r.target_date)).copied(),
+        )
+    }
+
+    /// Target-day ensemble member spread (°C) per system in `ENSEMBLE_LOG_MODELS` (0 = ECMWF ENS,
+    /// 1 = GEFS), at the coords the row was priced at — the σ candidate must be sampled where the
+    /// σ it might replace is fitted. Window is a week out (leads beyond 2 are neither traded nor
+    /// fitted, and ~50-member hourly payloads are big enough without tail days nobody reads).
+    fn ensemble_spreads(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
+        let coords = station_for(&r.city, &r.source)
+            .map(|st| (st.lat, st.lon))
+            .or_else(|| cities::coords(&r.city));
+        let Some((lat, lon)) = coords else {
+            return (None, None);
+        };
+        let key = format!("{lat:.3},{lon:.3}");
+        if !self.ens_cache.contains_key(&key) {
+            let maps: Vec<HashMap<NaiveDate, f64>> = ENSEMBLE_LOG_CANDIDATES
+                .iter()
+                .enumerate()
+                .map(|(i, cands)| {
+                    if self.ens_slot_dead[i] {
+                        return HashMap::new();
+                    }
+                    let (got, served_by) = self.open_meteo.fetch_ensemble_spread_tagged(
+                        lat,
+                        lon,
+                        self.today,
+                        self.today + Duration::days(7),
+                        cands,
+                    );
+                    if served_by.is_none() {
+                        self.ens_slot_dead[i] = true;
+                    }
+                    // Same per-run visibility as the AI models: a renamed/delisted ensemble
+                    // otherwise logs null forever (July 19 lesson).
+                    if !self.ens_diag_done {
+                        let name = ENSEMBLE_LOG_MODELS.get(i).copied().unwrap_or("?");
+                        match &served_by {
+                            Some(model) => println!(
+                                "  ensemble {name}: served by models={model} ({} dates)",
+                                got.len()
+                            ),
+                            None => eprintln!(
+                                "  ensemble {name}: ALL candidates failed — host down, or \
+                                 renamed/delisted upstream; skipping this slot for the rest of \
+                                 the run (field will be null)"
+                            ),
+                        }
+                    }
+                    got
+                })
+                .collect();
+            self.ens_diag_done = true;
+            self.ens_cache.insert(key.clone(), maps);
+        }
+        let maps = &self.ens_cache[&key];
         (
             maps.first().and_then(|m| m.get(&r.target_date)).copied(),
             maps.get(1).and_then(|m| m.get(&r.target_date)).copied(),
@@ -623,16 +706,21 @@ mod tests {
         // The retired GraphCast field (never held a value; NCEP killed the model Dec 2025) is
         // simply ignored on read and dropped on the next rewrite.
         assert_eq!(s.forecast_high_aigfs, None);
+        assert_eq!(s.ensemble_spread_ecmwf, None);
+        assert_eq!(s.ensemble_spread_gfs, None);
 
         // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
         let mut s2 = s;
         s2.volume = Some(1234.5);
         s2.us_aqi_max = Some(158.0);
         s2.forecast_high_aigfs = Some(33.1);
-        let round: Snapshot =
-            serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
+        s2.ensemble_spread_ecmwf = Some(1.7);
+        s2.ensemble_spread_gfs = Some(2.3);
+        let round: Snapshot = serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
         assert_eq!(round.volume, Some(1234.5));
         assert_eq!(round.us_aqi_max, Some(158.0));
         assert_eq!(round.forecast_high_aigfs, Some(33.1));
+        assert_eq!(round.ensemble_spread_ecmwf, Some(1.7));
+        assert_eq!(round.ensemble_spread_gfs, Some(2.3));
     }
 }
