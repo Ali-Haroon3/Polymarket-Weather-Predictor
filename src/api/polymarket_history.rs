@@ -787,6 +787,16 @@ fn parse_outcome_prices(v: &Value) -> Option<Vec<f64>> {
 }
 
 pub(crate) fn is_weather_like_market(title: &str) -> bool {
+    // Sports markets leak through the weather keywords via team names ("Seattle Storm",
+    // "Oklahoma City Thunder") and then match a city in the title. They are never priceable
+    // (model_estimate stays None) but sit in captures.jsonl as forever-unresolved rows.
+    let sports = [
+        " vs. ", " vs ", "o/u", "wnba", " nba", "nfl", "mlb", " nhl", "playoff",
+    ];
+    if sports.iter().any(|k| title.contains(k)) {
+        return false;
+    }
+
     let keys = [
         "weather",
         "temperature",
@@ -1209,6 +1219,22 @@ mod tests {
         assert!(is_weather_like_market("will there be a tornado"));
         assert!(!is_weather_like_market("will bitcoin exceed 100k"));
         assert!(!is_weather_like_market("2024 us election winner"));
+        // Sports guard: team names ("Seattle Storm") match the "storm" weather keyword.
+        // These are real titles that leaked into captures.jsonl before the guard.
+        assert!(!is_weather_like_market(
+            "seattle storm vs. los angeles sparks"
+        ));
+        assert!(!is_weather_like_market(
+            "minnesota lynx vs. seattle storm: o/u 176.5"
+        ));
+        assert!(!is_weather_like_market(
+            "will the seattle storm make the 2026 wnba playoffs?"
+        ));
+        // The guard must not eat genuine weather phrasing.
+        assert!(is_weather_like_market(
+            "will seattle have between 1.5 and 2 inches of precipitation in july?"
+        ));
+        assert!(is_weather_like_market("tropical storm to hit florida"));
     }
 
     #[test]
