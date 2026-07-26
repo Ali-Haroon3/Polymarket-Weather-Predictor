@@ -823,17 +823,39 @@ fn infer_city(title: &str) -> Option<String> {
     crate::cities::infer_city(title).map(String::from)
 }
 
+/// True for precipitation markets that resolve on an ACCUMULATED AMOUNT ("Will Seattle have
+/// between 2 and 2.5 inches of precipitation in July?") rather than on rain occurring on a day
+/// ("Will it rain in Boston on July 4?").
+///
+/// The model has no accumulation forecast: `predict_precipitation_probability` answers "does it
+/// rain on a given day", so every accumulation market was priced at the Beta prior (~0.50 — 22 of
+/// 37 captured precip rows sat at 0.50/0.52) and the resulting fake edge of +55% went 0-for-6 on
+/// settled trades while sitting on four open positions claiming +42% to +49%. Skipping them at
+/// parse time keeps the shape out of the capture file and the trading path entirely; the daily
+/// rain-occurrence shape the model CAN price is unaffected.
+///
+/// Detection is on the amount unit, which every accumulation title carries and no occurrence title
+/// does (mm / cm / inch / inches).
+fn is_precip_accumulation(title: &str) -> bool {
+    const AMOUNT_UNITS: [&str; 3] = ["mm", "cm", "inch"];
+    AMOUNT_UNITS.iter().any(|u| title.contains(u))
+}
+
 /// Parse a market title into (market_type, threshold, threshold_upper, unit).
 /// Temperature markets resolve into the bucket shapes the model can price (over the daily HIGH):
 ///   "N or higher" -> temp_at_least, "N or below" -> temp_at_most,
 ///   "between A-B" -> temp_bucket(A,B), "be N" -> temp_bucket(N,N).
 /// "lowest temperature" markets are skipped (None) — the model forecasts the high only.
+/// Precipitation-ACCUMULATION markets are skipped too (see `is_precip_accumulation`).
 pub(crate) fn infer_market_type_and_threshold(
     title: &str,
 ) -> Option<(String, f64, Option<f64>, Option<String>)> {
     let t = title.to_ascii_lowercase();
 
     if t.contains("rain") || t.contains("precip") || t.contains("snow") {
+        if is_precip_accumulation(&t) {
+            return None;
+        }
         return Some(("precipitation".to_string(), 0.1, None, None));
     }
 
@@ -1020,6 +1042,45 @@ mod tests {
             infer_market_type_and_threshold("Will it rain in LA tomorrow?"),
             Some(("precipitation".to_string(), 0.1, None, None))
         );
+    }
+
+    /// Monthly precipitation-TOTAL markets must be skipped: the model only has a daily
+    /// rain-occurrence probability, so it priced every one of these at the ~0.50 Beta prior and
+    /// manufactured a +55% edge that went 0-for-6 on settled trades.
+    #[test]
+    fn test_precip_accumulation_markets_are_skipped() {
+        for title in [
+            "Will Seattle have between 2 and 2.5 inches of precipitation in July?",
+            "Will Seattle have less than 0.5 inches of precipitation in July?",
+            "Will Seattle have more than 3 inches of precipitation in July?",
+            "Will Hong Kong have 600mm or more of precipitation in July?",
+            "Will Hong Kong have between 475-500mm of precipitation in July?",
+            "Will London have between 40-50mm of precipitation in June?",
+            "Will NYC have more than 6 inches of precipitation in July?",
+            "Will Seoul have between 90-100mm of precipitation in July?",
+        ] {
+            assert_eq!(
+                infer_market_type_and_threshold(title),
+                None,
+                "accumulation market should be skipped: {title}"
+            );
+        }
+    }
+
+    /// ...while the daily rain-OCCURRENCE shape the model can actually price still parses.
+    #[test]
+    fn test_daily_rain_markets_still_parse() {
+        for title in [
+            "Will it rain in Boston on July 4?",
+            "Will it rain in LA tomorrow?",
+            "Will it snow in Chicago on December 25?",
+        ] {
+            assert_eq!(
+                infer_market_type_and_threshold(title),
+                Some(("precipitation".to_string(), 0.1, None, None)),
+                "occurrence market should still parse: {title}"
+            );
+        }
     }
 
     #[test]

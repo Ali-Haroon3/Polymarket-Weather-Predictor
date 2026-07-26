@@ -96,6 +96,7 @@ fn run() -> Result<(), String> {
         max_position_pct: args.max_position_pct,
         bankroll: args.bankroll,
         max_edge: args.max_edge,
+        min_price: args.min_price,
         no_sell_buckets: args.no_sell_buckets,
         trade_day_of: args.trade_day_of,
         sell_only: args.sell_only,
@@ -317,6 +318,15 @@ struct StrategyParams {
     /// edges both admit losers at the threshold and over-size Kelly. Candidate filter, tracked in
     /// the A/B table before becoming a default.
     shrink_edge: bool,
+    /// Skip markets whose executable price sits below this floor. `scripts/lambda_diagnostics.py`
+    /// (2026-07-26) found the sub-10¢ book carries NEGATIVE λ on BOTH sides — BUY −0.086 (n=778),
+    /// SELL −0.105 (n=203) — while everything at or above 10¢ is strongly positive: BUY +0.363
+    /// (n=219), SELL +0.540 (n=664). Those tail markets are 981 of 1864 resolved lead ≥ 1 rows, so
+    /// this cut removes half the book and reframes the "BUYs are worthless" result: the dead
+    /// segment is the TAIL, not the buy side, and a price floor keeps the profitable BUYs that
+    /// `sell_only` discards. The model has no real information that deep in its own Normal tail.
+    /// Candidate filter, tracked in the A/B table before becoming a default. 0.0 = no floor.
+    min_price: f64,
 }
 
 /// The price a capture's model-vs-market disagreement is measured against for the shrinkage fit:
@@ -486,6 +496,9 @@ fn decide(
     };
     if p.sell_only && side == "BUY" {
         return None;
+    }
+    if px < p.min_price {
+        return None; // tail book: λ is negative on both sides below ~10¢ (see StrategyParams)
     }
     if edge < p.edge_threshold {
         return None;
@@ -892,6 +905,9 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         if sp.sell_only {
             f.push("SELL only".to_string());
         }
+        if sp.min_price > 0.0 {
+            f.push(format!("price ≥ {:.2}", sp.min_price));
+        }
         if sp.shrink_edge {
             f.push("shrunk edge (walk-forward λ)".to_string());
         }
@@ -1035,6 +1051,55 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     trade_day_of: false,
                     shrink_edge: true,
                     sell_only: true,
+                    ..base
+                },
+            ),
+            // The 5-10% edge band loses outright (-1.4% ROI over 337 trades at the 606-trade
+            // checkpoint) while every band above it is strongly positive — but the only edge >= 10%
+            // row so far stacks on RAW edge, so the cut has never been measured against the shrunk
+            // default it would actually replace. These two isolate that: threshold on the shrunk
+            // edge, with and without the SELL-only gate.
+            (
+                "Skip day-of + shrunk + edge ≥ 10%",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: sp.edge_threshold.max(0.10),
+                    ..base
+                },
+            ),
+            (
+                "Skip day-of + shrunk + SELL only + edge ≥ 10%",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    sell_only: true,
+                    edge_threshold: sp.edge_threshold.max(0.10),
+                    ..base
+                },
+            ),
+            // The λ-by-segment breakdown (scripts/lambda_diagnostics.py, 2026-07-26) says the dead
+            // segment is the sub-10¢ TAIL, not the buy side: below 10¢ λ is negative on both sides
+            // (BUY −0.086 / SELL −0.105), above it both are healthy (BUY +0.363 / SELL +0.540).
+            // That cut is nearly orthogonal to sell_only and keeps the profitable BUYs SELL-only
+            // throws away, so it gets its own row plus one stacked with SELL-only to see whether
+            // the two are additive or redundant.
+            (
+                "Skip day-of + shrunk + price ≥ 0.10",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    min_price: 0.10,
+                    ..base
+                },
+            ),
+            (
+                "Skip day-of + shrunk + SELL only + price ≥ 0.10",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    sell_only: true,
+                    min_price: 0.10,
                     ..base
                 },
             ),
@@ -1620,6 +1685,7 @@ struct Args {
     max_position_pct: f64,
     bankroll: f64,
     max_edge: Option<f64>,
+    min_price: f64,
     no_sell_buckets: bool,
     trade_day_of: bool,
     sell_only: bool,
@@ -1693,6 +1759,10 @@ impl Args {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_else(config::initial_capital),
             max_edge: map.get("--max-edge").and_then(|v| v.parse().ok()),
+            min_price: map
+                .get("--min-price")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
             no_sell_buckets: flags.iter().any(|f| f == "--no-sell-buckets"),
             trade_day_of: flags.iter().any(|f| f == "--trade-day-of"),
             sell_only: flags.iter().any(|f| f == "--sell-only"),
@@ -1756,6 +1826,7 @@ mod tests {
             max_position_pct: 0.10,
             bankroll: 100_000.0,
             max_edge: None,
+            min_price: 0.0,
             no_sell_buckets: false,
             trade_day_of: false,
             sell_only: false,
@@ -1899,6 +1970,44 @@ mod tests {
         assert!(
             decide_nb(0.20, 0.50, "temp_bucket", 1, &so).is_some_and(|(s, _, _, _)| s == "SELL"),
             "SELL still trades"
+        );
+    }
+
+    /// The tail book (sub-10¢) carries negative λ on BOTH sides, so the floor must cut BUY and SELL
+    /// alike — unlike `sell_only`, which is a side filter.
+    #[test]
+    fn decide_min_price_cuts_the_tail_book_on_both_sides() {
+        let floor = StrategyParams {
+            min_price: 0.10,
+            ..params()
+        };
+        assert!(
+            decide_nb(0.25, 0.04, "temp_bucket", 1, &floor).is_none(),
+            "cheap-longshot BUY is below the floor"
+        );
+        assert!(
+            decide_nb(0.01, 0.06, "temp_bucket", 1, &floor).is_none(),
+            "SELL into a 6¢ bid is below the floor too"
+        );
+        assert!(
+            decide_nb(0.40, 0.20, "temp_bucket", 1, &floor).is_some_and(|(s, _, _, _)| s == "BUY"),
+            "a 20¢ BUY clears the floor"
+        );
+        // The floor tests the EXECUTABLE price, not the last trade: a 4¢ last trade with a 30¢ ask
+        // is a 30¢ fill and must survive.
+        assert!(
+            decide(
+                0.60,
+                0.04,
+                Some(0.28),
+                Some(0.30),
+                "temp_bucket",
+                1,
+                1.0,
+                &floor
+            )
+            .is_some_and(|(s, _, px, _)| s == "BUY" && px == 0.30),
+            "floor applies to the fill price, not the stale last trade"
         );
     }
 
