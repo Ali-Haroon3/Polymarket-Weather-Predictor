@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use chrono::{Duration, NaiveDate};
 
 use polymarket_weather_predictor::backtesting::{
-    evaluate_markets, evaluate_markets_with_forecast, kelly_fraction_of_capital, MarketEvaluation,
-    RealMarketLoader, ShrinkageFit,
+    evaluate_markets, evaluate_markets_with_forecast, kelly_fraction_of_capital, lambda_segment,
+    MarketEvaluation, RealMarketLoader, ShrinkageFit,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -101,6 +101,7 @@ fn run() -> Result<(), String> {
         trade_day_of: args.trade_day_of,
         sell_only: args.sell_only,
         shrink_edge: args.shrink_edge,
+        segment_lambda: args.segment_lambda,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -302,10 +303,12 @@ struct StrategyParams {
     /// bucket probabilities, so its bucket-SELL signals are structurally its own errors.
     no_sell_buckets: bool,
     /// Take trades captured ON the target day (lead 0). Off by default: at day-of the market prices
-    /// intraday information the daemon doesn't have — measured out-of-sample, the market's bucket
-    /// Brier beat even a leak-optimistic reconstruction of our day-of estimate (0.104 vs 0.127), and
-    /// day-of trades were the entire −8.1% loss. The model's edge is at lead ≥ 1 (model 0.034 vs
-    /// market 0.099) and post-day scraps. `--trade-day-of` re-enables for forward A/B.
+    /// intraday information the daemon doesn't have — model Brier 0.071 vs market 0.050 (n=650,
+    /// 2026-07-26), the market winning every week since captures began, and day-of trades were the
+    /// entire −8.1% loss. Lead ≥ 1 is the tradeable regime — not because the model is globally
+    /// sharper there (it isn't: 0.1022 vs 0.0952, the deficit all in the sub-10¢ tail), but
+    /// because λ-shrunk selection within healthy segments is forward-profitable.
+    /// `--trade-day-of` re-enables for forward A/B.
     trade_day_of: bool,
     /// Suppress BUY trades entirely. Forward evidence (July 2026, ~300 settled trades): essentially
     /// all profit came from SELLs (+10.8¢/contract, 77% win) while BUYs were break-even (+0.5¢, 8%
@@ -327,6 +330,36 @@ struct StrategyParams {
     /// `sell_only` discards. The model has no real information that deep in its own Normal tail.
     /// Candidate filter, tracked in the A/B table before becoming a default. 0.0 = no floor.
     min_price: f64,
+    /// Condition the walk-forward λ on (venue, price band) instead of venue alone (only meaningful
+    /// with `shrink_edge`). The walk-forward prototype behind `lambda_segment` showed the
+    /// per-venue fit averages a healthy ≥ 10¢ book (λ ≈ +0.51 both venues) with an anti-signal
+    /// sub-10¢ tail (λ ≈ −0.13 / −0.07), and splitting them lifts the out-of-sample calibration
+    /// slope 0.674 → 0.701 while zeroing the tail by construction (negative segment slopes clamp
+    /// to 0, so its shrunk edge can never clear the threshold — an adaptive `min_price`). The
+    /// AXIS was chosen by inspecting the same sample, so this earns forward evidence in the A/B
+    /// table before becoming a default, like every candidate before it.
+    segment_lambda: bool,
+}
+
+/// How `decide` shrinks each side's claimed edge.
+enum Shrink<'a> {
+    /// No shrinkage: trade the raw disagreement (λ = 1).
+    Off,
+    /// One λ for both sides — the per-venue fit (production default).
+    Venue(f64),
+    /// Per-(venue, price band) λ, looked up with each side's own fill price.
+    Seg { fit: &'a ShrinkageFit, venue: &'a str },
+}
+
+impl Shrink<'_> {
+    /// λ for a side filling at `px`.
+    fn at(&self, px: f64) -> f64 {
+        match self {
+            Shrink::Off => 1.0,
+            Shrink::Venue(l) => *l,
+            Shrink::Seg { fit, venue } => fit.lambda_seg(venue, lambda_segment(px)),
+        }
+    }
 }
 
 /// The price a capture's model-vs-market disagreement is measured against for the shrinkage fit:
@@ -339,33 +372,58 @@ fn ref_price(c: &Capture) -> Option<f64> {
     (px > 0.0 && px < 1.0).then_some(px)
 }
 
-/// The resolved lead ≥ 1 observations the shrinkage fit runs on, as
-/// (target_date, venue, claimed edge, realized edge), sorted by target date. Shared by the
-/// full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is fitted
-/// on exactly the same rows.
-fn shrinkage_obs(captures: &[Capture]) -> Vec<(NaiveDate, String, f64, f64)> {
-    let mut obs: Vec<(NaiveDate, String, f64, f64)> = captures
+/// One resolved lead ≥ 1 shrinkage observation: the model's claimed edge vs what realized.
+struct ShrinkObs {
+    date: NaiveDate,
+    venue: String,
+    segment: &'static str,
+    /// Claimed edge: model estimate − reference price.
+    x: f64,
+    /// Realized edge: outcome − reference price.
+    y: f64,
+}
+
+/// The resolved lead ≥ 1 observations the shrinkage fit runs on, sorted by target date. Shared by
+/// the full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is
+/// fitted on exactly the same rows.
+fn shrinkage_obs(captures: &[Capture]) -> Vec<ShrinkObs> {
+    let mut obs: Vec<ShrinkObs> = captures
         .iter()
         .filter_map(|c| {
             let (est, outcome) = (c.model_estimate?, c.outcome?);
             if c.lead() < 1 {
                 return None; // lead ≤ 0 prices already embed the outcome — see ShrinkageFit docs
             }
+            if !c.market_type.starts_with("temp") {
+                // Match the documented λ hygiene (scripts/lambda_diagnostics.py): temperature
+                // markets only. Without this, 3 legacy precipitation rows leaked in — one London
+                // row (px 0.949, est 0.032 → x = −0.917, x² = 0.84) single-handedly moved the
+                // Polymarket λ 0.391 → 0.370.
+                return None;
+            }
             let px = ref_price(c)?;
-            Some((c.target_date, c.source.clone(), est - px, outcome - px))
+            Some(ShrinkObs {
+                date: c.target_date,
+                venue: c.source.clone(),
+                segment: lambda_segment(px),
+                x: est - px,
+                y: outcome - px,
+            })
         })
         .collect();
-    obs.sort_by(|a, b| a.0.cmp(&b.0));
+    obs.sort_by(|a, b| a.date.cmp(&b.date));
     obs
 }
 
 /// Fit shrinkage on every resolved lead ≥ 1 capture (full sample). Causal for the OPEN book —
 /// everything observed resolved strictly before any open market will — and the source of the
 /// diagnostics table. The settled-PnL replay in `run_strategy` uses its own walk-forward fit.
+/// Observations are always segment-tagged; venue-level `lambda()` folds across segments, so the
+/// default per-venue path is unaffected.
 fn fit_shrinkage(captures: &[Capture]) -> ShrinkageFit {
     let mut fit = ShrinkageFit::default();
-    for (_, venue, x, y) in shrinkage_obs(captures) {
-        fit.observe(&venue, x, y);
+    for o in shrinkage_obs(captures) {
+        fit.observe_seg(&o.venue, o.segment, o.x, o.y);
     }
     fit
 }
@@ -380,17 +438,12 @@ const TRAIL_MIN_N: usize = 20;
 /// Raw through-origin slope over one venue's observations with target date in [from, to]:
 /// (slope, n). Unlike `ShrinkageFit::lambda` this is unclamped and has no fallback chain — it is
 /// a diagnostic, not a trading value.
-fn window_slope(
-    obs: &[(NaiveDate, String, f64, f64)],
-    venue: &str,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> (f64, usize) {
+fn window_slope(obs: &[ShrinkObs], venue: &str, from: NaiveDate, to: NaiveDate) -> (f64, usize) {
     let (mut xx, mut xy, mut n) = (0.0, 0.0, 0usize);
-    for (d, v, x, y) in obs {
-        if v == venue && *d >= from && *d <= to {
-            xx += x * x;
-            xy += x * y;
+    for o in obs {
+        if o.venue == venue && o.date >= from && o.date <= to {
+            xx += o.x * o.x;
+            xy += o.x * o.y;
             n += 1;
         }
     }
@@ -406,12 +459,12 @@ struct LambdaSeries {
     by_venue: BTreeMap<String, (Vec<f64>, Vec<Option<f64>>)>,
 }
 
-fn lambda_series(obs: &[(NaiveDate, String, f64, f64)]) -> LambdaSeries {
-    let mut dates: Vec<NaiveDate> = obs.iter().map(|o| o.0).collect();
+fn lambda_series(obs: &[ShrinkObs]) -> LambdaSeries {
+    let mut dates: Vec<NaiveDate> = obs.iter().map(|o| o.date).collect();
     dates.sort();
     dates.dedup();
     let venues: Vec<String> = {
-        let mut v: Vec<String> = obs.iter().map(|o| o.1.clone()).collect();
+        let mut v: Vec<String> = obs.iter().map(|o| o.venue.clone()).collect();
         v.sort();
         v.dedup();
         v
@@ -423,8 +476,8 @@ fn lambda_series(obs: &[(NaiveDate, String, f64, f64)]) -> LambdaSeries {
     let mut fit = ShrinkageFit::default();
     let mut i = 0;
     for d in &dates {
-        while i < obs.len() && obs[i].0 == *d {
-            fit.observe(&obs[i].1, obs[i].2, obs[i].3);
+        while i < obs.len() && obs[i].date == *d {
+            fit.observe_seg(&obs[i].venue, obs[i].segment, obs[i].x, obs[i].y);
             i += 1;
         }
         for venue in &venues {
@@ -459,11 +512,12 @@ struct Trade {
 /// Decide a trade from one capture's model estimate and EXECUTABLE prices: a BUY fills at the ask,
 /// a SELL at the bid — the last trade (`entry_price`) is only the fallback when the venue reported
 /// no book (legacy rows). `shrink` multiplies the model-vs-price disagreement before thresholding
-/// and Kelly (pass 1.0 for the raw edge; `run_strategy` passes the walk-forward λ when
-/// `shrink_edge` is on). Returns (side, fractional-Kelly stake fraction, executable price,
-/// predicted edge); `None` when nothing is tradable, the edge net of spread is too thin, or Kelly
-/// says don't bet. Shared by settled PnL and the open-book preview so both size positions
-/// identically.
+/// and Kelly (pass `Shrink::Off` for the raw edge; `run_strategy` passes the walk-forward λ when
+/// `shrink_edge` is on — per-side under `Shrink::Seg`, since a BUY at the ask and a SELL at the
+/// bid can sit in different price bands). Returns (side, fractional-Kelly stake fraction,
+/// executable price, predicted edge); `None` when nothing is tradable, the edge net of spread is
+/// too thin, or Kelly says don't bet. Shared by settled PnL and the open-book preview so both
+/// size positions identically.
 fn decide(
     est: f64,
     entry_price: f64,
@@ -471,7 +525,7 @@ fn decide(
     best_ask: Option<f64>,
     market_type: &str,
     lead: i64,
-    shrink: f64,
+    shrink: &Shrink,
     p: &StrategyParams,
 ) -> Option<(&'static str, f64, f64, f64)> {
     if lead == 0 && !p.trade_day_of {
@@ -484,10 +538,10 @@ fn decide(
 
     // Shrunk edge per side at its own executable price; take the better one.
     let edge_buy = buy_px
-        .map(|px| shrink * (est - px))
+        .map(|px| shrink.at(px) * (est - px))
         .unwrap_or(f64::NEG_INFINITY);
     let edge_sell = sell_px
-        .map(|px| shrink * (px - est))
+        .map(|px| shrink.at(px) * (px - est))
         .unwrap_or(f64::NEG_INFINITY);
     let (side, edge, px) = if edge_buy >= edge_sell {
         ("BUY", edge_buy, buy_px?)
@@ -541,7 +595,8 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     settled.sort_by(|a, b| a.target_date.cmp(&b.target_date).then(a.city.cmp(&b.city)));
 
     let mut fit = ShrinkageFit::default();
-    let mut pending: Vec<(String, f64, f64)> = Vec::new(); // current date's rows, not yet observable
+    // Current date's rows, not yet observable: (venue, segment, claimed, realized).
+    let mut pending: Vec<(String, &'static str, f64, f64)> = Vec::new();
     let mut fit_date: Option<NaiveDate> = None;
 
     let mut equity = p.bankroll;
@@ -550,8 +605,8 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         // Same-day markets resolve together: fold a date's rows into the fit only once the walk
         // moves past it, so no trade sees its own (or a same-day) outcome.
         if fit_date != Some(c.target_date) {
-            for (venue, x, y) in pending.drain(..) {
-                fit.observe(&venue, x, y);
+            for (venue, seg, x, y) in pending.drain(..) {
+                fit.observe_seg(&venue, seg, x, y);
             }
             fit_date = Some(c.target_date);
         }
@@ -559,13 +614,16 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         let outcome = c.outcome.unwrap();
         if c.lead() >= 1 {
             if let Some(px) = ref_price(c) {
-                pending.push((c.source.clone(), est - px, outcome - px));
+                pending.push((c.source.clone(), lambda_segment(px), est - px, outcome - px));
             }
         }
-        let shrink = if p.shrink_edge {
-            fit.lambda(&c.source)
-        } else {
-            1.0
+        let shrink = match (p.shrink_edge, p.segment_lambda) {
+            (false, _) => Shrink::Off,
+            (true, false) => Shrink::Venue(fit.lambda(&c.source)),
+            (true, true) => Shrink::Seg {
+                fit: &fit,
+                venue: &c.source,
+            },
         };
         let Some((side, frac, px, edge)) = decide(
             est,
@@ -574,7 +632,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             c.best_ask,
             &c.market_type,
             c.lead(),
-            shrink,
+            &shrink,
             p,
         ) else {
             continue;
@@ -909,7 +967,11 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             f.push(format!("price ≥ {:.2}", sp.min_price));
         }
         if sp.shrink_edge {
-            f.push("shrunk edge (walk-forward λ)".to_string());
+            if sp.segment_lambda {
+                f.push("segment λ (walk-forward, venue × price band)".to_string());
+            } else {
+                f.push("shrunk edge (walk-forward λ)".to_string());
+            }
         }
         if f.is_empty() {
             "no extra filters".to_string()
@@ -925,7 +987,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         sp.bankroll,
         esc(&filters),
     ));
-    s.push_str("<p class=\"muted\" style=\"font-size:11px\">Day-of (lead 0) trades are skipped by default: out-of-sample the market's intraday information beats the daemon's morning snapshot there, while at lead ≥ 1 the model's bucket Brier beats the market ~3×. <code>--trade-day-of</code> re-enables.</p>");
+    s.push_str("<p class=\"muted\" style=\"font-size:11px\">Day-of (lead 0) trades are skipped by default: out-of-sample the market's intraday information beats the daemon's morning snapshot there decisively (Brier 0.050 vs 0.071). At lead ≥ 1 the model and market are at Brier parity in the ≥ 10¢ book — the tradeable edge is λ-shrunk selection within healthy segments, not global sharpness. <code>--trade-day-of</code> re-enables.</p>");
 
     if captures.is_empty() {
         s.push_str("<p class=\"muted\">No captures yet. Polymarket purges price history after resolution, so real entry prices are only available live. Run <code>capture_prices</code> daily (cron / schedule) to snapshot active markets; PnL settles as they resolve.</p></div>");
@@ -992,6 +1054,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             trade_day_of: true,
             sell_only: false,
             shrink_edge: false,
+            segment_lambda: false,
             ..*sp
         };
         let variants = [
@@ -1103,6 +1166,31 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // Segment λ conditions the walk-forward fit on (venue, price band) instead of venue
+            // alone — the structural version of the price floor: anti-signal segments fit a
+            // negative slope, clamp to 0, and stop trading by construction, but the gate adapts
+            // if a segment turns healthy. The stacked SELL-only row tests whether the side filter
+            // still adds anything once the tail is zeroed (the λ breakdown says the tail, not the
+            // buy side, was the dead segment).
+            (
+                "Skip day-of + segment λ (venue × price band)",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    segment_lambda: true,
+                    ..base
+                },
+            ),
+            (
+                "Skip day-of + segment λ + SELL only",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    segment_lambda: true,
+                    sell_only: true,
+                    ..base
+                },
+            ),
         ];
         s.push_str("<h3 class=\"sub-h\">Filter A/B — forward tracker</h3>");
         s.push_str("<table><thead><tr><th>Config</th><th>Trades</th><th>PnL</th><th>ROI</th><th>Capture</th><th>Win</th></tr></thead><tbody>");
@@ -1132,7 +1220,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         let fit = fit_shrinkage(captures);
         let rows = fit.rows();
         if !rows.is_empty() {
-            let last = obs.last().map(|o| o.0).unwrap();
+            let last = obs.last().map(|o| o.date).unwrap();
             s.push_str(
                 "<h3 class=\"sub-h\">Edge shrinkage λ — realized per unit of claimed edge</h3>",
             );
@@ -1163,6 +1251,26 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 "</tbody></table><p class=\"muted\" style=\"font-size:11px\">Through-origin regression of realized (outcome − price) on predicted (model − price) over resolved lead ≥ 1 captures; lead ≤ 0 rows are excluded (their prices already embed the outcome). λ = 1 would mean the model's disagreements are fully real. The trading value is clamped to [0, 1] and falls back to pooled-then-1.0 under {} rows. The trailing {TRAIL_WINDOW_DAYS}-day slope is the drift early-warning: the full-sample fit barely moves on a bad fortnight once history accrues. Shrunk-edge (λ·edge) has been the DEFAULT since 2026-07-19; <code>--raw-edge</code> restores raw edges.</p>",
                 ShrinkageFit::MIN_N,
             ));
+
+            // Per-(venue, price band) λ: the heterogeneity the venue fit averages away — and what
+            // the segment-λ A/B row trades on. A negative slope clamped to 0.00 is a segment the
+            // strategy would refuse to trade entirely.
+            let seg_rows = fit.rows_seg();
+            if !seg_rows.is_empty() {
+                s.push_str("<h3 class=\"sub-h\">λ by (venue, price band)</h3>");
+                s.push_str("<table><thead><tr><th>Venue</th><th>Band</th><th>Raw slope</th><th>Rows</th><th>Segment-λ trading value</th></tr></thead><tbody>");
+                for (venue, seg, slope, n) in &seg_rows {
+                    s.push_str(&format!(
+                        "<tr><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td></tr>",
+                        esc(venue),
+                        esc(seg),
+                        slope,
+                        n,
+                        fit.lambda_seg(venue, seg),
+                    ));
+                }
+                s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">Bands are split at 10¢ (<code>lambda_segment</code>): sub-10¢ books realize NEGATIVE λ on both sides while ≥ 10¢ is healthy, so the venue fit above blends anti-signal and signal. The segment-λ A/B row (<code>--segment-lambda</code>) trades these values instead of the venue λ; a clamped 0.00 segment never clears the edge threshold — an adaptive price floor.</p>");
+            }
 
             // λ drift over time: is the model's realized edge decaying, and would the pilot's
             // λ floor see it in time?
@@ -1246,23 +1354,30 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // When shrinking, open positions use the full-sample λ — causal here, since every observed
     // resolution predates any open market's outcome.
     let open_fit = sp.shrink_edge.then(|| fit_shrinkage(captures));
-    let mut open: Vec<(&Capture, &'static str, f64, f64)> = captures
+    let mut open: Vec<(&Capture, &'static str, f64, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
         .filter_map(|c| {
             let est = c.model_estimate?;
-            let shrink = open_fit.as_ref().map_or(1.0, |f| f.lambda(&c.source));
-            let (side, frac, px, _edge) = decide(
+            let shrink = match &open_fit {
+                None => Shrink::Off,
+                Some(f) if sp.segment_lambda => Shrink::Seg {
+                    fit: f,
+                    venue: &c.source,
+                },
+                Some(f) => Shrink::Venue(f.lambda(&c.source)),
+            };
+            let (side, frac, px, edge) = decide(
                 est,
                 c.entry_price,
                 c.best_bid,
                 c.best_ask,
                 &c.market_type,
                 c.lead(),
-                shrink,
+                &shrink,
                 sp,
             )?;
-            Some((c, side, stake_dollars(frac, sp.bankroll, sp), px))
+            Some((c, side, stake_dollars(frac, sp.bankroll, sp), px, edge))
         })
         .collect();
     open.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -1273,7 +1388,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // signals — a real read on the params, not double-counting. ponytail: no portfolio Kelly here.
     let downside: f64 = open
         .iter()
-        .map(|(_, side, st, px)| {
+        .map(|(_, side, st, px, _)| {
             if *side == "BUY" {
                 st * px
             } else {
@@ -1290,9 +1405,12 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         s.push_str("<p class=\"muted\">No open captures clear the edge threshold right now.</p>");
     } else {
         s.push_str("<table><thead><tr><th>Resolves</th><th>Venue</th><th>City</th><th>Bucket</th><th>Bid / Ask</th><th>Fill</th><th>Model</th><th>Edge</th><th>Side</th><th>Stake</th></tr></thead><tbody>");
-        for (c, side, stake, px) in open.iter().take(25) {
+        for (c, side, stake, px, edge) in open.iter().take(25) {
             let est = c.model_estimate.unwrap();
-            let edge = est - px;
+            // Side-relative SHRUNK edge from decide() — the number the position was actually
+            // gated and sized on. Under --segment-lambda each row's λ differs (a clamped-0
+            // segment never appears here), so displaying raw est − px would misstate the book.
+            let edge = if *side == "BUY" { *edge } else { -edge };
             let scls = if *side == "BUY" { "yes" } else { "miss" };
             let ba = format!(
                 "{} / {}",
@@ -1690,6 +1808,7 @@ struct Args {
     trade_day_of: bool,
     sell_only: bool,
     shrink_edge: bool,
+    segment_lambda: bool,
 }
 
 impl Args {
@@ -1706,6 +1825,7 @@ impl Args {
                 || k == "--sell-only"
                 || k == "--shrink-edge"
                 || k == "--raw-edge"
+                || k == "--segment-lambda"
             {
                 flags.push(k);
                 i += 1;
@@ -1772,6 +1892,8 @@ impl Args {
             // out-of-sample by construction. `--raw-edge` restores the old behavior;
             // `--shrink-edge` is still accepted as a (now redundant) no-op.
             shrink_edge: !flags.iter().any(|f| f == "--raw-edge"),
+            // Candidate, off by default: condition λ on (venue, price band) — see StrategyParams.
+            segment_lambda: flags.iter().any(|f| f == "--segment-lambda"),
         })
     }
 }
@@ -1781,7 +1903,8 @@ fn usage() -> String {
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
-     [--max-edge 0.30] [--no-sell-buckets] [--trade-day-of] [--sell-only] [--raw-edge]"
+     [--max-edge 0.30] [--min-price 0.10] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
+     [--raw-edge] [--segment-lambda]"
         .to_string()
 }
 
@@ -1816,7 +1939,7 @@ mod tests {
         lead: i64,
         p: &StrategyParams,
     ) -> Option<(&'static str, f64, f64, f64)> {
-        decide(est, price, None, None, mt, lead, 1.0, p)
+        decide(est, price, None, None, mt, lead, &Shrink::Off, p)
     }
 
     fn params() -> StrategyParams {
@@ -1831,6 +1954,7 @@ mod tests {
             trade_day_of: false,
             sell_only: false,
             shrink_edge: false,
+            segment_lambda: false,
         }
     }
 
@@ -1887,17 +2011,17 @@ mod tests {
         let mt = "temp_bucket";
         // Entry-based edge (0.60 vs 0.50) clears the 5% threshold, but the BUY must fill at the
         // 0.58 ask — 2% net of spread — so it is NOT a trade.
-        assert!(decide(0.60, 0.50, Some(0.48), Some(0.58), mt, 1, 1.0, &sp).is_none());
+        assert!(decide(0.60, 0.50, Some(0.48), Some(0.58), mt, 1, &Shrink::Off, &sp).is_none());
         // SELL fills at the bid: est 0.20 vs bid 0.45 → trade at 0.45, not the 0.50 last trade.
         let (side, _, px, edge) =
-            decide(0.20, 0.50, Some(0.45), Some(0.55), mt, 1, 1.0, &sp).unwrap();
+            decide(0.20, 0.50, Some(0.45), Some(0.55), mt, 1, &Shrink::Off, &sp).unwrap();
         assert_eq!(side, "SELL");
         assert!((px - 0.45).abs() < 1e-9);
         assert!((edge - 0.25).abs() < 1e-9);
         // One-sided book with an untradable last price: nothing executable → no trade.
-        assert!(decide(0.60, 0.0, Some(0.40), None, mt, 1, 1.0, &sp).is_none());
+        assert!(decide(0.60, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp).is_none());
         // ...but the same book supports the SELL side.
-        assert!(decide(0.20, 0.0, Some(0.40), None, mt, 1, 1.0, &sp)
+        assert!(decide(0.20, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp)
             .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.40).abs() < 1e-9));
     }
 
@@ -2003,11 +2127,44 @@ mod tests {
                 Some(0.30),
                 "temp_bucket",
                 1,
-                1.0,
+                &Shrink::Off,
                 &floor
             )
             .is_some_and(|(s, _, px, _)| s == "BUY" && px == 0.30),
             "floor applies to the fill price, not the stale last trade"
+        );
+    }
+
+    /// Segment λ resolves per SIDE: a fit whose sub-10¢ segment is anti-signal (clamped to 0)
+    /// must refuse tail trades while still trading the healthy band — and each side's λ comes
+    /// from that side's own fill price.
+    #[test]
+    fn decide_segment_lambda_zeroes_the_tail_but_trades_the_healthy_band() {
+        let sp = params();
+        let mut fit = ShrinkageFit::default();
+        for _ in 0..ShrinkageFit::MIN_N {
+            fit.observe_seg("kalshi", "px<0.10", 0.1, -0.01); // anti-signal tail → clamps to 0
+            fit.observe_seg("kalshi", "px≥0.10", 0.1, 0.08); // healthy: λ = 0.8
+        }
+        let shrink = Shrink::Seg {
+            fit: &fit,
+            venue: "kalshi",
+        };
+        // Cheap-longshot BUY at a 4¢ ask: raw edge 0.36, but the tail λ is 0 → no trade.
+        assert!(
+            decide(0.40, 0.04, None, Some(0.04), "temp_bucket", 1, &shrink, &sp).is_none(),
+            "tail segment λ = 0 blocks the trade an unsegmented λ would take"
+        );
+        // Same disagreement in the healthy band: λ = 0.8 keeps the trade.
+        let (side, _, px, edge) =
+            decide(0.60, 0.40, None, Some(0.40), "temp_bucket", 1, &shrink, &sp).unwrap();
+        assert_eq!((side, px), ("BUY", 0.40));
+        assert!((edge - 0.8 * 0.20).abs() < 1e-9, "edge = segment λ × raw");
+        // Per-side lookup: SELL fills at an 8¢ bid (tail, λ = 0) even though the ask is 12¢ —
+        // the sell side must be gated by the BID's band, so no trade despite a big raw edge.
+        assert!(
+            decide(0.01, 0.08, Some(0.08), Some(0.12), "temp_bucket", 1, &shrink, &sp).is_none(),
+            "SELL side is gated by the bid's own band"
         );
     }
 
@@ -2019,19 +2176,19 @@ mod tests {
         let (_, raw_frac, _, raw_edge) = decide_nb(0.60, 0.50, mt, 1, &sp).unwrap();
         assert!((raw_edge - 0.10).abs() < 1e-9);
         // ...but at λ = 0.4 the shrunk edge is 4% → below threshold, no trade.
-        assert!(decide(0.60, 0.50, None, None, mt, 1, 0.4, &sp).is_none());
+        assert!(decide(0.60, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).is_none());
         // A larger raw edge survives shrinking, with both edge and Kelly stake scaled down.
-        let (side, frac, px, edge) = decide(0.80, 0.50, None, None, mt, 1, 0.4, &sp).unwrap();
+        let (side, frac, px, edge) = decide(0.80, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).unwrap();
         assert_eq!(side, "BUY");
         assert!((px - 0.50).abs() < 1e-9);
         assert!((edge - 0.12).abs() < 1e-9, "edge = 0.4 × 0.30");
-        let (_, unshrunk_frac, _, _) = decide(0.80, 0.50, None, None, mt, 1, 1.0, &sp).unwrap();
+        let (_, unshrunk_frac, _, _) = decide(0.80, 0.50, None, None, mt, 1, &Shrink::Off, &sp).unwrap();
         assert!(
             frac < unshrunk_frac && frac > 0.0,
             "Kelly sizes on the shrunk belief"
         );
         // λ = 0 (anti-signal) kills everything.
-        assert!(decide(0.99, 0.50, None, None, mt, 1, 0.0, &sp).is_none());
+        assert!(decide(0.99, 0.50, None, None, mt, 1, &Shrink::Venue(0.0), &sp).is_none());
         let _ = raw_frac;
     }
 

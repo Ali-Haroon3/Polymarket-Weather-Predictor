@@ -100,6 +100,11 @@ struct CaptureRow {
     best_ask: Option<f64>,
     #[serde(default)]
     market_id: Option<String>,
+    /// For the λ-fit hygiene filter (temperature markets only, matching the dashboard and
+    /// `scripts/lambda_diagnostics.py`). Defaults empty for old rows, which then don't pass the
+    /// `starts_with("temp")` gate — every real capture carries the field.
+    #[serde(default)]
+    market_type: String,
 }
 
 fn default_source() -> String {
@@ -441,6 +446,9 @@ fn fit_lambda_from_captures(path: &PathBuf) -> f64 {
         };
         if (c.target_date - c.captured_at).num_days() < 1 {
             continue; // lead ≤ 0 prices already embed the outcome
+        }
+        if !c.market_type.starts_with("temp") {
+            continue; // λ hygiene: temperature markets only, same as the dashboard's fit
         }
         let px = match (c.best_bid, c.best_ask) {
             (Some(b), Some(a)) if b > 0.0 && a < 1.0 && b <= a => (a + b) / 2.0,
