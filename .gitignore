@@ -78,6 +78,9 @@ target/
 # Generated runtime data / dashboards. captures.jsonl is deliberately TRACKED: it is the forward
 # dataset itself (irreplaceable — Polymarket purges prices after resolution) and the daily-capture
 # GitHub Action commits it back. dashboard.html is tracked so the Action publishes the readout.
+# pilot_trades.jsonl is the pilot's decision ledger — the paper-vs-real record and the weekly-loss
+# breaker's memory — equally irreplaceable once the pilot runs, so it is tracked too.
 data/*
 !data/captures.jsonl
+!data/pilot_trades.jsonl
 backtest_results/
