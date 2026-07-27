@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::kalshi_trade::{fee_frac, KalshiTradeClient};
 use polymarket_weather_predictor::api::{KalshiHistoryDownloader, WeatherMarketRow};
-use polymarket_weather_predictor::backtesting::{market_estimate, ShrinkageFit};
+use polymarket_weather_predictor::backtesting::{lambda_segment, market_estimate, ShrinkageFit};
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::StationPricer;
 use polymarket_weather_predictor::models::BayesianWeatherModel;
@@ -455,7 +455,10 @@ fn fit_lambda_from_captures(path: &PathBuf) -> f64 {
             _ => c.entry_price,
         };
         if px > 0.0 && px < 1.0 {
-            fit.observe(&c.source, est - px, outcome - px);
+            // Tagged by price band even though the pilot still trades the venue fold: venue
+            // lookups are unchanged by tagging (proven by the fold-identity test in shrinkage.rs),
+            // and an untagged fit would make a future `lambda_seg` call a silent no-op.
+            fit.observe_seg(&c.source, lambda_segment(px), est - px, outcome - px);
         }
     }
     fit.lambda("kalshi")

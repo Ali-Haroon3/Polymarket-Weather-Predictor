@@ -348,7 +348,10 @@ enum Shrink<'a> {
     /// One λ for both sides — the per-venue fit (production default).
     Venue(f64),
     /// Per-(venue, price band) λ, looked up with each side's own fill price.
-    Seg { fit: &'a ShrinkageFit, venue: &'a str },
+    Seg {
+        fit: &'a ShrinkageFit,
+        venue: &'a str,
+    },
 }
 
 impl Shrink<'_> {
@@ -383,34 +386,32 @@ struct ShrinkObs {
     y: f64,
 }
 
+/// The single λ-fit qualifier: resolved, lead ≥ 1 (lead ≤ 0 prices already embed the outcome —
+/// see `ShrinkageFit` docs), TEMPERATURE market only (the documented `lambda_diagnostics.py`
+/// hygiene: 3 legacy precipitation rows once leaked in, one London row — px 0.949, est 0.032,
+/// x = −0.917 — single-handedly moving the Polymarket λ 0.391 → 0.370), and a usable ref price.
+/// Both the full-sample fit (`shrinkage_obs`) and `run_strategy`'s walk-forward fold go through
+/// here, so the two fits cannot drift on hygiene.
+fn shrink_obs_of(c: &Capture) -> Option<ShrinkObs> {
+    let (est, outcome) = (c.model_estimate?, c.outcome?);
+    if c.lead() < 1 || !c.market_type.starts_with("temp") {
+        return None;
+    }
+    let px = ref_price(c)?;
+    Some(ShrinkObs {
+        date: c.target_date,
+        venue: c.source.clone(),
+        segment: lambda_segment(px),
+        x: est - px,
+        y: outcome - px,
+    })
+}
+
 /// The resolved lead ≥ 1 observations the shrinkage fit runs on, sorted by target date. Shared by
 /// the full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is
 /// fitted on exactly the same rows.
 fn shrinkage_obs(captures: &[Capture]) -> Vec<ShrinkObs> {
-    let mut obs: Vec<ShrinkObs> = captures
-        .iter()
-        .filter_map(|c| {
-            let (est, outcome) = (c.model_estimate?, c.outcome?);
-            if c.lead() < 1 {
-                return None; // lead ≤ 0 prices already embed the outcome — see ShrinkageFit docs
-            }
-            if !c.market_type.starts_with("temp") {
-                // Match the documented λ hygiene (scripts/lambda_diagnostics.py): temperature
-                // markets only. Without this, 3 legacy precipitation rows leaked in — one London
-                // row (px 0.949, est 0.032 → x = −0.917, x² = 0.84) single-handedly moved the
-                // Polymarket λ 0.391 → 0.370.
-                return None;
-            }
-            let px = ref_price(c)?;
-            Some(ShrinkObs {
-                date: c.target_date,
-                venue: c.source.clone(),
-                segment: lambda_segment(px),
-                x: est - px,
-                y: outcome - px,
-            })
-        })
-        .collect();
+    let mut obs: Vec<ShrinkObs> = captures.iter().filter_map(shrink_obs_of).collect();
     obs.sort_by(|a, b| a.date.cmp(&b.date));
     obs
 }
@@ -612,10 +613,8 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         }
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
-        if c.lead() >= 1 {
-            if let Some(px) = ref_price(c) {
-                pending.push((c.source.clone(), lambda_segment(px), est - px, outcome - px));
-            }
+        if let Some(o) = shrink_obs_of(c) {
+            pending.push((o.venue, o.segment, o.x, o.y));
         }
         let shrink = match (p.shrink_edge, p.segment_lambda) {
             (false, _) => Shrink::Off,
@@ -1050,6 +1049,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         // knob, so each row isolates that filter's effect on the same settled set.
         let base = StrategyParams {
             max_edge: None,
+            min_price: 0.0,
             no_sell_buckets: false,
             trade_day_of: true,
             sell_only: false,
@@ -1903,7 +1903,7 @@ fn usage() -> String {
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
-     [--max-edge 0.30] [--min-price 0.10] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
+     [--max-edge 0.30] [--min-price 0.0] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
      [--raw-edge] [--segment-lambda]"
         .to_string()
 }
@@ -2021,8 +2021,10 @@ mod tests {
         // One-sided book with an untradable last price: nothing executable → no trade.
         assert!(decide(0.60, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp).is_none());
         // ...but the same book supports the SELL side.
-        assert!(decide(0.20, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp)
-            .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.40).abs() < 1e-9));
+        assert!(
+            decide(0.20, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp)
+                .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.40).abs() < 1e-9)
+        );
     }
 
     #[test]
@@ -2163,7 +2165,17 @@ mod tests {
         // Per-side lookup: SELL fills at an 8¢ bid (tail, λ = 0) even though the ask is 12¢ —
         // the sell side must be gated by the BID's band, so no trade despite a big raw edge.
         assert!(
-            decide(0.01, 0.08, Some(0.08), Some(0.12), "temp_bucket", 1, &shrink, &sp).is_none(),
+            decide(
+                0.01,
+                0.08,
+                Some(0.08),
+                Some(0.12),
+                "temp_bucket",
+                1,
+                &shrink,
+                &sp
+            )
+            .is_none(),
             "SELL side is gated by the bid's own band"
         );
     }
@@ -2178,11 +2190,13 @@ mod tests {
         // ...but at λ = 0.4 the shrunk edge is 4% → below threshold, no trade.
         assert!(decide(0.60, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).is_none());
         // A larger raw edge survives shrinking, with both edge and Kelly stake scaled down.
-        let (side, frac, px, edge) = decide(0.80, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).unwrap();
+        let (side, frac, px, edge) =
+            decide(0.80, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).unwrap();
         assert_eq!(side, "BUY");
         assert!((px - 0.50).abs() < 1e-9);
         assert!((edge - 0.12).abs() < 1e-9, "edge = 0.4 × 0.30");
-        let (_, unshrunk_frac, _, _) = decide(0.80, 0.50, None, None, mt, 1, &Shrink::Off, &sp).unwrap();
+        let (_, unshrunk_frac, _, _) =
+            decide(0.80, 0.50, None, None, mt, 1, &Shrink::Off, &sp).unwrap();
         assert!(
             frac < unshrunk_frac && frac > 0.0,
             "Kelly sizes on the shrunk belief"

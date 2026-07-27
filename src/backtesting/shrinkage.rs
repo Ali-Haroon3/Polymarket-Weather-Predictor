@@ -19,7 +19,7 @@
 //! (lead ≤ 0) have prices that already embed the outcome — the market Brier at lead −1 is ~0.0005 —
 //! and including them would bias λ toward 1.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// The λ segment a price falls in. One boundary, at 10¢: `scripts/lambda_diagnostics.py`
 /// (2026-07-26) found λ negative on BOTH sides below it and healthy on both sides above it, and
@@ -39,8 +39,9 @@ pub fn lambda_segment(px: f64) -> &'static str {
 #[derive(Default)]
 pub struct ShrinkageFit {
     /// (venue, segment) → (Σx², Σxy, n) running sums for the through-origin slope Σxy/Σx².
-    /// Untagged observations land under segment `""`.
-    by_key: HashMap<(String, String), (f64, f64, usize)>,
+    /// Untagged observations land under segment `""`. BTreeMap, not HashMap: folds sum floats in
+    /// key order, so every fold is deterministic run to run (determinism is load-bearing here).
+    by_key: BTreeMap<(String, String), (f64, f64, usize)>,
 }
 
 impl ShrinkageFit {
@@ -73,9 +74,7 @@ impl ShrinkageFit {
         self.by_key
             .iter()
             .filter(|(k, _)| pred(k))
-            .fold((0.0, 0.0, 0), |a, (_, b)| {
-                (a.0 + b.0, a.1 + b.1, a.2 + b.2)
-            })
+            .fold((0.0, 0.0, 0), |a, (_, b)| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
     }
 
     fn pooled(&self) -> Option<f64> {
@@ -93,8 +92,14 @@ impl ShrinkageFit {
     }
 
     /// λ for a (venue, segment): the segment's own fit when it has ≥ `MIN_N` rows, else the
-    /// venue fold, else pooled, else 1.0. Same clamping as `lambda`.
+    /// venue fold, else pooled, else 1.0. Same clamping as `lambda`. An empty segment means "no
+    /// segment" and resolves to the venue fold — otherwise a fit built via untagged `observe()`
+    /// would answer `lambda_seg(venue, "")` from the `""` bucket alone, silently excluding any
+    /// tagged rows.
     pub fn lambda_seg(&self, venue: &str, segment: &str) -> f64 {
+        if segment.is_empty() {
+            return self.lambda(venue);
+        }
         self.by_key
             .get(&(venue.to_string(), segment.to_string()))
             .and_then(Self::slope)
