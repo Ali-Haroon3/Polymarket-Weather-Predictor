@@ -135,3 +135,14 @@ pub fn contains_word(text: &str, word: &str) -> bool {
     text.split(|c: char| !c.is_ascii_alphabetic())
         .any(|token| token == word)
 }
+
+/// True if any alphabetic token in `text` STARTS WITH `prefix`: "rain" matches "rain"/"rains"/
+/// "rainfall" but not "ukraine" or "train"; "gust" matches "gusts"/"gusty" but not "august".
+/// The weather-market scan matches its bare keywords this way because plain substring matching
+/// let "august" satisfy "gust" — every title naming an August date plus a recognizable city
+/// ("Will NYC Mayor post 20-39 posts from July 31 to August 7?") entered captures.jsonl as a
+/// bogus wind-shaped row.
+pub fn contains_word_prefix(text: &str, prefix: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|token| token.starts_with(prefix))
+}

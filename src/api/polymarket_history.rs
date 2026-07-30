@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 
 use crate::types::SimulatedMarket;
-use crate::utils::{contains_word, parse_date};
+use crate::utils::{contains_word, contains_word_prefix, parse_date};
 
 const DEFAULT_GAMMA_BASE_URL: &str = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL: &str = "https://clob.polymarket.com";
@@ -815,7 +815,18 @@ pub(crate) fn is_weather_like_market(title: &str) -> bool {
         "gust",
     ];
 
-    keys.iter().any(|k| title.contains(k))
+    // Phrases keep substring matching; bare words match as WORD PREFIXES ("storm" still catches
+    // "storms", "rain" catches "rainfall") because plain substrings pull in unrelated words —
+    // "august" contains "gust", "ukraine" contains "rain" — and every August title naming a
+    // tracked city ("Will NYC Mayor post 20-39 posts from July 31 to August 7?") was landing in
+    // captures.jsonl as a bogus wind-shaped row.
+    keys.iter().any(|k| {
+        if k.contains(' ') {
+            title.contains(k)
+        } else {
+            contains_word_prefix(title, k)
+        }
+    })
 }
 
 /// Identify the city in a market title (delegates to the shared city registry).
@@ -852,14 +863,19 @@ pub(crate) fn infer_market_type_and_threshold(
 ) -> Option<(String, f64, Option<f64>, Option<String>)> {
     let t = title.to_ascii_lowercase();
 
-    if t.contains("rain") || t.contains("precip") || t.contains("snow") {
+    // Same word-prefix matching as the scan filter, so classification can't disagree with it
+    // ("august" is not "gust", "ukraine" is not "rain", "attempt" is not "temp").
+    if contains_word_prefix(&t, "rain")
+        || contains_word_prefix(&t, "precip")
+        || contains_word_prefix(&t, "snow")
+    {
         if is_precip_accumulation(&t) {
             return None;
         }
         return Some(("precipitation".to_string(), 0.1, None, None));
     }
 
-    if t.contains("temp") || t.contains("temperature") || t.contains('°') {
+    if contains_word_prefix(&t, "temp") || t.contains('°') {
         // The model forecasts the daily high; it cannot price daily-low markets.
         if t.contains("lowest")
             || t.contains("coldest")
@@ -907,15 +923,15 @@ pub(crate) fn infer_market_type_and_threshold(
         return Some(("temp_bucket".to_string(), n, Some(n), Some(unit)));
     }
 
-    if t.contains("wind") || t.contains("gust") {
+    if contains_word_prefix(&t, "wind") || contains_word_prefix(&t, "gust") {
         let n = extract_first_number(&t).unwrap_or(20.0);
         return Some(("wind".to_string(), n, None, None));
     }
 
-    if t.contains("hurricane")
-        || t.contains("storm")
-        || t.contains("tornado")
-        || t.contains("cyclone")
+    if contains_word_prefix(&t, "hurricane")
+        || contains_word_prefix(&t, "storm")
+        || contains_word_prefix(&t, "tornado")
+        || contains_word_prefix(&t, "cyclone")
     {
         return Some(("storm".to_string(), 0.5, None, None));
     }
@@ -1296,6 +1312,29 @@ mod tests {
             "will seattle have between 1.5 and 2 inches of precipitation in july?"
         ));
         assert!(is_weather_like_market("tropical storm to hit florida"));
+
+        // "august" contains "gust": under substring matching, every August title naming a tracked
+        // city leaked into captures.jsonl as a wind row. These are real leaked titles.
+        assert!(!is_weather_like_market(
+            "will nyc mayor post 20-39 posts from july 31 to august 7, 2026?"
+        ));
+        assert!(!is_weather_like_market(
+            "will benjamin netanyahu visit new york city by august 31?"
+        ));
+        assert!(!is_weather_like_market(
+            "moscow air traffic suspended by august 31?"
+        ));
+        assert!(!is_weather_like_market(
+            "will \"boston - stella lefty\" be the billboard hot 100 #1 song for the week of august 8?"
+        ));
+        // Genuine August weather titles must keep matching (via their weather word, not the date).
+        assert!(is_weather_like_market(
+            "highest temperature in london on august 3?"
+        ));
+        assert!(is_weather_like_market("will it rain in nyc on august 2?"));
+        assert!(is_weather_like_market(
+            "wind gusts above 40 mph in chicago on august 5?"
+        ));
     }
 
     #[test]
@@ -1673,5 +1712,50 @@ mod tests {
             "la"
         ));
         assert!(contains_word("will la reach 39°c", "la"));
+    }
+
+    #[test]
+    fn test_contains_word_prefix() {
+        // Inflections and compounds led by the keyword match…
+        assert!(contains_word_prefix("wind gusts above 40 mph", "gust"));
+        assert!(contains_word_prefix("heavy rainfall expected", "rain"));
+        assert!(contains_word_prefix("temperatures in nyc", "temp"));
+        assert!(contains_word_prefix("storms rolling through", "storm"));
+        // …but words that merely CONTAIN the keyword do not.
+        assert!(!contains_word_prefix("from july 31 to august 7", "gust"));
+        assert!(!contains_word_prefix("will ukraine sign a deal", "rain"));
+        assert!(!contains_word_prefix("will he attempt the record", "temp"));
+        assert!(!contains_word_prefix("boarding the train", "rain"));
+    }
+
+    #[test]
+    fn test_infer_market_type_rejects_non_weather_august_titles() {
+        // Real leaked title: classified as ("wind", 20.0) via "gust" ⊂ "august" before the
+        // word-prefix fix, then captured with model_estimate=None forever.
+        assert_eq!(
+            infer_market_type_and_threshold(
+                "Will NYC Mayor post 20-39 posts from July 31 to August 7, 2026?"
+            ),
+            None
+        );
+        assert_eq!(
+            infer_market_type_and_threshold(
+                "Will Benjamin Netanyahu visit New York City by August 31?"
+            ),
+            None
+        );
+        // A genuine temp title carrying an August date still classifies on its weather word
+        // (real Polymarket phrasing: threshold before the date).
+        assert_eq!(
+            infer_market_type_and_threshold(
+                "Will the highest temperature in London be 30°C or higher on August 3?"
+            ),
+            Some((
+                "temp_at_least".to_string(),
+                30.0,
+                None,
+                Some("C".to_string())
+            ))
+        );
     }
 }
