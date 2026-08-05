@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use chrono::{Duration, NaiveDate};
 
 use polymarket_weather_predictor::backtesting::{
-    evaluate_markets, evaluate_markets_with_forecast, kelly_fraction_of_capital, lambda_segment,
-    MarketEvaluation, RealMarketLoader, ShrinkageFit,
+    evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
+    kelly_fraction_of_capital, lambda_segment, MarketEvaluation, RealMarketLoader, ShrinkageFit,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -102,6 +102,7 @@ fn run() -> Result<(), String> {
         sell_only: args.sell_only,
         shrink_edge: args.shrink_edge,
         segment_lambda: args.segment_lambda,
+        min_forecast_distance: args.min_forecast_distance,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -339,6 +340,25 @@ struct StrategyParams {
     /// AXIS was chosen by inspecting the same sample, so this earns forward evidence in the A/B
     /// table before becoming a default, like every candidate before it.
     segment_lambda: bool,
+    /// Skip `temp_bucket` markets whose own center sits within this many °C of the model's point
+    /// forecast for that day. 0.0 = no filter.
+    ///
+    /// The 07-20 seasonal refit rescaled σ (×1.32 Polymarket) and over-widened it: on realized highs
+    /// recovered from winning buckets, post-refit z = (realized − forecast)/σ has sd 0.78 with 82%
+    /// of days inside ±1σ against the Normal's 68% (pre-refit: sd 1.29). A σ that is too wide
+    /// flattens the posterior peak, so the buckets ADJACENT to the model's own forecast get
+    /// under-priced and show a large claimed edge that is really just the model's own excess
+    /// spread. Splitting settled SELLs under the default config at 1.5 °C (2026-08-05, captures
+    /// through 08-04): far ≥ 1.5 °C realizes +0.133/trade at 52% capture (n=140) while near
+    /// < 1.5 °C realizes −0.056 at −27% capture (n=105). The cut is nearly ORTHOGONAL to
+    /// `min_price` — in the raw ≥5¢ SELL population both sides of it are almost entirely ≥ 10¢
+    /// (288 near vs 252 far) — so the price floor does not already capture it.
+    ///
+    /// Rows the axis cannot be computed for (non-bucket shapes; the 7% of bucket captures predating
+    /// `forecast_high`) pass through rather than being silently dropped. Both the threshold and the
+    /// axis were chosen by inspecting this sample, so this earns forward A/B evidence before it
+    /// could become a default — and note a σ refit (the actual defect) may dissolve it entirely.
+    min_forecast_distance: f64,
 }
 
 /// How `decide` shrinks each side's claimed edge.
@@ -581,6 +601,33 @@ fn stake_dollars(frac: f64, capital: f64, p: &StrategyParams) -> f64 {
     (frac * capital).min(capital * p.max_position_pct)
 }
 
+/// Distance in °C between a bucket market's own center and the model's point forecast for that day.
+///
+/// `None` when the axis is undefined: non-bucket shapes (a threshold market has no center) and
+/// captures predating `forecast_high`. Buckets carry their edges in the market's `unit`, so an °F
+/// ladder converts — the midpoint may be converted directly since °F→°C is affine.
+fn forecast_distance_c(c: &Capture) -> Option<f64> {
+    if c.market_type != "temp_bucket" {
+        return None;
+    }
+    let forecast = c.forecast_high?;
+    let mid = (c.threshold + c.threshold_upper.unwrap_or(c.threshold)) / 2.0;
+    let center = match c.unit.as_deref().map(|u| u.trim().to_ascii_lowercase()) {
+        Some(u) if u.starts_with('c') => mid,
+        _ => fahrenheit_to_celsius(mid),
+    };
+    Some((center - forecast).abs())
+}
+
+/// Market-level eligibility for `min_forecast_distance` — a property of the market and the day's
+/// forecast alone, so it gates before `decide` rather than inside it (unlike `min_price` or
+/// `sell_only`, which depend on the chosen side and its fill). Markets whose distance is unknown
+/// pass: the filter's job is to drop the near-forecast band, not the un-scoreable history.
+fn passes_forecast_distance(c: &Capture, p: &StrategyParams) -> bool {
+    p.min_forecast_distance <= 0.0
+        || forecast_distance_c(c).is_none_or(|d| d >= p.min_forecast_distance)
+}
+
 /// Walk settled captures in resolution order, edge-filter, fractional-Kelly size on the compounding
 /// bankroll, and book PnL using the same per-share convention as the backtest engine
 /// (stake × (outcome − price) for a BUY, negated for a SELL).
@@ -615,6 +662,12 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         let outcome = c.outcome.unwrap();
         if let Some(o) = shrink_obs_of(c) {
             pending.push((o.venue, o.segment, o.x, o.y));
+        }
+        // Gate before decide(), but AFTER the row is queued into the λ fit: the near-forecast band
+        // is still evidence about how real the model's claimed edges are, whether or not this
+        // config trades it.
+        if !passes_forecast_distance(c, p) {
+            continue;
         }
         let shrink = match (p.shrink_edge, p.segment_lambda) {
             (false, _) => Shrink::Off,
@@ -750,6 +803,10 @@ struct Capture {
     best_bid: Option<f64>,
     #[serde(default)]
     best_ask: Option<f64>,
+    /// The model's point forecast (°C) for the target day at capture time. Absent on captures
+    /// predating the station pricer, hence `Option` — see `forecast_distance_c`.
+    #[serde(default)]
+    forecast_high: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -964,6 +1021,12 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         }
         if sp.min_price > 0.0 {
             f.push(format!("price ≥ {:.2}", sp.min_price));
+        }
+        if sp.min_forecast_distance > 0.0 {
+            f.push(format!(
+                "bucket ≥ {:.1}°C from forecast",
+                sp.min_forecast_distance
+            ));
         }
         if sp.shrink_edge {
             if sp.segment_lambda {
@@ -1191,6 +1254,30 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // Distance-from-forecast (2026-08-05): the 07-20 σ rescale over-widened (post-refit
+            // sd(z) = 0.78 against the Normal's 1.0), which flattens the posterior peak and
+            // manufactures claimed edge on the buckets adjacent to the model's own forecast —
+            // exactly where realized capture goes negative (−27% inside 1.5 °C vs +52% outside).
+            // Nearly orthogonal to the price floor, so it gets its own row plus a SELL-only stack.
+            (
+                "Skip day-of + shrunk + bucket ≥ 1.5°C from forecast",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    min_forecast_distance: 1.5,
+                    ..base
+                },
+            ),
+            (
+                "Skip day-of + shrunk + SELL only + bucket ≥ 1.5°C from forecast",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    sell_only: true,
+                    min_forecast_distance: 1.5,
+                    ..base
+                },
+            ),
         ];
         s.push_str("<h3 class=\"sub-h\">Filter A/B — forward tracker</h3>");
         s.push_str("<table><thead><tr><th>Config</th><th>Trades</th><th>PnL</th><th>ROI</th><th>Capture</th><th>Win</th></tr></thead><tbody>");
@@ -1357,6 +1444,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     let mut open: Vec<(&Capture, &'static str, f64, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
+        .filter(|c| passes_forecast_distance(c, sp))
         .filter_map(|c| {
             let est = c.model_estimate?;
             let shrink = match &open_fit {
@@ -1809,6 +1897,7 @@ struct Args {
     sell_only: bool,
     shrink_edge: bool,
     segment_lambda: bool,
+    min_forecast_distance: f64,
 }
 
 impl Args {
@@ -1894,6 +1983,12 @@ impl Args {
             shrink_edge: !flags.iter().any(|f| f == "--raw-edge"),
             // Candidate, off by default: condition λ on (venue, price band) — see StrategyParams.
             segment_lambda: flags.iter().any(|f| f == "--segment-lambda"),
+            // Candidate, off by default: drop buckets sitting within N °C of the model's own point
+            // forecast, where the over-wide σ manufactures edge — see StrategyParams.
+            min_forecast_distance: map
+                .get("--min-forecast-distance")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
         })
     }
 }
@@ -1904,7 +1999,7 @@ fn usage() -> String {
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
      [--max-edge 0.30] [--min-price 0.0] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
-     [--raw-edge] [--segment-lambda]"
+     [--raw-edge] [--segment-lambda] [--min-forecast-distance 0.0]"
         .to_string()
 }
 
@@ -1928,6 +2023,7 @@ mod tests {
             source: "polymarket".into(),
             best_bid: None,
             best_ask: None,
+            forecast_high: None,
         }
     }
 
@@ -1955,6 +2051,7 @@ mod tests {
             sell_only: false,
             shrink_edge: false,
             segment_lambda: false,
+            min_forecast_distance: 0.0,
         }
     }
 
@@ -2319,5 +2416,85 @@ mod tests {
             assert!((x.pnl - y.pnl).abs() < 1e-9);
             assert!((x.stake - y.stake).abs() < 1e-9);
         }
+    }
+
+    /// `cap()` builds a 90–91°F bucket, whose center 90.5°F is exactly 32.5°C.
+    fn cap_with_forecast(date: &str, forecast_c: Option<f64>) -> Capture {
+        Capture {
+            forecast_high: forecast_c,
+            ..cap(date, "Denver", 0.50, Some(0.20), Some(0.0))
+        }
+    }
+
+    #[test]
+    fn forecast_distance_measures_the_bucket_center_in_celsius() {
+        // °F ladder: center 90.5°F = 32.5°C, so a 32.5°C forecast sits exactly on the bucket.
+        let on_it = cap_with_forecast("2026-06-10", Some(32.5));
+        assert!(forecast_distance_c(&on_it).unwrap().abs() < 1e-9);
+        // 4.5°C below the center — and the distance is unsigned, so a hot-side miss reads the same.
+        let below = cap_with_forecast("2026-06-10", Some(28.0));
+        assert!((forecast_distance_c(&below).unwrap() - 4.5).abs() < 1e-9);
+        let above = cap_with_forecast("2026-06-10", Some(37.0));
+        assert!((forecast_distance_c(&above).unwrap() - 4.5).abs() < 1e-9);
+
+        // A °C ladder is already in the model's units — no conversion.
+        let celsius = Capture {
+            threshold: 33.0,
+            threshold_upper: None,
+            unit: Some("C".into()),
+            forecast_high: Some(31.0),
+            ..cap("2026-06-10", "Denver", 0.50, Some(0.20), Some(0.0))
+        };
+        assert!((forecast_distance_c(&celsius).unwrap() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn forecast_distance_is_undefined_without_a_center_or_a_forecast() {
+        // A threshold market has no center to measure from.
+        let at_least = Capture {
+            market_type: "temp_at_least".into(),
+            forecast_high: Some(28.0),
+            ..cap("2026-06-10", "Denver", 0.50, Some(0.20), Some(0.0))
+        };
+        assert!(forecast_distance_c(&at_least).is_none());
+        // Captures predating the station pricer carry no forecast.
+        assert!(forecast_distance_c(&cap_with_forecast("2026-06-10", None)).is_none());
+    }
+
+    #[test]
+    fn min_forecast_distance_drops_the_near_band_and_keeps_the_far_one() {
+        let sp = params();
+        let filtered = StrategyParams {
+            min_forecast_distance: 1.5,
+            ..sp
+        };
+        let caps = vec![
+            cap_with_forecast("2026-06-10", Some(32.0)), // 0.5°C from center → near
+            cap_with_forecast("2026-06-11", Some(28.0)), // 4.5°C from center → far
+        ];
+        // Unfiltered, both clear the 5% threshold on a 30¢ SELL edge.
+        assert_eq!(run_strategy(&caps, &sp).len(), 2);
+        let kept = run_strategy(&caps, &filtered);
+        assert_eq!(kept.len(), 1, "only the far bucket survives the filter");
+        assert_eq!(kept[0].date, "2026-06-11".parse::<NaiveDate>().unwrap());
+    }
+
+    #[test]
+    fn rows_without_a_measurable_distance_are_not_silently_dropped() {
+        // 7% of bucket captures predate `forecast_high`, and threshold shapes have no center. The
+        // filter must not quietly delete that history from the A/B row it grades.
+        let filtered = StrategyParams {
+            min_forecast_distance: 1.5,
+            ..params()
+        };
+        let caps = vec![
+            cap_with_forecast("2026-06-10", None),
+            Capture {
+                market_type: "temp_at_least".into(),
+                forecast_high: Some(32.4), // would be "near" if the axis applied to thresholds
+                ..cap("2026-06-11", "Denver", 0.50, Some(0.20), Some(0.0))
+            },
+        ];
+        assert_eq!(run_strategy(&caps, &filtered).len(), 2);
     }
 }
