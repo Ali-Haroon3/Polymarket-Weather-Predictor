@@ -3,7 +3,9 @@
 # tables in src/stations.rs were fitted at (launchd's 9:00 Denver drifts an hour with DST; this
 # doesn't). Scheduled at 14:50, not 15:00 — top-of-hour crons queue behind GitHub's rush and can
 # slip badly (the Jul 13 run fired at 16:01); an off-peak minute lands closer to the target hour
-# on average. Every API the daemon touches is anonymous, so there are no secrets here.
+# on average. Every API this workflow touches is anonymous, so there are no secrets here: the
+# kalshi_pilot step is dry-run only and, finding no trade credentials, degrades to ledger-only
+# dedupe by design (going --live is a human act on a credentialed machine, never this file's).
 name: daily-capture
 
 on:
@@ -28,13 +30,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --bin capture_prices --bin weather_dashboard
+        run: cargo build --release --bin capture_prices --bin weather_dashboard --bin kalshi_pilot
 
       - name: Capture prices
         # Tolerate transient fetch failures (same contract as scripts/daily_capture.sh): the
         # dashboard still re-renders from the last-good captures.jsonl.
         continue-on-error: true
         run: ./target/release/capture_prices
+
+      - name: Kalshi pilot (dry run)
+        # Paper decisions only — no --live and no credentials here, so the pilot degrades to
+        # ledger-only dedupe and appends every intended order and skip to data/pilot_trades.jsonl.
+        # This is the go-live gate's evidence accruing daily: settled dry orders feed the weekly
+        # -loss breaker rehearsal and the paper-PnL readout. Runs after capture (fresh λ fit and
+        # outcomes), tolerates failure so a pilot hiccup can't block the dashboard.
+        continue-on-error: true
+        run: ./target/release/kalshi_pilot
 
       - name: Render dashboard
         run: ./target/release/weather_dashboard --output dashboard.html
@@ -44,6 +55,9 @@ jobs:
           git config user.name "daily-capture"
           git config user.email "actions@users.noreply.github.com"
           git add data/captures.jsonl dashboard.html
+          if [ -f data/pilot_trades.jsonl ]; then
+            git add data/pilot_trades.jsonl
+          fi
           if git diff --cached --quiet; then
             echo "no changes to commit"
           else
