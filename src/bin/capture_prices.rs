@@ -18,11 +18,14 @@ use serde::{Deserialize, Serialize};
 use polymarket_weather_predictor::api::{
     KalshiHistoryDownloader, PolymarketHistoryDownloader, WeatherMarketRow,
 };
+use polymarket_weather_predictor::backtesting::spread_sigma::{
+    fit_spread_sigma_scale, spread_obs, SpreadObs, SPREAD_SIGMA_MIN_N,
+};
 use polymarket_weather_predictor::backtesting::{evaluate_markets_with_forecast, market_estimate};
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::open_meteo_fetcher::{
-    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS, ENSEMBLE_LOG_CANDIDATES, ENSEMBLE_LOG_MODELS,
+    AirQualityByDay, AI_LOG_CANDIDATES, AI_LOG_MODELS,
 };
 use polymarket_weather_predictor::data_pipeline::{
     MultiSourceAggregator, OpenMeteoFetcher, StationPricer,
@@ -34,7 +37,9 @@ use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 /// LEGACY forecast-error spread (degC): only for markets the station-aware path can't price —
 /// cities without a verified resolution station, Kalshi rows (different resolution source: NWS CLI
 /// day-high, not the WU ob-max; mapping unverified until Kalshi captures settle), and any row whose
-/// obs/forecast fetch came up empty.
+/// obs/forecast fetch came up empty. The 2026-08-09 spread→σ mapping does NOT reach this path —
+/// it lives in `StationPricer`, so legacy rows keep this constant (their spreads are still logged,
+/// so extending the mapping to them can be validated later the same way).
 ///
 /// Mapped Polymarket cities are priced by `station_nowcast` instead: markets resolve on the max of
 /// whole-degree METAR obs at a specific airport station (verified 43/43 against settled outcomes),
@@ -49,11 +54,8 @@ const FORECAST_SIGMA: f64 = 2.0;
 /// cities have no station mapping, so the seasonal drift the station tables absorbed in their
 /// 2026-07-20 refit has to live here. Istanbul's −1.5 °C is the whole reason its markets kept
 /// producing fake SELL edges. Hong Kong had too little settled data to fit (n=2) — left at 0.
-const LEGACY_SUMMER_BIAS_C: &[(&str, f64)] = &[
-    ("Moscow", -0.48),
-    ("Istanbul", -1.55),
-    ("Tel Aviv", 0.62),
-];
+const LEGACY_SUMMER_BIAS_C: &[(&str, f64)] =
+    &[("Moscow", -0.48), ("Istanbul", -1.55), ("Tel Aviv", 0.62)];
 
 /// Only direct-lookup markets whose target day is within this many days behind today. A market that
 /// hasn't resolved this long after its date is voided/stuck; stop re-querying it every run.
@@ -119,17 +121,24 @@ struct Snapshot {
     /// Dec 2025 (the old field never held a value), and AIGFS is its operational successor.
     #[serde(default)]
     forecast_high_aigfs: Option<f64>,
-    /// Day-specific uncertainty candidates (°C): std-dev across ensemble members' daily highs for
-    /// the TARGET day at the coords the row was priced at (0 = ECMWF ENS ~51 members, 1 = NOAA
-    /// GEFS ~31; `ENSEMBLE_LOG_MODELS`). The pricing σ is a per-(city, lead) CONSTANT, so it
-    /// prices a locked-in ridge day and a frontal coin-flip day identically — member spread is
-    /// the standard signal for that difference. Log-only: a spread→σ mapping must be fitted
-    /// walk-forward on accrued captures and beat the constant-σ tables BEFORE any dynamic σ
-    /// enters pricing. None ⇒ pre-logging row, fetch failed, or under the member floor.
+    /// Day-specific uncertainty (°C): std-dev across ensemble members' daily highs for the
+    /// TARGET day at the coords the row was priced at (0 = ECMWF ENS ~51 members, 1 = NOAA
+    /// GEFS ~31; `ENSEMBLE_LOG_MODELS`). Log-only from 2026-07-23 until the walk-forward gate was
+    /// met at the 2026-08-09 check (Brier 0.0947 vs the constant tables' 0.0971 on 1038 rows,
+    /// `scripts/lambda_diagnostics.py`) — since then lead ≥ 1 STATION rows price at
+    /// σ = max(a·spread, 0.2 °C) (`backtesting::spread_sigma`), and the value priced with is the
+    /// value stored here (both come from the same `StationPricer` fetch cache). None ⇒
+    /// pre-logging row, fetch failed, or under the member floor.
     #[serde(default)]
     ensemble_spread_ecmwf: Option<f64>,
     #[serde(default)]
     ensemble_spread_gfs: Option<f64>,
+    /// "ensemble" when this row's σ came from the walk-forward spread→σ mapping instead of the
+    /// per-(city, lead) constant tables; None ⇒ constant σ (legacy path, day-of/post phases, no
+    /// spread available, or a pre-2026-08-09 row). Lets diagnostics and station-table refits
+    /// split the two σ regimes instead of pooling them unknowingly.
+    #[serde(default)]
+    sigma_source: Option<String>,
 }
 
 fn default_source() -> String {
@@ -294,21 +303,45 @@ fn process(
     println!("{} new active markets to snapshot", fresh.len());
 
     if !fresh.is_empty() {
+        // Walk-forward spread→σ: fit the scale on RESOLVED history before pricing today's
+        // captures (everything resolved is strictly earlier than any market being priced, so
+        // applying the fit forward is out-of-sample by construction). Under MIN_N rows the
+        // pricer keeps the constant per-(city, lead) tables.
+        let spread_fit_rows: Vec<SpreadObs> =
+            snaps.iter().filter_map(snapshot_spread_obs).collect();
+        let spread_scale = fit_spread_sigma_scale(&spread_fit_rows);
+        match spread_scale {
+            Some(a) => println!(
+                "spread→σ: a = {a:.1} fitted on {} resolved rows — lead ≥ 1 station rows with an \
+                 ensemble spread price at σ = max(a·spread, 0.2 °C)",
+                spread_fit_rows.len()
+            ),
+            None => println!(
+                "spread→σ: {} resolved rows carrying spread < {SPREAD_SIGMA_MIN_N} — constant σ \
+                 tables this run",
+                spread_fit_rows.len()
+            ),
+        }
+
         // Station-aware pricing first (verified Polymarket resolution stations); everything it
         // can't price falls through to the legacy forecast/climatology path.
         let mut est: HashMap<String, f64> = HashMap::new();
         let mut used: HashMap<String, (f64, f64)> = HashMap::new(); // market_id -> (mu, sigma) °C
+        let mut dynamic_sigma_ids: HashSet<String> = HashSet::new();
         let mut legacy: Vec<&WeatherMarketRow> = Vec::new();
-        let mut pricer = StationPricer::new(today);
+        let mut pricer = StationPricer::new(today, spread_scale);
         for r in &fresh {
-            match pricer.estimate(r) {
-                Some((mu, sigma)) => {
+            match pricer.estimate_tagged(r) {
+                Some((mu, sigma, dynamic)) => {
                     let mut model = BayesianWeatherModel::default();
                     model.set_point_forecast(mu, sigma);
                     match market_estimate(&model, &to_sim(r)) {
                         Some(p) => {
                             est.insert(r.market_id.clone(), p);
                             used.insert(r.market_id.clone(), (mu, sigma));
+                            if dynamic {
+                                dynamic_sigma_ids.insert(r.market_id.clone());
+                            }
                         }
                         None => legacy.push(r),
                     }
@@ -317,8 +350,10 @@ fn process(
             }
         }
         println!(
-            "{} markets priced from resolution-station nowcast, {} on legacy path",
+            "{} markets priced from resolution-station nowcast ({} with spread-σ), {} on legacy \
+             path",
             est.len(),
+            dynamic_sigma_ids.len(),
             legacy.len()
         );
 
@@ -378,7 +413,10 @@ fn process(
             let fs = used.get(r.market_id.as_str()).copied();
             let (pm25_max, us_aqi_max) = signals.air_quality(r);
             let (forecast_high_aifs, forecast_high_aigfs) = signals.ai_forecasts(r);
-            let (ensemble_spread_ecmwf, ensemble_spread_gfs) = signals.ensemble_spreads(r);
+            // From the PRICER's cache, not a second fetch: the spread stored on the row is the
+            // spread the row's σ was (or would have been) priced with.
+            let (ensemble_spread_ecmwf, ensemble_spread_gfs) =
+                pricer.ensemble_spreads(&r.city, &r.source, r.target_date);
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -407,6 +445,9 @@ fn process(
                 forecast_high_aigfs,
                 ensemble_spread_ecmwf,
                 ensemble_spread_gfs,
+                sigma_source: dynamic_sigma_ids
+                    .contains(&r.market_id)
+                    .then(|| "ensemble".to_string()),
             });
         }
     }
@@ -441,20 +482,15 @@ fn to_sim(r: &WeatherMarketRow) -> SimulatedMarket {
 
 /// Log-only extra signals for fresh snapshots (attention / smoke / AI-model fields). One fetch per
 /// city (air quality) or per priced coordinate per model (AI forecasts) per run, cached; any
-/// failure is just None fields — never blocks the capture.
+/// failure is just None fields — never blocks the capture. Ensemble spreads used to live here too;
+/// they moved into `StationPricer` when the spread→σ mapping entered pricing (2026-08-09) so the
+/// logged value and the priced-with value come from one fetch.
 struct SignalLogger {
     today: NaiveDate,
     open_meteo: OpenMeteoFetcher,
     aq_cache: HashMap<String, AirQualityByDay>,
     ai_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
     ai_diag_done: bool,
-    ens_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
-    ens_diag_done: bool,
-    /// Per-slot circuit breaker: a slot whose FIRST coordinate came back all-candidates-failed is
-    /// skipped for every later coordinate this run. Without it, an unreachable-but-hanging
-    /// ensemble host (a separate host nothing else uses) costs its full candidate matrix × the
-    /// 30 s client timeout at EVERY station — hours of stall for fields that are log-only.
-    ens_slot_dead: Vec<bool>,
 }
 
 impl SignalLogger {
@@ -465,9 +501,6 @@ impl SignalLogger {
             aq_cache: HashMap::new(),
             ai_cache: HashMap::new(),
             ai_diag_done: false,
-            ens_cache: HashMap::new(),
-            ens_diag_done: false,
-            ens_slot_dead: vec![false; ENSEMBLE_LOG_CANDIDATES.len()],
         }
     }
 
@@ -539,65 +572,35 @@ impl SignalLogger {
             maps.get(1).and_then(|m| m.get(&r.target_date)).copied(),
         )
     }
+}
 
-    /// Target-day ensemble member spread (°C) per system in `ENSEMBLE_LOG_MODELS` (0 = ECMWF ENS,
-    /// 1 = GEFS), at the coords the row was priced at — the σ candidate must be sampled where the
-    /// σ it might replace is fitted. Window is a week out (leads beyond 2 are neither traded nor
-    /// fitted, and ~50-member hourly payloads are big enough without tail days nobody reads).
-    fn ensemble_spreads(&mut self, r: &WeatherMarketRow) -> (Option<f64>, Option<f64>) {
-        let coords = station_for(&r.city, &r.source)
-            .map(|st| (st.lat, st.lon))
-            .or_else(|| cities::coords(&r.city));
-        let Some((lat, lon)) = coords else {
-            return (None, None);
-        };
-        let key = format!("{lat:.3},{lon:.3}");
-        if !self.ens_cache.contains_key(&key) {
-            let maps: Vec<HashMap<NaiveDate, f64>> = ENSEMBLE_LOG_CANDIDATES
-                .iter()
-                .enumerate()
-                .map(|(i, cands)| {
-                    if self.ens_slot_dead[i] {
-                        return HashMap::new();
-                    }
-                    let (got, served_by) = self.open_meteo.fetch_ensemble_spread_tagged(
-                        lat,
-                        lon,
-                        self.today,
-                        self.today + Duration::days(7),
-                        cands,
-                    );
-                    if served_by.is_none() {
-                        self.ens_slot_dead[i] = true;
-                    }
-                    // Same per-run visibility as the AI models: a renamed/delisted ensemble
-                    // otherwise logs null forever (July 19 lesson).
-                    if !self.ens_diag_done {
-                        let name = ENSEMBLE_LOG_MODELS.get(i).copied().unwrap_or("?");
-                        match &served_by {
-                            Some(model) => println!(
-                                "  ensemble {name}: served by models={model} ({} dates)",
-                                got.len()
-                            ),
-                            None => eprintln!(
-                                "  ensemble {name}: ALL candidates failed — host down, or \
-                                 renamed/delisted upstream; skipping this slot for the rest of \
-                                 the run (field will be null)"
-                            ),
-                        }
-                    }
-                    got
-                })
-                .collect();
-            self.ens_diag_done = true;
-            self.ens_cache.insert(key.clone(), maps);
-        }
-        let maps = &self.ens_cache[&key];
-        (
-            maps.first().and_then(|m| m.get(&r.target_date)).copied(),
-            maps.get(1).and_then(|m| m.get(&r.target_date)).copied(),
-        )
-    }
+/// One spread→σ fit observation from a resolved snapshot, or None where the row is outside the
+/// fit population (hygiene lives in `backtesting::spread_sigma::spread_obs`, shared with the
+/// pilot's identical fit).
+fn snapshot_spread_obs(s: &Snapshot) -> Option<SpreadObs> {
+    spread_obs(
+        SimulatedMarket {
+            date: s.target_date,
+            market_id: s.market_id.clone(),
+            market_title: s.market_title.clone(),
+            market_type: s.market_type.clone(),
+            threshold: s.threshold,
+            threshold_upper: s.threshold_upper,
+            unit: s.unit.clone(),
+            market_price: s.entry_price,
+            actual_outcome: 0.0, // unused by the fit; the resolved outcome is passed below
+            city: s.city.clone(),
+        },
+        s.captured_at,
+        s.best_bid,
+        s.best_ask,
+        s.model_estimate,
+        s.outcome,
+        s.forecast_high,
+        s.forecast_sigma,
+        s.ensemble_spread_ecmwf,
+        s.ensemble_spread_gfs,
+    )
 }
 
 fn load_snapshots(path: &PathBuf) -> Vec<Snapshot> {
@@ -708,6 +711,7 @@ mod tests {
         assert_eq!(s.forecast_high_aigfs, None);
         assert_eq!(s.ensemble_spread_ecmwf, None);
         assert_eq!(s.ensemble_spread_gfs, None);
+        assert_eq!(s.sigma_source, None);
 
         // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
         let mut s2 = s;
@@ -716,11 +720,62 @@ mod tests {
         s2.forecast_high_aigfs = Some(33.1);
         s2.ensemble_spread_ecmwf = Some(1.7);
         s2.ensemble_spread_gfs = Some(2.3);
+        s2.sigma_source = Some("ensemble".to_string());
         let round: Snapshot = serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
         assert_eq!(round.volume, Some(1234.5));
         assert_eq!(round.us_aqi_max, Some(158.0));
         assert_eq!(round.forecast_high_aigfs, Some(33.1));
         assert_eq!(round.ensemble_spread_ecmwf, Some(1.7));
         assert_eq!(round.ensemble_spread_gfs, Some(2.3));
+        assert_eq!(round.sigma_source, Some("ensemble".to_string()));
+    }
+
+    #[test]
+    fn snapshot_spread_obs_mirrors_the_fit_population() {
+        let base = Snapshot {
+            captured_at: NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+            target_date: NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+            market_id: "m1".into(),
+            market_title: "t".into(),
+            market_type: "temp_bucket".into(),
+            threshold: 88.0,
+            threshold_upper: Some(89.0),
+            unit: Some("F".into()),
+            city: "NYC".into(),
+            entry_price: 0.3,
+            model_estimate: Some(0.25),
+            outcome: Some(1.0),
+            source: "kalshi".into(),
+            forecast_high: Some(31.2),
+            forecast_sigma: Some(1.1),
+            best_bid: Some(0.28),
+            best_ask: Some(0.33),
+            volume: None,
+            volume_24h: None,
+            open_interest: None,
+            liquidity: None,
+            pm25_max: None,
+            us_aqi_max: None,
+            forecast_high_aifs: None,
+            forecast_high_aigfs: None,
+            ensemble_spread_ecmwf: Some(1.4),
+            ensemble_spread_gfs: None,
+            sigma_source: None,
+        };
+        let o = snapshot_spread_obs(&base).expect("resolved lead-1 temp row with spread qualifies");
+        assert!((o.spread - 1.4).abs() < 1e-12); // GEFS falls back to ECMWF
+        assert!((o.outcome - 1.0).abs() < 1e-12);
+
+        let mut lead0 = base.clone();
+        lead0.captured_at = lead0.target_date;
+        assert!(snapshot_spread_obs(&lead0).is_none());
+
+        let mut unresolved = base.clone();
+        unresolved.outcome = None;
+        assert!(snapshot_spread_obs(&unresolved).is_none());
+
+        let mut no_spread = base;
+        no_spread.ensemble_spread_ecmwf = None;
+        assert!(snapshot_spread_obs(&no_spread).is_none());
     }
 }

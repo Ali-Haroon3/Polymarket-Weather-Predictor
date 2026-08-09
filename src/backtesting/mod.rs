@@ -3,6 +3,7 @@ pub mod market_simulator;
 pub mod performance_metrics;
 pub mod real_market_loader;
 pub mod shrinkage;
+pub mod spread_sigma;
 
 pub use backtest_engine::{
     evaluate_markets, evaluate_markets_with_forecast, kelly_fraction_of_capital, market_estimate,

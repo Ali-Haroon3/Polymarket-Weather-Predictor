@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
 
 use crate::api::WeatherMarketRow;
+use crate::backtesting::spread_sigma::{dynamic_sigma, mean_spread};
+use crate::cities;
+use crate::data_pipeline::open_meteo_fetcher::{ENSEMBLE_LOG_CANDIDATES, ENSEMBLE_LOG_MODELS};
 use crate::data_pipeline::station_obs::{
     blend_forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
 };
@@ -19,6 +22,12 @@ use crate::stations::{station_for, Station};
 /// AND truth variables). Returns the (mu, sigma) in °C for `set_point_forecast`, or None to fall
 /// back to the legacy path. One obs fetch and one forecast fetch per STATION per run, cached
 /// (the same city can map to two stations across venues).
+///
+/// Since 2026-08-09 the constructor takes the walk-forward spread→σ scale
+/// (`backtesting::spread_sigma`): when set, lead ≥ 1 rows whose target day has an ensemble
+/// member spread price at σ = max(a·spread, 0.2 °C) instead of the per-(city, lead) constant.
+/// The parameter is REQUIRED (not a builder default) so the daemon and the pilot cannot silently
+/// diverge — every construction site states what σ regime it prices under.
 pub struct StationPricer {
     now_utc: NaiveDateTime,
     today: NaiveDate,
@@ -26,10 +35,19 @@ pub struct StationPricer {
     open_meteo: OpenMeteoFetcher,
     obs_cache: HashMap<String, Vec<(NaiveDateTime, f64)>>,
     forecast_cache: HashMap<String, Vec<Vec<(NaiveDateTime, f64)>>>,
+    /// Fitted spread→σ scale `a`; None ⇒ constant tables only (pre-gate behavior).
+    spread_sigma_scale: Option<f64>,
+    ens_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+    ens_diag_done: bool,
+    /// Per-slot circuit breaker: a slot whose FIRST coordinate came back all-candidates-failed is
+    /// skipped for every later coordinate this run. Without it, an unreachable-but-hanging
+    /// ensemble host (a separate host nothing else uses) costs its full candidate matrix × the
+    /// 30 s client timeout at EVERY station.
+    ens_slot_dead: Vec<bool>,
 }
 
 impl StationPricer {
-    pub fn new(today: NaiveDate) -> Self {
+    pub fn new(today: NaiveDate, spread_sigma_scale: Option<f64>) -> Self {
         Self {
             now_utc: Utc::now().naive_utc(),
             today,
@@ -37,10 +55,21 @@ impl StationPricer {
             open_meteo: OpenMeteoFetcher::new(),
             obs_cache: HashMap::new(),
             forecast_cache: HashMap::new(),
+            spread_sigma_scale,
+            ens_cache: HashMap::new(),
+            ens_diag_done: false,
+            ens_slot_dead: vec![false; ENSEMBLE_LOG_CANDIDATES.len()],
         }
     }
 
     pub fn estimate(&mut self, r: &WeatherMarketRow) -> Option<(f64, f64)> {
+        self.estimate_tagged(r).map(|(mu, sigma, _)| (mu, sigma))
+    }
+
+    /// Like `estimate`, plus whether σ came from the fitted spread→σ mapping rather than the
+    /// per-(city, lead) constant table — the capture daemon stores the flag (`sigma_source`) so
+    /// diagnostics and refits can split the two σ regimes instead of pooling them unknowingly.
+    pub fn estimate_tagged(&mut self, r: &WeatherMarketRow) -> Option<(f64, f64, bool)> {
         if !r.market_type.starts_with("temp") {
             return None; // precip has no station model
         }
@@ -68,7 +97,81 @@ impl StationPricer {
                 blend_forecast_day_max_c(self.forecast(st)?, r.target_date, st, None),
             ),
         };
-        nowcast_mu_sigma(st, phase, runmax, rest)
+        let (mu, sigma) = nowcast_mu_sigma(st, phase, runmax, rest)?;
+        // Dynamic σ on pure-forecast rows only: day-of/post σ describe obs-vs-truth noise, not
+        // forecast uncertainty, and lead ≥ 1 rows are what the walk-forward validation scored.
+        // μ (incl. the fitted bias) is untouched — the mapping was fitted against stored μ.
+        if let (Phase::Lead(_), Some(a)) = (phase, self.spread_sigma_scale) {
+            let (e, g) = self.ensemble_spreads(&r.city, &r.source, r.target_date);
+            if let Some(sp) = mean_spread(e, g) {
+                return Some((mu, dynamic_sigma(a, sp), true));
+            }
+        }
+        Some((mu, sigma, false))
+    }
+
+    /// Target-day ensemble member spread (°C) per system in `ENSEMBLE_LOG_MODELS` (0 = ECMWF ENS,
+    /// 1 = GEFS), at the coords the row is priced at — the venue's resolution station when
+    /// mapped, else the city registry. One fetch per coordinate per run, cached; the window is a
+    /// week out (leads beyond 2 are neither traded nor fitted, and ~50-member hourly payloads are
+    /// big enough without tail days nobody reads). This is ALSO the capture daemon's log source
+    /// for `ensemble_spread_*`, so the spread a row is priced with is the spread stored on it.
+    pub fn ensemble_spreads(
+        &mut self,
+        city: &str,
+        source: &str,
+        target: NaiveDate,
+    ) -> (Option<f64>, Option<f64>) {
+        let coords = station_for(city, source)
+            .map(|st| (st.lat, st.lon))
+            .or_else(|| cities::coords(city));
+        let Some((lat, lon)) = coords else {
+            return (None, None);
+        };
+        let key = format!("{lat:.3},{lon:.3}");
+        if !self.ens_cache.contains_key(&key) {
+            let mut maps: Vec<HashMap<NaiveDate, f64>> = Vec::new();
+            for (i, cands) in ENSEMBLE_LOG_CANDIDATES.iter().enumerate() {
+                if self.ens_slot_dead[i] {
+                    maps.push(HashMap::new());
+                    continue;
+                }
+                let (got, served_by) = self.open_meteo.fetch_ensemble_spread_tagged(
+                    lat,
+                    lon,
+                    self.today,
+                    self.today + Duration::days(7),
+                    cands,
+                );
+                if served_by.is_none() {
+                    self.ens_slot_dead[i] = true;
+                }
+                // Same per-run visibility as the AI models: a renamed/delisted ensemble
+                // otherwise logs null forever (July 19 lesson).
+                if !self.ens_diag_done {
+                    let name = ENSEMBLE_LOG_MODELS.get(i).copied().unwrap_or("?");
+                    match &served_by {
+                        Some(model) => println!(
+                            "  ensemble {name}: served by models={model} ({} dates)",
+                            got.len()
+                        ),
+                        None => eprintln!(
+                            "  ensemble {name}: ALL candidates failed — host down, or \
+                             renamed/delisted upstream; skipping this slot for the rest of \
+                             the run (field will be null)"
+                        ),
+                    }
+                }
+                maps.push(got);
+            }
+            self.ens_diag_done = true;
+            self.ens_cache.insert(key.clone(), maps);
+        }
+        let maps = &self.ens_cache[&key];
+        (
+            maps.first().and_then(|m| m.get(&target)).copied(),
+            maps.get(1).and_then(|m| m.get(&target)).copied(),
+        )
     }
 
     fn obs(&mut self, st: &Station, target: NaiveDate) -> Option<&[(NaiveDateTime, f64)]> {
