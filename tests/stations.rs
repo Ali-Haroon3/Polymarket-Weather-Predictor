@@ -4,8 +4,8 @@ use chrono::{NaiveDate, NaiveDateTime};
 
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::data_pipeline::station_obs::{
-    blend_forecast_day_max_c, forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c,
-    Phase,
+    blend_forecast_day_max_c, forecast_day_max_c, nowcast_mu_sigma, per_model_day_maxes_c,
+    phase_for, wu_running_max_c, Phase,
 };
 use polymarket_weather_predictor::stations::{
     station_for, Station, KALSHI_STATIONS, POST_SIGMA, STATIONS,
@@ -177,4 +177,22 @@ fn blend_averages_per_model_maxes_and_needs_two_models() {
     // a single surviving model is not the fitted estimator — degrade instead of misprice
     assert!(blend_forecast_day_max_c(&[m1], d("2026-06-30"), denver, None).is_none());
     assert!(blend_forecast_day_max_c(&[], d("2026-06-30"), denver, None).is_none());
+}
+
+#[test]
+fn per_model_maxes_stay_aligned_with_fetch_order_for_logging() {
+    // The capture daemon zips these slots with BLEND_MODELS names, so a model with no hours must
+    // hold its slot as None rather than collapsing the vector.
+    let denver = station("Denver");
+    let m1 = vec![
+        (dt("2026-06-30 18:00"), 30.0),
+        (dt("2026-06-30 21:00"), 32.0),
+    ];
+    let empty: Vec<(chrono::NaiveDateTime, f64)> = Vec::new();
+    let m3 = vec![(dt("2026-06-30 19:00"), 28.0)];
+    let per = per_model_day_maxes_c(&[m1, empty, m3], d("2026-06-30"), denver, None);
+    assert_eq!(per.len(), 3);
+    assert!((per[0].unwrap() - 32.0).abs() < 1e-9);
+    assert_eq!(per[1], None);
+    assert!((per[2].unwrap() - 28.0).abs() < 1e-9);
 }

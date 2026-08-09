@@ -76,9 +76,11 @@ pub const ENSEMBLE_MIN_MEMBERS: usize = 8;
 pub const AIR_QUALITY_BASE_URL: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 /// Per-UTC-date (max PM2.5 µg/m³, max US AQI) — the shape `fetch_air_quality_day_max` returns.
 pub type AirQualityByDay = HashMap<NaiveDate, (Option<f64>, Option<f64>)>;
-/// Per-date std-dev (°C) across ensemble members' daily maxes, plus the model that served it
-/// (`None` = every candidate failed) — the shape `fetch_ensemble_spread_tagged` returns.
-pub type TaggedEnsembleSpread = (HashMap<NaiveDate, f64>, Option<String>);
+/// Per-date (member-mean daily high °C, std-dev °C) across ensemble members' daily maxes, plus
+/// the model that served it (`None` = every candidate failed) — the shape
+/// `fetch_ensemble_stats_tagged` returns. The SPREAD is the σ input (`backtesting::spread_sigma`);
+/// the MEAN is log-only until it beats the blend on accrued captures (the μ gate).
+pub type TaggedEnsembleStats = (HashMap<NaiveDate, (f64, f64)>, Option<String>);
 /// Daily-max series plus the `(endpoint, model)` candidate that served it (`None` = all failed) —
 /// the shape `fetch_forecast_max_live_candidates_tagged` returns.
 pub type TaggedDailyMax = (Vec<(NaiveDate, f64)>, Option<(String, String)>);
@@ -247,9 +249,8 @@ impl OpenMeteoFetcher {
             }
         }
         for (endpoint, model) in candidates {
-            let got = self.fetch_hourly_day_max(
-                latitude, longitude, start_date, end_date, endpoint, model,
-            );
+            let got = self
+                .fetch_hourly_day_max(latitude, longitude, start_date, end_date, endpoint, model);
             if !got.is_empty() {
                 return (got, Some((endpoint.to_string(), model.to_string())));
             }
@@ -287,20 +288,21 @@ impl OpenMeteoFetcher {
         parse_hourly_day_max(&json, model)
     }
 
-    /// Per-date member spread (std-dev °C of each member's daily high) from the first ensemble
-    /// model candidate that serves data, tagged with which one it was (`None` = all failed).
+    /// Per-date member stats (mean °C, std-dev °C of each member's daily high) from the first
+    /// ensemble model candidate that serves data, tagged with which one it was (`None` = all
+    /// failed).
     /// Tries daily aggregation first, then hourly series collapsed to per-date member maxima —
     /// the ensemble API's supported aggregations couldn't be verified from the sandbox, so both
     /// response shapes are handled (the AI-model playbook). Dates with fewer than
     /// `ENSEMBLE_MIN_MEMBERS` members are dropped, not logged as fake-tight spreads.
-    pub fn fetch_ensemble_spread_tagged(
+    pub fn fetch_ensemble_stats_tagged(
         &self,
         latitude: f64,
         longitude: f64,
         start_date: NaiveDate,
         end_date: NaiveDate,
         candidates: &[&str],
-    ) -> TaggedEnsembleSpread {
+    ) -> TaggedEnsembleStats {
         for model in candidates {
             for (agg_query, agg_parse) in [
                 ("daily", true),   // daily=temperature_2m_max, spread over member columns
@@ -329,9 +331,9 @@ impl OpenMeteoFetcher {
                     continue;
                 };
                 let got = if agg_parse {
-                    parse_ensemble_daily_spread(&json, ENSEMBLE_MIN_MEMBERS)
+                    parse_ensemble_daily_stats(&json, ENSEMBLE_MIN_MEMBERS)
                 } else {
-                    parse_ensemble_hourly_spread(&json, ENSEMBLE_MIN_MEMBERS)
+                    parse_ensemble_hourly_stats(&json, ENSEMBLE_MIN_MEMBERS)
                 };
                 if !got.is_empty() {
                     return (got, Some(model.to_string()));
@@ -343,11 +345,7 @@ impl OpenMeteoFetcher {
 
     /// Forecast PM2.5 (µg/m³) and US AQI at these coords, collapsed to per-UTC-date hourly maxima
     /// over the API's ~week horizon. Empty map on any failure (degradation by design).
-    pub fn fetch_air_quality_day_max(
-        &self,
-        latitude: f64,
-        longitude: f64,
-    ) -> AirQualityByDay {
+    pub fn fetch_air_quality_day_max(&self, latitude: f64, longitude: f64) -> AirQualityByDay {
         let query = [
             ("latitude", latitude.to_string()),
             ("longitude", longitude.to_string()),
@@ -495,9 +493,9 @@ fn parse_daily_max(json: &Value, model: Option<&str>) -> Vec<(NaiveDate, f64)> {
         .and_then(|x| x.as_array())
         .cloned()
         .unwrap_or_default();
-    let field = daily.get("temperature_2m_max").or_else(|| {
-        model.and_then(|m| daily.get(format!("temperature_2m_max_{m}").as_str()))
-    });
+    let field = daily
+        .get("temperature_2m_max")
+        .or_else(|| model.and_then(|m| daily.get(format!("temperature_2m_max_{m}").as_str())));
     let highs = as_opt_f64_vec(field);
 
     let mut out = Vec::new();
@@ -559,20 +557,21 @@ fn ensemble_member_series(obj: &Value, base: &str) -> Vec<Vec<Option<f64>>> {
     keys.iter().map(|k| as_opt_f64_vec(map.get(*k))).collect()
 }
 
-/// Sample std-dev; None below `min_n` values — a "spread" over a handful of members (or a
-/// deterministic model that slipped through a candidate list) is noise, not uncertainty.
-fn spread_std(values: &[f64], min_n: usize) -> Option<f64> {
+/// (mean, sample std-dev); None below `min_n` values — a "spread" over a handful of members (or
+/// a deterministic model that slipped through a candidate list) is noise, not uncertainty, and a
+/// "mean" of one run is just that run.
+fn member_stats(values: &[f64], min_n: usize) -> Option<(f64, f64)> {
     if values.len() < min_n.max(2) {
         return None;
     }
     let n = values.len() as f64;
     let mean = values.iter().sum::<f64>() / n;
     let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
-    Some(var.sqrt())
+    Some((mean, var.sqrt()))
 }
 
 /// Per-date member spread from a daily-aggregated ensemble response.
-fn parse_ensemble_daily_spread(json: &Value, min_members: usize) -> HashMap<NaiveDate, f64> {
+fn parse_ensemble_daily_stats(json: &Value, min_members: usize) -> HashMap<NaiveDate, (f64, f64)> {
     let daily = json.get("daily").cloned().unwrap_or(Value::Null);
     let times = daily
         .get("time")
@@ -591,8 +590,8 @@ fn parse_ensemble_daily_spread(json: &Value, min_members: usize) -> HashMap<Naiv
             .iter()
             .filter_map(|m| m.get(i).copied().flatten())
             .collect();
-        if let Some(sd) = spread_std(&vals, min_members) {
-            out.insert(date, sd);
+        if let Some(stats) = member_stats(&vals, min_members) {
+            out.insert(date, stats);
         }
     }
     out
@@ -601,7 +600,7 @@ fn parse_ensemble_daily_spread(json: &Value, min_members: usize) -> HashMap<Naiv
 /// Per-date member spread from an hourly ensemble response: each member's hours collapse to its
 /// per-date max first (same local-date bucketing as `parse_hourly_day_max`), THEN the spread is
 /// taken across members — the spread of daily highs, not of any single hour.
-fn parse_ensemble_hourly_spread(json: &Value, min_members: usize) -> HashMap<NaiveDate, f64> {
+fn parse_ensemble_hourly_stats(json: &Value, min_members: usize) -> HashMap<NaiveDate, (f64, f64)> {
     let hourly = json.get("hourly").cloned().unwrap_or(Value::Null);
     let times = hourly
         .get("time")
@@ -630,7 +629,7 @@ fn parse_ensemble_hourly_spread(json: &Value, min_members: usize) -> HashMap<Nai
 
     by_date
         .into_iter()
-        .filter_map(|(date, vals)| spread_std(&vals, min_members).map(|sd| (date, sd)))
+        .filter_map(|(date, vals)| member_stats(&vals, min_members).map(|s| (date, s)))
         .collect()
 }
 
@@ -752,16 +751,20 @@ mod tests {
             "temperature_2m_max_member01": [31.0, null],
             "temperature_2m_max_member02": [32.0, 30.0]
         }});
-        let got = parse_ensemble_daily_spread(&json, 3);
+        let got = parse_ensemble_daily_stats(&json, 3);
         let d24 = NaiveDate::from_ymd_opt(2026, 7, 24).unwrap();
         let d25 = NaiveDate::from_ymd_opt(2026, 7, 25).unwrap();
-        assert_eq!(got.get(&d24), Some(&1.0), "sample std of [30, 31, 32]");
+        assert_eq!(
+            got.get(&d24),
+            Some(&(31.0, 1.0)),
+            "mean and sample std of [30, 31, 32]"
+        );
         assert!(
             !got.contains_key(&d25),
             "a null member drops the date below the member floor"
         );
         assert!(
-            parse_ensemble_daily_spread(&json, 4).is_empty(),
+            parse_ensemble_daily_stats(&json, 4).is_empty(),
             "min_members above the member count yields nothing"
         );
     }
@@ -776,20 +779,23 @@ mod tests {
             "temperature_2m_member01": [21.0, 31.0, 29.0],
             "temperature_2m_member02": [22.0, 32.0, 35.0]
         }});
-        let got = parse_ensemble_hourly_spread(&json, 3);
+        let got = parse_ensemble_hourly_stats(&json, 3);
         let d24 = NaiveDate::from_ymd_opt(2026, 7, 24).unwrap();
         assert_eq!(
             got.get(&d24),
-            Some(&2.0),
-            "sample std of maxes [33, 31, 35]"
+            Some(&(33.0, 2.0)),
+            "mean and sample std of maxes [33, 31, 35]"
         );
-        assert!(parse_ensemble_hourly_spread(&serde_json::json!({}), 2).is_empty());
+        assert!(parse_ensemble_hourly_stats(&serde_json::json!({}), 2).is_empty());
     }
 
     #[test]
-    fn spread_std_rejects_deterministic_singletons() {
-        assert_eq!(spread_std(&[30.0], 1), None, "min_n is floored at 2");
-        assert_eq!(spread_std(&[30.0, 32.0], 2), Some(std::f64::consts::SQRT_2));
+    fn member_stats_rejects_deterministic_singletons() {
+        assert_eq!(member_stats(&[30.0], 1), None, "min_n is floored at 2");
+        assert_eq!(
+            member_stats(&[30.0, 32.0], 2),
+            Some((31.0, std::f64::consts::SQRT_2))
+        );
     }
 
     #[test]

@@ -352,7 +352,12 @@ def ai_means(rows):
     print(f"  {len(ded)} deduped (venue, city, day, lead) observations with a recovered high")
     for name, key in [("blend forecast_high", "forecast_high"),
                       ("AIFS", "forecast_high_aifs"),
-                      ("AIGFS", "forecast_high_aigfs")]:
+                      ("AIGFS", "forecast_high_aigfs"),
+                      # Member means (logged since 2026-08-09): the standard result is that an
+                      # ensemble mean beats the deterministic run at these leads -- if one beats
+                      # the blend here, it is a real mu candidate (same gate as the AI means).
+                      ("ENS mean (ECMWF)", "ensemble_mean_ecmwf"),
+                      ("ENS mean (GEFS)", "ensemble_mean_gfs")]:
         errs = [t - to_c(r[key], "C") for r, t in ded if r.get(key) is not None]
         if len(errs) < MIN_N:
             print(f"  {name:22s} n={len(errs)} -- too few")
@@ -360,6 +365,22 @@ def ai_means(rows):
         m = sum(errs) / len(errs)
         rmse = math.sqrt(sum(e * e for e in errs) / len(errs))
         print(f"  {name:22s} n={len(errs):4d}  bias={m:+.2f}degC  RMSE={rmse:.2f}degC")
+    # Blend members (logged since 2026-08-09): per-model error on the same recovered highs -- the
+    # raw material for a fitted re-weighting of BLEND_MODELS. Report-only; a weight fit needs
+    # enough rows to be walk-forward-validated first.
+    per = {}
+    for r, t in ded:
+        for name, v in (r.get("blend_model_highs") or {}).items():
+            per.setdefault(name, []).append(t - v)
+    for name in sorted(per):
+        errs = per[name]
+        if len(errs) < MIN_N:
+            print(f"  member {name:18s} n={len(errs)} -- too few")
+            continue
+        m = sum(errs) / len(errs)
+        rmse = math.sqrt(sum(e * e for e in errs) / len(errs))
+        print(f"  member {name:18s} n={len(errs):4d}  bias={m:+.2f}degC  RMSE={rmse:.2f}degC")
+
     # Simple average of blend + both AI models, where all three exist.
     trio = [(r, t) for r, t in ded
             if r.get("forecast_high_aifs") is not None and r.get("forecast_high_aigfs") is not None]

@@ -95,11 +95,28 @@ pub fn blend_forecast_day_max_c(
     station: &Station,
     from_utc: Option<NaiveDateTime>,
 ) -> Option<f64> {
-    let maxes: Vec<f64> = model_series
-        .iter()
-        .filter_map(|s| forecast_day_max_c(s, target, station, from_utc))
+    let maxes: Vec<f64> = per_model_day_maxes_c(model_series, target, station, from_utc)
+        .into_iter()
+        .flatten()
         .collect();
     (maxes.len() >= 2).then(|| maxes.iter().sum::<f64>() / maxes.len() as f64)
+}
+
+/// Per-model daily maxes (°C) for the target local day, one slot per input series in fetch order
+/// (`BLEND_MODELS`); None where that model has no hours in the window. Factored out of the blend
+/// so the capture daemon can LOG the members the blended μ was averaged from — fitting blend
+/// weights needs them stored per capture, and nothing existed to fit while only the average
+/// survived. Nothing in the pricing path reads the members individually.
+pub fn per_model_day_maxes_c(
+    model_series: &[Vec<(NaiveDateTime, f64)>],
+    target: NaiveDate,
+    station: &Station,
+    from_utc: Option<NaiveDateTime>,
+) -> Vec<Option<f64>> {
+    model_series
+        .iter()
+        .map(|s| forecast_day_max_c(s, target, station, from_utc))
+        .collect()
 }
 
 /// Assemble the phase-aware (mu, sigma) in °C. `runmax_c` = obs so far (Post/DayOf), `rest_c` =

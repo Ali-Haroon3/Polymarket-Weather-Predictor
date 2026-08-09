@@ -103,10 +103,13 @@ struct Snapshot {
     open_interest: Option<f64>,
     #[serde(default)]
     liquidity: Option<f64>,
-    /// Forecast smoke for the TARGET day at the city (UTC-day max of hourly PM2.5 µg/m³ / US AQI):
-    /// wildfire smoke measurably suppresses daily highs and the blend only partly prices it, so
-    /// this is the covariate needed to test a smoke-day bias correction. None ⇒ beyond the ~week
-    /// air-quality horizon or fetch failed. Log-only.
+    /// Forecast smoke for the TARGET day at the city (UTC-day max of hourly PM2.5 µg/m³ / US AQI),
+    /// logged to test a smoke-day bias correction (hypothesis: smoke suppresses highs and the
+    /// blend only partly prices it). First look 2026-08-09: DEAD on 208 deduped (city, day)
+    /// residuals — heavy-smoke days (>55 µg/m³, n=20) realized +0.53 °C ABOVE forecast (the same
+    /// sign as the general summer under-forecast, not suppression) and r(pm25, residual) ≈ +0.03.
+    /// No correction warranted; the field stays logged for a bigger-sample recheck. None ⇒ beyond
+    /// the ~week air-quality horizon or fetch failed. Log-only.
     #[serde(default)]
     pm25_max: Option<f64>,
     #[serde(default)]
@@ -133,6 +136,23 @@ struct Snapshot {
     ensemble_spread_ecmwf: Option<f64>,
     #[serde(default)]
     ensemble_spread_gfs: Option<f64>,
+    /// Member-MEAN daily highs (°C) from the same ensemble fetch as the spreads (since
+    /// 2026-08-09). μ candidates: ensemble means routinely beat deterministic runs at lead 1–2,
+    /// and these ride a fetch we already make — but they are LOG-ONLY until they beat the blend's
+    /// RMSE on accrued captures (`scripts/lambda_diagnostics.py` ai_means), the same gate the AI
+    /// means are still failing. None ⇒ pre-logging row or no data for the day.
+    #[serde(default)]
+    ensemble_mean_ecmwf: Option<f64>,
+    #[serde(default)]
+    ensemble_mean_gfs: Option<f64>,
+    /// Per-model daily highs (°C, keyed by `BLEND_MODELS` name) that the blended μ was averaged
+    /// from, at the row's resolution station, full target day (since 2026-08-09; station rows
+    /// only). LOG-ONLY: stored so per-city blend WEIGHTS can be fitted walk-forward from accrued
+    /// captures — nothing existed to fit while only the average survived the run. BTreeMap so the
+    /// daily full-file rewrite serializes in stable order (a HashMap would churn every committed
+    /// row every day). None ⇒ pre-logging row, unmapped city, or failed forecast fetch.
+    #[serde(default)]
+    blend_model_highs: Option<std::collections::BTreeMap<String, f64>>,
     /// "ensemble" when this row's σ came from the walk-forward spread→σ mapping instead of the
     /// per-(city, lead) constant tables; None ⇒ constant σ (legacy path, day-of/post phases, no
     /// spread available, or a pre-2026-08-09 row). Lets diagnostics and station-table refits
@@ -413,10 +433,11 @@ fn process(
             let fs = used.get(r.market_id.as_str()).copied();
             let (pm25_max, us_aqi_max) = signals.air_quality(r);
             let (forecast_high_aifs, forecast_high_aigfs) = signals.ai_forecasts(r);
-            // From the PRICER's cache, not a second fetch: the spread stored on the row is the
-            // spread the row's σ was (or would have been) priced with.
-            let (ensemble_spread_ecmwf, ensemble_spread_gfs) =
-                pricer.ensemble_spreads(&r.city, &r.source, r.target_date);
+            // From the PRICER's caches, not a second fetch: the spread stored on the row is the
+            // spread the row's σ was (or would have been) priced with, and the blend members are
+            // the very series its μ was averaged from.
+            let ens = pricer.ensemble_stats(&r.city, &r.source, r.target_date);
+            let blend_model_highs = pricer.blend_model_highs(&r.city, &r.source, r.target_date);
             snaps.push(Snapshot {
                 captured_at: today,
                 target_date: r.target_date,
@@ -443,8 +464,11 @@ fn process(
                 us_aqi_max,
                 forecast_high_aifs,
                 forecast_high_aigfs,
-                ensemble_spread_ecmwf,
-                ensemble_spread_gfs,
+                ensemble_spread_ecmwf: ens.spread_ecmwf,
+                ensemble_spread_gfs: ens.spread_gfs,
+                ensemble_mean_ecmwf: ens.mean_ecmwf,
+                ensemble_mean_gfs: ens.mean_gfs,
+                blend_model_highs,
                 sigma_source: dynamic_sigma_ids
                     .contains(&r.market_id)
                     .then(|| "ensemble".to_string()),
@@ -711,6 +735,8 @@ mod tests {
         assert_eq!(s.forecast_high_aigfs, None);
         assert_eq!(s.ensemble_spread_ecmwf, None);
         assert_eq!(s.ensemble_spread_gfs, None);
+        assert_eq!(s.ensemble_mean_ecmwf, None);
+        assert_eq!(s.blend_model_highs, None);
         assert_eq!(s.sigma_source, None);
 
         // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
@@ -720,6 +746,16 @@ mod tests {
         s2.forecast_high_aigfs = Some(33.1);
         s2.ensemble_spread_ecmwf = Some(1.7);
         s2.ensemble_spread_gfs = Some(2.3);
+        s2.ensemble_mean_ecmwf = Some(32.4);
+        s2.ensemble_mean_gfs = Some(31.9);
+        s2.blend_model_highs = Some(
+            [
+                ("ecmwf_ifs025".to_string(), 32.1),
+                ("gfs_seamless".to_string(), 33.0),
+            ]
+            .into_iter()
+            .collect(),
+        );
         s2.sigma_source = Some("ensemble".to_string());
         let round: Snapshot = serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
         assert_eq!(round.volume, Some(1234.5));
@@ -727,7 +763,15 @@ mod tests {
         assert_eq!(round.forecast_high_aigfs, Some(33.1));
         assert_eq!(round.ensemble_spread_ecmwf, Some(1.7));
         assert_eq!(round.ensemble_spread_gfs, Some(2.3));
+        assert_eq!(round.ensemble_mean_ecmwf, Some(32.4));
+        assert_eq!(round.ensemble_mean_gfs, Some(31.9));
+        assert_eq!(round.blend_model_highs, s2.blend_model_highs);
         assert_eq!(round.sigma_source, Some("ensemble".to_string()));
+
+        // BTreeMap keys serialize in sorted order — the daily full-file rewrite must be
+        // byte-stable or every committed row churns every day.
+        let json = serde_json::to_string(&s2).unwrap();
+        assert!(json.find("ecmwf_ifs025").unwrap() < json.find("gfs_seamless").unwrap());
     }
 
     #[test]
@@ -760,6 +804,9 @@ mod tests {
             forecast_high_aigfs: None,
             ensemble_spread_ecmwf: Some(1.4),
             ensemble_spread_gfs: None,
+            ensemble_mean_ecmwf: None,
+            ensemble_mean_gfs: None,
+            blend_model_highs: None,
             sigma_source: None,
         };
         let o = snapshot_spread_obs(&base).expect("resolved lead-1 temp row with spread qualifies");
