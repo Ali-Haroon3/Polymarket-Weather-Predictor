@@ -8,9 +8,12 @@ use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
 use crate::api::WeatherMarketRow;
 use crate::backtesting::spread_sigma::{dynamic_sigma, mean_spread};
 use crate::cities;
-use crate::data_pipeline::open_meteo_fetcher::{ENSEMBLE_LOG_CANDIDATES, ENSEMBLE_LOG_MODELS};
+use crate::data_pipeline::open_meteo_fetcher::{
+    BLEND_MODELS, ENSEMBLE_LOG_CANDIDATES, ENSEMBLE_LOG_MODELS,
+};
 use crate::data_pipeline::station_obs::{
-    blend_forecast_day_max_c, nowcast_mu_sigma, phase_for, wu_running_max_c, IemObsFetcher, Phase,
+    blend_forecast_day_max_c, nowcast_mu_sigma, per_model_day_maxes_c, phase_for, wu_running_max_c,
+    IemObsFetcher, Phase,
 };
 use crate::data_pipeline::OpenMeteoFetcher;
 use crate::stations::{station_for, Station};
@@ -28,6 +31,17 @@ use crate::stations::{station_for, Station};
 /// member spread price at σ = max(a·spread, 0.2 °C) instead of the per-(city, lead) constant.
 /// The parameter is REQUIRED (not a builder default) so the daemon and the pilot cannot silently
 /// diverge — every construction site states what σ regime it prices under.
+/// Ensemble member stats for one (coords, target day): the spreads feed the dynamic σ, the means
+/// are LOG-ONLY μ candidates (they must beat the blend on accrued captures before entering
+/// pricing, like every mean candidate). None per slot ⇒ that system had no data for the day.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EnsembleDayStats {
+    pub mean_ecmwf: Option<f64>,
+    pub mean_gfs: Option<f64>,
+    pub spread_ecmwf: Option<f64>,
+    pub spread_gfs: Option<f64>,
+}
+
 pub struct StationPricer {
     now_utc: NaiveDateTime,
     today: NaiveDate,
@@ -37,7 +51,7 @@ pub struct StationPricer {
     forecast_cache: HashMap<String, Vec<Vec<(NaiveDateTime, f64)>>>,
     /// Fitted spread→σ scale `a`; None ⇒ constant tables only (pre-gate behavior).
     spread_sigma_scale: Option<f64>,
-    ens_cache: HashMap<String, Vec<HashMap<NaiveDate, f64>>>,
+    ens_cache: HashMap<String, Vec<HashMap<NaiveDate, (f64, f64)>>>,
     ens_diag_done: bool,
     /// Per-slot circuit breaker: a slot whose FIRST coordinate came back all-candidates-failed is
     /// skipped for every later coordinate this run. Without it, an unreachable-but-hanging
@@ -102,41 +116,43 @@ impl StationPricer {
         // forecast uncertainty, and lead ≥ 1 rows are what the walk-forward validation scored.
         // μ (incl. the fitted bias) is untouched — the mapping was fitted against stored μ.
         if let (Phase::Lead(_), Some(a)) = (phase, self.spread_sigma_scale) {
-            let (e, g) = self.ensemble_spreads(&r.city, &r.source, r.target_date);
-            if let Some(sp) = mean_spread(e, g) {
+            let ens = self.ensemble_stats(&r.city, &r.source, r.target_date);
+            if let Some(sp) = mean_spread(ens.spread_ecmwf, ens.spread_gfs) {
                 return Some((mu, dynamic_sigma(a, sp), true));
             }
         }
         Some((mu, sigma, false))
     }
 
-    /// Target-day ensemble member spread (°C) per system in `ENSEMBLE_LOG_MODELS` (0 = ECMWF ENS,
-    /// 1 = GEFS), at the coords the row is priced at — the venue's resolution station when
-    /// mapped, else the city registry. One fetch per coordinate per run, cached; the window is a
-    /// week out (leads beyond 2 are neither traded nor fitted, and ~50-member hourly payloads are
-    /// big enough without tail days nobody reads). This is ALSO the capture daemon's log source
-    /// for `ensemble_spread_*`, so the spread a row is priced with is the spread stored on it.
-    pub fn ensemble_spreads(
+    /// Target-day ensemble member stats (mean daily high °C, member spread °C) per system in
+    /// `ENSEMBLE_LOG_MODELS` (0 = ECMWF ENS, 1 = GEFS), at the coords the row is priced at — the
+    /// venue's resolution station when mapped, else the city registry. One fetch per coordinate
+    /// per run, cached; the window is a week out (leads beyond 2 are neither traded nor fitted,
+    /// and ~50-member hourly payloads are big enough without tail days nobody reads). This is
+    /// ALSO the capture daemon's log source for `ensemble_spread_*`/`ensemble_mean_*`, so the
+    /// spread a row is priced with is the spread stored on it. The MEANS are log-only (the μ
+    /// gate: beat the blend on accrued captures before entering pricing).
+    pub fn ensemble_stats(
         &mut self,
         city: &str,
         source: &str,
         target: NaiveDate,
-    ) -> (Option<f64>, Option<f64>) {
+    ) -> EnsembleDayStats {
         let coords = station_for(city, source)
             .map(|st| (st.lat, st.lon))
             .or_else(|| cities::coords(city));
         let Some((lat, lon)) = coords else {
-            return (None, None);
+            return EnsembleDayStats::default();
         };
         let key = format!("{lat:.3},{lon:.3}");
         if !self.ens_cache.contains_key(&key) {
-            let mut maps: Vec<HashMap<NaiveDate, f64>> = Vec::new();
+            let mut maps: Vec<HashMap<NaiveDate, (f64, f64)>> = Vec::new();
             for (i, cands) in ENSEMBLE_LOG_CANDIDATES.iter().enumerate() {
                 if self.ens_slot_dead[i] {
                     maps.push(HashMap::new());
                     continue;
                 }
-                let (got, served_by) = self.open_meteo.fetch_ensemble_spread_tagged(
+                let (got, served_by) = self.open_meteo.fetch_ensemble_stats_tagged(
                     lat,
                     lon,
                     self.today,
@@ -168,10 +184,35 @@ impl StationPricer {
             self.ens_cache.insert(key.clone(), maps);
         }
         let maps = &self.ens_cache[&key];
-        (
-            maps.first().and_then(|m| m.get(&target)).copied(),
-            maps.get(1).and_then(|m| m.get(&target)).copied(),
-        )
+        let slot = |i: usize| maps.get(i).and_then(|m| m.get(&target)).copied();
+        let (e, g) = (slot(0), slot(1));
+        EnsembleDayStats {
+            mean_ecmwf: e.map(|(m, _)| m),
+            mean_gfs: g.map(|(m, _)| m),
+            spread_ecmwf: e.map(|(_, s)| s),
+            spread_gfs: g.map(|(_, s)| s),
+        }
+    }
+
+    /// Per-`BLEND_MODELS` daily highs (°C) for the target local day at the row's resolution
+    /// station — the members the blended μ is averaged from, keyed by model name (full day, no
+    /// intraday cutoff). Log-only: stored so blend WEIGHTS can be fitted from accrued captures;
+    /// until they are logged there is nothing to fit. None when the city is unmapped for this
+    /// venue or the forecast fetch failed; models with no hours in the window are simply absent.
+    pub fn blend_model_highs(
+        &mut self,
+        city: &str,
+        source: &str,
+        target: NaiveDate,
+    ) -> Option<std::collections::BTreeMap<String, f64>> {
+        let st = station_for(city, source)?;
+        let series = self.forecast(st)?;
+        let map: std::collections::BTreeMap<String, f64> = BLEND_MODELS
+            .iter()
+            .zip(per_model_day_maxes_c(series, target, st, None))
+            .filter_map(|(name, v)| v.map(|v| (name.to_string(), v)))
+            .collect();
+        (!map.is_empty()).then_some(map)
     }
 
     fn obs(&mut self, st: &Station, target: NaiveDate) -> Option<&[(NaiveDateTime, f64)]> {
