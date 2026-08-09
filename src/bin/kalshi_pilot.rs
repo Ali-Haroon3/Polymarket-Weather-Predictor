@@ -24,17 +24,22 @@
 //! `--max-city-exposure` — N bucket markets on one city-day are one weather bet, not N
 //! independent bets.
 //!
-//! λ is used twice, and since 2026-07-30 the two uses read different numbers. SIZING still
-//! shrinks edges by the per-venue fold (the evidence-backed config; conditioning the traded
-//! edge on segment λ waits on the dashboard's Filter A/B rows). The FLOOR BREAKER instead
-//! watches the λ of the segment the pilot's orders actually live in — px ≥ 0.10 via the shared
-//! `lambda_segment` boundary — because the venue fold averages in the sub-10¢ tail, a segment
-//! whose candidates essentially never clear threshold + fee and whose negative λ was dragging
-//! the fold toward the floor (0.33 and trailing ~0.21 vs +0.51 for the traded band at the
-//! 2026-07-26 look). While the traded segment has < MIN_N resolved rows, `lambda_seg` falls
-//! back to the venue fold — exactly the old breaker. A per-order guard applies the same floor
-//! at each candidate's own bid band, so a rare sub-10¢ candidate (arithmetically possible only
-//! at high λ) can't slip through on the healthier fold.
+//! λ enters in two places, and BOTH read the candidate's own segment since 2026-08-09. The FLOOR
+//! BREAKER (2026-07-30) watches the λ of the segment the pilot's orders actually live in —
+//! px ≥ 0.10 via the shared `lambda_segment` boundary — because the venue fold averages in the
+//! sub-10¢ tail, a segment whose candidates essentially never clear threshold + fee and whose
+//! negative λ was dragging the fold toward the floor (0.33 and trailing ~0.21 vs +0.51 for the
+//! traded band at the 2026-07-26 look). The EDGE GATE originally kept the venue fold, waiting on
+//! the dashboard's Filter A/B rows — but the fold has the same dilution problem there, and it
+//! starved the paper sample outright: the first four CI dry runs (2026-08-05..08) produced ZERO
+//! orders, with the best candidate's fold-shrunk edge (0.31 × 0.207 = 0.064) under the required
+//! 0.077 while its own ≥ 10¢ band fitted λ = 0.44. A gate that prices every candidate with a tail
+//! it cannot trade measures nothing, so since 2026-08-09 each candidate's edge is shrunk by
+//! `lambda_seg` at its OWN bid band (segment → venue fold → pooled fallback on thin samples, so
+//! young data behaves exactly like the old gate). Sub-10¢ bands with a negative fitted slope
+//! clamp to λ = 0 and can never clear the gate — an adaptive price floor — and the per-order
+//! guard still applies `--lambda-floor` at the candidate's band as defense in depth (binding when
+//! a large claimed edge would clear the gate at a band λ under the floor, e.g. λ 0.15 × 0.60).
 //!
 //!   cargo run --release --bin kalshi_pilot            # dry run: print + log intended orders
 //!   cargo run --release --bin kalshi_pilot -- --live  # place real limit orders
@@ -47,6 +52,9 @@ use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::kalshi_trade::{fee_frac, KalshiTradeClient};
 use polymarket_weather_predictor::api::{KalshiHistoryDownloader, WeatherMarketRow};
+use polymarket_weather_predictor::backtesting::spread_sigma::{
+    fit_spread_sigma_scale, spread_obs, SpreadObs,
+};
 use polymarket_weather_predictor::backtesting::{lambda_segment, market_estimate, ShrinkageFit};
 use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::StationPricer;
@@ -118,6 +126,25 @@ struct CaptureRow {
     /// `starts_with("temp")` gate — every real capture carries the field.
     #[serde(default)]
     market_type: String,
+    /// The rest exist only for the spread→σ scale fit (`fit_spread_scale_from_captures`), which
+    /// re-prices resolved rows and so needs the full market shape plus the stored forecast and
+    /// logged ensemble spread. All defaulted so a row missing any of them still feeds the λ fit.
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    threshold: Option<f64>,
+    #[serde(default)]
+    threshold_upper: Option<f64>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    forecast_high: Option<f64>,
+    #[serde(default)]
+    forecast_sigma: Option<f64>,
+    #[serde(default)]
+    ensemble_spread_ecmwf: Option<f64>,
+    #[serde(default)]
+    ensemble_spread_gfs: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -140,7 +167,10 @@ struct PilotConfig {
 
 #[tokio::main]
 async fn main() {
-    if std::env::var("PILOT_DISABLE").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("PILOT_DISABLE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         eprintln!("PILOT_DISABLE=1 — kill switch engaged, exiting without doing anything.");
         return;
     }
@@ -153,11 +183,7 @@ async fn main() {
 fn parse_args() -> PilotConfig {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
-    let val = |name: &str| {
-        args.windows(2)
-            .find(|w| w[0] == name)
-            .map(|w| w[1].clone())
-    };
+    let val = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
     let fval = |name: &str, d: f64| val(name).and_then(|v| v.parse().ok()).unwrap_or(d);
     let stake = fval("--stake", DEFAULT_STAKE);
     PilotConfig {
@@ -185,18 +211,30 @@ async fn run() -> Result<(), String> {
     let cfg = parse_args();
     let today = Utc::now().date_naive();
 
-    // λ from the same captures the paper evidence came from: resolved, lead ≥ 1 only. The venue
-    // fold sizes the shrunk edge (traded strategy, unchanged); the breaker watches the traded
-    // segment instead (see module docs).
+    // λ from the same captures the paper evidence came from: resolved, lead ≥ 1 only. Each
+    // candidate's edge gate reads its OWN bid band via `gate_lambda` (see module docs); the
+    // breaker watches the traded (px ≥ 0.10) band; the venue fold remains only as the thin-
+    // segment fallback inside `lambda_seg` and the logged value for no-bid rows.
     let fit = fit_shrinkage_from_captures(&cfg.captures_path);
     let lambda = fit.lambda("kalshi");
     let traded_seg = lambda_segment(0.10); // boundary value ⇒ the ≥ 10¢ band's canonical name
     let lambda_traded = fit.lambda_seg("kalshi", traded_seg);
     println!(
-        "λ(kalshi fold) = {lambda:.3} for sizing · λ({traded_seg}) = {lambda_traded:.3} for the \
-         floor breaker (fitted from {})",
+        "λ(kalshi fold) = {lambda:.3} (fallback) · λ({traded_seg}) = {lambda_traded:.3} for the \
+         floor breaker; each candidate's gate is shrunk at its own bid band (fitted from {})",
         cfg.captures_path.display()
     );
+
+    // Spread→σ scale from the same captures, so the pilot prices with the SAME σ regime the
+    // capture daemon stores evidence under (both feed `StationPricer::new` below).
+    let spread_scale = fit_spread_sigma_scale(&spread_obs_from_captures(&cfg.captures_path));
+    match spread_scale {
+        Some(a) => println!(
+            "spread→σ: a = {a:.1} — lead ≥ 1 rows with an ensemble spread price at \
+             σ = max(a·spread, 0.2 °C), same as the capture daemon"
+        ),
+        None => println!("spread→σ: too few resolved rows carrying spread — constant σ tables"),
+    }
 
     // Circuit breakers — evaluated BEFORE the trade API is touched, so a tripped breaker can
     // never be defeated by an auth failure path or a partial run.
@@ -286,7 +324,7 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("market fetch failed: {e}"))?;
     println!("{} open Kalshi weather markets", markets.len());
 
-    let mut pricer = StationPricer::new(today);
+    let mut pricer = StationPricer::new(today, spread_scale);
     let mut ledger: Vec<LedgerRow> = Vec::new();
     let mut placed = 0usize;
     let mut exposure = position_cost_estimate(&positions);
@@ -304,25 +342,26 @@ async fn run() -> Result<(), String> {
             model.set_point_forecast(mu, sigma);
             market_estimate(&model, &to_sim(r))
         });
+        let candidate_lambda = gate_lambda(&fit, r.best_bid, lambda);
         let d = decide_sell(
             today,
             r.target_date,
             r.best_bid,
             est,
-            lambda,
+            candidate_lambda,
             cfg.edge_threshold,
             cfg.fee_buffer,
         );
-        let mut row = ledger_row(r, &d, est, lambda, cfg.live);
+        let mut row = ledger_row(r, &d, est, candidate_lambda, cfg.live);
         if let Decision::Order {
             no_price,
             claimed: _,
             shrunk: _,
         } = d
         {
-            // The candidate's own bid band must clear the λ floor too: the global breaker watches
-            // the ≥ 10¢ segment, so a sub-10¢ candidate must not slip through on the venue fold
-            // (thin segments fall back to that fold, keeping the old behavior on young samples).
+            // Defense in depth for `--lambda-floor`: the gate above already shrank by this same
+            // band λ, but a large claimed edge can clear the gate at a band λ under the floor —
+            // the floor is an absolute stop, not a scale, so it's applied per order too.
             let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(1.0 - no_price));
             if seg_lambda < cfg.lambda_floor {
                 row.decision = "skip_segment_lambda_floor".into();
@@ -392,7 +431,11 @@ async fn run() -> Result<(), String> {
     println!(
         "\n{} orders {} · ${:.2} committed exposure · full decision log appended to {}",
         placed,
-        if cfg.live { "PLACED" } else { "would be placed (dry run)" },
+        if cfg.live {
+            "PLACED"
+        } else {
+            "would be placed (dry run)"
+        },
         exposure.max(0.0), // .max(0.0) irons out "-0.00" (negative-zero display artifact)
         cfg.ledger_path.display()
     );
@@ -403,7 +446,11 @@ async fn run() -> Result<(), String> {
 #[derive(Debug, PartialEq)]
 enum Decision {
     /// SELL YES via BUY NO at `no_price` (= 1 − yes bid, the executable taker price).
-    Order { no_price: f64, claimed: f64, shrunk: f64 },
+    Order {
+        no_price: f64,
+        claimed: f64,
+        shrunk: f64,
+    },
     Skip(&'static str),
     /// Skip carrying the diagnostics that were computed before the threshold failed.
     SkipWithEdge {
@@ -498,13 +545,62 @@ fn fit_shrinkage_from_captures(path: &PathBuf) -> ShrinkageFit {
             _ => c.entry_price,
         };
         if px > 0.0 && px < 1.0 {
-            // Tagged by price band: the floor breaker reads `lambda_seg` while sizing still reads
-            // the venue fold, which tagging never changes (proven by the fold-identity test in
-            // shrinkage.rs).
+            // Tagged by price band: the edge gate and the floor breaker read `lambda_seg`; venue-
+            // level lookups fold across segments, which tagging never changes (proven by the
+            // fold-identity test in shrinkage.rs).
             fit.observe_seg(&c.source, lambda_segment(px), est - px, outcome - px);
         }
     }
     fit
+}
+
+/// λ the edge gate shrinks a candidate by: its own bid band's segment fit (a SELL fills at the
+/// bid, so the bid picks the band — the dashboard's per-side convention), falling back
+/// segment → venue fold → pooled inside `lambda_seg` on thin samples. An unusable bid returns
+/// the venue fold: those rows die at `skip_no_bid` and the value is only logged.
+fn gate_lambda(fit: &ShrinkageFit, best_bid: Option<f64>, venue_fold: f64) -> f64 {
+    match best_bid {
+        Some(b) if b > 0.0 && b < 1.0 => fit.lambda_seg("kalshi", lambda_segment(b)),
+        _ => venue_fold,
+    }
+}
+
+/// Spread→σ fit observations from the captures file — the population hygiene lives in the shared
+/// `backtesting::spread_sigma::spread_obs`, so this fit and the capture daemon's cannot drift.
+/// Missing file ⇒ empty ⇒ `fit_spread_sigma_scale` returns None ⇒ constant σ tables.
+fn spread_obs_from_captures(path: &PathBuf) -> Vec<SpreadObs> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<CaptureRow>(l).ok())
+        .filter_map(|c| {
+            spread_obs(
+                SimulatedMarket {
+                    date: c.target_date,
+                    market_id: c.market_id.clone().unwrap_or_default(),
+                    market_title: String::new(),
+                    market_type: c.market_type.clone(),
+                    threshold: c.threshold?,
+                    threshold_upper: c.threshold_upper,
+                    unit: c.unit.clone(),
+                    market_price: c.entry_price,
+                    actual_outcome: 0.0, // unused by the fit; the resolved outcome is passed below
+                    city: c.city.clone(),
+                },
+                c.captured_at,
+                c.best_bid,
+                c.best_ask,
+                c.model_estimate,
+                c.outcome,
+                c.forecast_high,
+                c.forecast_sigma,
+                c.ensemble_spread_ecmwf,
+                c.ensemble_spread_gfs,
+            )
+        })
+        .collect()
 }
 
 /// Why the pilot must not trade this run, if any breaker tripped. λ floor first: a too-thin
@@ -627,7 +723,10 @@ fn open_city_exposure(
 /// Kalshi doesn't return cost basis on this endpoint; over-counting exposure only makes the pilot
 /// MORE cautious, never less.
 fn position_cost_estimate(positions: &[polymarket_weather_predictor::api::KalshiPosition]) -> f64 {
-    positions.iter().map(|p| p.position.unsigned_abs() as f64).sum()
+    positions
+        .iter()
+        .map(|p| p.position.unsigned_abs() as f64)
+        .sum()
 }
 
 fn load_ordered_tickers(path: &PathBuf) -> HashSet<String> {
@@ -671,7 +770,12 @@ fn ledger_row(
             no_price,
             claimed,
             shrunk,
-        } => ("order".to_string(), Some(*no_price), Some(*claimed), Some(*shrunk)),
+        } => (
+            "order".to_string(),
+            Some(*no_price),
+            Some(*claimed),
+            Some(*shrunk),
+        ),
         Decision::Skip(reason) => (reason.to_string(), None, None, None),
         Decision::SkipWithEdge {
             reason,
@@ -805,7 +909,14 @@ mod tests {
     }
 
     /// A minimal ledger "order" row for breaker tests.
-    fn order_row(ticker: &str, city: &str, target: &str, no_price: f64, contracts: i64, dry: bool) -> LedgerRow {
+    fn order_row(
+        ticker: &str,
+        city: &str,
+        target: &str,
+        no_price: f64,
+        contracts: i64,
+        dry: bool,
+    ) -> LedgerRow {
         LedgerRow {
             run_at: Utc::now(),
             ticker: ticker.into(),
@@ -837,6 +948,26 @@ mod tests {
     }
 
     #[test]
+    fn gate_lambda_reads_the_candidates_own_bid_band() {
+        let mut fit = ShrinkageFit::default();
+        // Thick, distinct fits in both bands: ≥ 10¢ realizes half its claims, sub-10¢ none.
+        for _ in 0..ShrinkageFit::MIN_N {
+            fit.observe_seg("kalshi", lambda_segment(0.40), 0.10, 0.05);
+            fit.observe_seg("kalshi", lambda_segment(0.05), 0.10, -0.02);
+        }
+        let fold = fit.lambda("kalshi");
+        // A 40¢ bid gates at the ≥ 10¢ band's λ, a 5¢ bid at the (clamped-to-zero) tail band's.
+        assert!((gate_lambda(&fit, Some(0.40), fold) - 0.5).abs() < 1e-9);
+        assert_eq!(gate_lambda(&fit, Some(0.05), fold), 0.0);
+        // No usable bid → the venue fold, logged on a row that dies at skip_no_bid anyway.
+        assert_eq!(gate_lambda(&fit, None, fold), fold);
+        assert_eq!(gate_lambda(&fit, Some(0.0), fold), fold);
+        // Thin band (no observations at all for a fresh fit) → falls back to the venue fold.
+        let empty = ShrinkageFit::default();
+        assert_eq!(gate_lambda(&empty, Some(0.40), 1.0), 1.0);
+    }
+
+    #[test]
     fn stand_down_trips_on_lambda_floor_and_weekly_loss() {
         // Healthy: λ above floor, small profit.
         assert_eq!(stand_down_reason(0.35, 0.2, 4.0, 3, 50.0), None);
@@ -865,7 +996,7 @@ mod tests {
                 order_row("LOSE", "NYC", "2026-07-19", 0.60, 10, false), // resolved YES → lose
                 order_row("OLD", "NYC", "2026-07-10", 0.60, 10, false), // outside the window
                 order_row("FUT", "NYC", "2026-07-22", 0.60, 10, false), // not settled yet
-                order_row("DRY", "NYC", "2026-07-18", 0.60, 10, true), // wrong mode for live
+                order_row("DRY", "NYC", "2026-07-18", 0.60, 10, true),  // wrong mode for live
             ],
         );
         // Outcomes come from capture rows (only market_id + outcome matter for the join).
@@ -876,12 +1007,20 @@ mod tests {
         };
         std::fs::write(
             &captures,
-            [cap_line("WIN", 0.0), cap_line("LOSE", 1.0), cap_line("OLD", 0.0)].join("\n"),
+            [
+                cap_line("WIN", 0.0),
+                cap_line("LOSE", 1.0),
+                cap_line("OLD", 0.0),
+            ]
+            .join("\n"),
         )
         .unwrap();
 
         let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
-        assert_eq!(settled, 2, "only WIN and LOSE are live, in-window, and resolved");
+        assert_eq!(
+            settled, 2,
+            "only WIN and LOSE are live, in-window, and resolved"
+        );
         // WIN: 10×(0.40 − fee), LOSE: 10×(−0.60 − fee), fee = 0.07·0.6·0.4 = 0.0168.
         let fee = fee_frac(0.60);
         let expect = 10.0 * (0.40 - fee) + 10.0 * (-0.60 - fee);
@@ -911,7 +1050,10 @@ mod tests {
         let exp = open_city_exposure(&ledger, today, true);
         assert_eq!(exp.len(), 1);
         let nyc = exp[&("NYC".to_string(), d("2026-07-21"))];
-        assert!((nyc - 15.0).abs() < 1e-9, "20×0.50 + 20×0.25 = $15, got {nyc}");
+        assert!(
+            (nyc - 15.0).abs() < 1e-9,
+            "20×0.50 + 20×0.25 = $15, got {nyc}"
+        );
     }
 
     #[test]
@@ -941,7 +1083,10 @@ mod tests {
         // The rows sit at mid 0.5, so the traded (≥ 10¢) segment carries the same fit — the
         // breaker's lookup must see it, proving observations were tagged, not bare-venue.
         let traded = fit.lambda_seg("kalshi", lambda_segment(0.10));
-        assert!((traded - 0.5).abs() < 1e-9, "traded-segment λ, got {traded}");
+        assert!(
+            (traded - 0.5).abs() < 1e-9,
+            "traded-segment λ, got {traded}"
+        );
         // Missing file → an empty fit: every lookup is 1.0 (no shrink), never a crash.
         let empty = fit_shrinkage_from_captures(&dir.join("nope.jsonl"));
         assert_eq!(empty.lambda("kalshi"), 1.0);
@@ -961,8 +1106,14 @@ mod tests {
         }
         let fold = fit.lambda("kalshi");
         let traded = fit.lambda_seg("kalshi", lambda_segment(0.10));
-        assert!(fold < 0.2, "venue fold {fold} sits below the floor (old breaker trips)");
-        assert!((traded - 0.5).abs() < 1e-9, "traded segment healthy, got {traded}");
+        assert!(
+            fold < 0.2,
+            "venue fold {fold} sits below the floor (old breaker trips)"
+        );
+        assert!(
+            (traded - 0.5).abs() < 1e-9,
+            "traded segment healthy, got {traded}"
+        );
         // New breaker: healthy traded segment ⇒ no stand-down; the fold alone would have stood
         // the pilot down for rows it is structurally unable to trade.
         assert_eq!(stand_down_reason(traded, 0.2, 0.0, 0, 50.0), None);
