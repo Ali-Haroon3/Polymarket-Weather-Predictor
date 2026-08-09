@@ -753,6 +753,13 @@ fn agg(trades: &[&Trade]) -> Agg {
     a
 }
 
+/// The FORWARD slice of a replay: trades on targets strictly after `frozen` — days whose outcomes
+/// were unknowable when the config was frozen, so its rule cannot have been tuned on them.
+/// Strictly-after because a freeze-day target usually resolves that same evening.
+fn since(trades: &[Trade], frozen: NaiveDate) -> Vec<&Trade> {
+    trades.iter().filter(|t| t.date > frozen).collect()
+}
+
 impl Agg {
     fn roi(&self) -> f64 {
         if self.staked > 0.0 {
@@ -1121,9 +1128,10 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ..*sp
         };
         let variants = [
-            ("Baseline (no filters, incl. day-of)", base),
+            ("Baseline (no filters, incl. day-of)", "2026-07-05", base),
             (
                 "Skip day-of (old default)",
+                "2026-07-05",
                 StrategyParams {
                     trade_day_of: false,
                     ..base
@@ -1131,6 +1139,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Edge cap 30%",
+                "2026-07-05",
                 StrategyParams {
                     max_edge: Some(0.30),
                     ..base
@@ -1138,6 +1147,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "No SELL on buckets",
+                "2026-07-05",
                 StrategyParams {
                     no_sell_buckets: true,
                     ..base
@@ -1145,6 +1155,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + edge ≥ 10%",
+                "2026-07-13",
                 StrategyParams {
                     trade_day_of: false,
                     edge_threshold: sp.edge_threshold.max(0.10),
@@ -1153,6 +1164,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + SELL only",
+                "2026-07-13",
                 StrategyParams {
                     trade_day_of: false,
                     sell_only: true,
@@ -1161,6 +1173,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + shrunk edge (default since 07-19; walk-forward λ)",
+                "2026-07-13",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1173,6 +1186,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // paper twin of the real-money config.
             (
                 "Skip day-of + shrunk + SELL only (pilot-shaped)",
+                "2026-07-19",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1187,6 +1201,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // edge, with and without the SELL-only gate.
             (
                 "Skip day-of + shrunk + edge ≥ 10%",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1196,6 +1211,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + shrunk + SELL only + edge ≥ 10%",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1212,6 +1228,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // the two are additive or redundant.
             (
                 "Skip day-of + shrunk + price ≥ 0.10",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1221,6 +1238,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + shrunk + SELL only + price ≥ 0.10",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1237,6 +1255,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // buy side, was the dead segment).
             (
                 "Skip day-of + segment λ (venue × price band)",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1246,6 +1265,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + segment λ + SELL only",
+                "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1261,6 +1281,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // Nearly orthogonal to the price floor, so it gets its own row plus a SELL-only stack.
             (
                 "Skip day-of + shrunk + bucket ≥ 1.5°C from forecast",
+                "2026-08-05",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1270,6 +1291,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
             (
                 "Skip day-of + shrunk + SELL only + bucket ≥ 1.5°C from forecast",
+                "2026-08-05",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
@@ -1279,15 +1301,44 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 },
             ),
         ];
+        // The default's trade list, replayed once: every candidate's forward window is scored
+        // against the default on the IDENTICAL window, so the comparison can't be moved by which
+        // weeks happen to fall inside a candidate's window.
+        let default_name = "Skip day-of + shrunk edge (default since 07-19; walk-forward λ)";
+        let default_trades: Vec<Trade> = run_strategy(
+            captures,
+            &StrategyParams {
+                trade_day_of: false,
+                shrink_edge: true,
+                ..base
+            },
+        );
+        let fwd_cell = |trades: &[&Trade]| -> String {
+            let a = agg(trades);
+            if a.n == 0 {
+                return "–".into();
+            }
+            format!("{:+.1}% · {}", a.roi() * 100.0, a.n)
+        };
         s.push_str("<h3 class=\"sub-h\">Filter A/B — forward tracker</h3>");
-        s.push_str("<table><thead><tr><th>Config</th><th>Trades</th><th>PnL</th><th>ROI</th><th>Capture</th><th>Win</th></tr></thead><tbody>");
-        for (name, v) in &variants {
+        s.push_str("<table><thead><tr><th>Config</th><th>Trades</th><th>PnL</th><th>ROI</th><th>Capture</th><th>Win</th><th>Frozen</th><th>Fwd ROI · n</th><th>Default, same window</th></tr></thead><tbody>");
+        for (name, frozen, v) in &variants {
+            let frozen_date = NaiveDate::parse_from_str(frozen, "%Y-%m-%d")
+                .expect("freeze dates are compile-time literals");
             let refs: Vec<Trade> = run_strategy(captures, v);
             let rr: Vec<&Trade> = refs.iter().collect();
             let av = agg(&rr);
             let cls = if av.pnl >= 0.0 { "yes" } else { "miss" };
+            let fwd = since(&refs, frozen_date);
+            let fwd_agg = agg(&fwd);
+            let fwd_cls = if fwd_agg.pnl >= 0.0 { "yes" } else { "miss" };
+            let default_fwd = if *name == default_name {
+                "(reference)".into()
+            } else {
+                fwd_cell(&since(&default_trades, frozen_date))
+            };
             s.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td class=\"{}\">{}</td><td>{:+.1}%</td><td>{}</td><td>{:.0}%</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td class=\"{}\">{}</td><td>{:+.1}%</td><td>{}</td><td>{:.0}%</td><td class=\"muted\">{}</td><td class=\"{}\">{}</td><td class=\"muted\">{}</td></tr>",
                 esc(name),
                 av.n,
                 cls,
@@ -1296,10 +1347,14 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 av.edge_capture()
                     .map(|c| format!("{:.0}%", c * 100.0))
                     .unwrap_or_else(|| "–".into()),
-                av.hit_rate() * 100.0
+                av.hit_rate() * 100.0,
+                &frozen[5..], // MM-DD; the year is noise inside a season-long table
+                fwd_cls,
+                fwd_cell(&fwd),
+                default_fwd,
             ));
         }
-        s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">In-sample so far — watch these diverge as pending markets resolve to validate the filter out-of-sample. The shrunk-edge row is walk-forward (each date trades on a λ fitted only from earlier resolutions), so it is out-of-sample by construction.</p>");
+        s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">The first five columns are ALL-TIME (every settled capture since late June) and therefore diluted by history — a config doing badly lately keeps a good headline for a while. The last three are the promotion-decision view: each row's record on trades whose target date is strictly AFTER the date the row was frozen into the tracker (so its rule cannot have been tuned on them), beside the default replayed on the identical window. A candidate earns promotion by leading its own forward column, not the all-time one; all-time leads are in-sample for any rule chosen by inspecting this same sample. The shrunk-edge rows are additionally walk-forward in λ (each date trades on a λ fitted only from earlier resolutions).</p>");
 
         // Edge-shrinkage diagnostics: how much of its claimed edge does the model actually realize,
         // per venue? Fitted on resolved lead ≥ 1 captures only (lead ≤ 0 prices embed the outcome).
@@ -2053,6 +2108,23 @@ mod tests {
             segment_lambda: false,
             min_forecast_distance: 0.0,
         }
+    }
+
+    #[test]
+    fn since_takes_targets_strictly_after_the_freeze() {
+        let sp = params();
+        let caps = vec![
+            cap("2026-06-10", "Denver", 0.40, Some(0.60), Some(1.0)), // BUY, clears
+            cap("2026-06-12", "Denver", 0.50, Some(0.20), Some(0.0)), // SELL, clears
+        ];
+        let trades = run_strategy(&caps, &sp);
+        assert_eq!(trades.len(), 2);
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // Freeze on the first target day: that day is excluded (it resolved that evening),
+        // strictly-later targets are the forward sample.
+        assert_eq!(since(&trades, d("2026-06-10")).len(), 1);
+        assert_eq!(since(&trades, d("2026-06-09")).len(), 2);
+        assert_eq!(since(&trades, d("2026-06-12")).len(), 0);
     }
 
     #[test]
