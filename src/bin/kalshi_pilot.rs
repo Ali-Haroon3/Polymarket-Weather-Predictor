@@ -193,7 +193,11 @@ fn parse_args() -> PilotConfig {
         max_orders: val("--max-orders")
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_ORDERS),
-        edge_threshold: fval("--edge-threshold", config::backtest_params().edge_threshold),
+        // 0.10 since 2026-08-17, matching the dashboard's promoted default: with shrunk edges a
+        // 10% floor led its forward A/B window at both checkpoints (+32.7% vs +15.0%, n=77, at
+        // promotion). The old source, config::backtest_params().edge_threshold (0.05), still
+        // governs the raw-edge backtest engine, where 10% was never the validated cut.
+        edge_threshold: fval("--edge-threshold", 0.10),
         fee_buffer: fval("--fee-buffer", DEFAULT_FEE_BUFFER),
         lambda_floor: fval("--lambda-floor", DEFAULT_LAMBDA_FLOOR),
         max_weekly_loss: fval("--max-weekly-loss", DEFAULT_MAX_WEEKLY_LOSS),
