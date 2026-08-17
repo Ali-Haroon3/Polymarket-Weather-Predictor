@@ -177,32 +177,99 @@ impl KalshiHistoryDownloader {
                     );
                 }
             }
-            for m in &raw {
-                if let Some(mut row) = parse_kalshi_market(m) {
-                    if active == row.outcome.is_none() && seen.insert(row.market_id.clone()) {
-                        if active {
-                            let (bid, ask) = self.fetch_top_of_book(&row.market_id).await;
-                            row.best_bid = bid;
-                            row.best_ask = ask;
-                            let no_last = m
-                                .get("last_price")
-                                .and_then(value_as_f64)
-                                .filter(|&c| c > 0.0)
-                                .is_none();
-                            if no_last {
-                                if let (Some(b), Some(a)) = (bid, ask) {
-                                    row.price = (b + a) / 2.0;
-                                }
-                            }
-                            // gentle on the public API: ~10 req/s
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                        out.push(row);
+            self.ingest_markets(&raw, active, &mut seen, &mut out).await;
+        }
+        if active && out.is_empty() {
+            // 2026-08-17: the unfiltered per-series fallback ALSO came back empty on every series
+            // while the settled scan (same series_ticker param) kept returning rows — so the
+            // series-level market list appears to hide open markets entirely. Last resort: query by
+            // EVENT ticker ({series}-{YYMMMDD}, the same segment settlement tickers embed and
+            // direct ticker lookups answer) for today and the next two target days.
+            eprintln!(
+                "  Kalshi series scans (status=open AND unfiltered) empty for all {} series; probing by event ticker...",
+                WEATHER_SERIES.len()
+            );
+            let today = Utc::now().date_naive();
+            for series in WEATHER_SERIES {
+                if out.len() >= limit {
+                    break;
+                }
+                for offset in 0..=2i64 {
+                    let event = event_ticker(series, today + chrono::Duration::days(offset));
+                    let mut raw = self.fetch_markets_by_event(&event).await;
+                    raw.retain(market_looks_open);
+                    if !raw.is_empty() {
+                        eprintln!(
+                            "  {event}: event-ticker probe found {} open markets",
+                            raw.len()
+                        );
                     }
+                    self.ingest_markets(&raw, true, &mut seen, &mut out).await;
                 }
             }
         }
         Ok(out)
+    }
+
+    /// Parse raw market objects and push the rows that match the requested side into `out`,
+    /// filling top-of-book prices for active markets. Shared by every scan tier.
+    async fn ingest_markets(
+        &self,
+        raw: &[Value],
+        active: bool,
+        seen: &mut HashSet<String>,
+        out: &mut Vec<WeatherMarketRow>,
+    ) {
+        for m in raw {
+            if let Some(mut row) = parse_kalshi_market(m) {
+                if active == row.outcome.is_none() && seen.insert(row.market_id.clone()) {
+                    if active {
+                        let (bid, ask) = self.fetch_top_of_book(&row.market_id).await;
+                        row.best_bid = bid;
+                        row.best_ask = ask;
+                        let no_last = m
+                            .get("last_price")
+                            .and_then(value_as_f64)
+                            .filter(|&c| c > 0.0)
+                            .is_none();
+                        if no_last {
+                            if let (Some(b), Some(a)) = (bid, ask) {
+                                row.price = (b + a) / 2.0;
+                            }
+                        }
+                        // gentle on the public API: ~10 req/s
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    out.push(row);
+                }
+            }
+        }
+    }
+
+    /// One page of `GET /markets?event_ticker=<event>` with no status filter. A missing event or
+    /// any fetch/parse failure is just an empty list — the caller treats this as a probe.
+    async fn fetch_markets_by_event(&self, event: &str) -> Vec<Value> {
+        let path = format!("{API_PREFIX}/markets");
+        let url = format!("{}{path}", self.base_url);
+        let mut req = self
+            .client
+            .get(&url)
+            .query(&[("limit", "1000"), ("event_ticker", event)]);
+        if let Some(auth) = &self.auth {
+            for (k, v) in auth.headers("GET", &path) {
+                req = req.header(k, v);
+            }
+        }
+        let Ok(resp) = req.send().await else {
+            return Vec::new();
+        };
+        let Ok(val) = resp.json::<Value>().await else {
+            return Vec::new();
+        };
+        val.get("markets")
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Best (YES bid, YES ask) in [0,1] from the public per-market orderbook. Kalshi books rest
@@ -353,6 +420,15 @@ impl KalshiHistoryDownloader {
         }
         Ok(out)
     }
+}
+
+/// Daily-series event ticker for a target day: `KXHIGHNY` + 2026-08-18 ⇒ `KXHIGHNY-26AUG18`.
+/// The exact inverse of the `YYMMMDD` segment `ticker_date` parses out of settlement tickers.
+fn event_ticker(series: &str, date: NaiveDate) -> String {
+    format!(
+        "{series}-{}",
+        date.format("%y%b%d").to_string().to_ascii_uppercase()
+    )
 }
 
 /// Client-side "is this market open for trading?" for the unfiltered fallback scan. Trusts the
@@ -522,6 +598,16 @@ fn ticker_date(ticker: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_ticker_roundtrips_through_ticker_date() {
+        let d = NaiveDate::from_ymd_opt(2026, 8, 18).unwrap();
+        let event = event_ticker("KXHIGHNY", d);
+        assert_eq!(event, "KXHIGHNY-26AUG18");
+        // A market ticker under this event parses back to the same target day.
+        assert_eq!(ticker_date(&format!("{event}-B85.5")), Some(d));
+        assert_eq!(ticker_date(&event), Some(d));
+    }
 
     #[test]
     fn market_looks_open_trusts_known_statuses() {
