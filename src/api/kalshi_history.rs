@@ -158,9 +158,25 @@ impl KalshiHistoryDownloader {
             if out.len() >= limit {
                 break;
             }
-            let raw = self
-                .fetch_markets(series, status, limit - out.len())
+            let mut raw = self
+                .fetch_markets(series, Some(status), limit - out.len())
                 .await?;
+            if active && raw.is_empty() {
+                // 2026-08-14: the `status=open` series scan started returning empty for EVERY
+                // weather series while direct ticker lookups kept working — the same silent
+                // server-side breakage mode as `status=settled` in mid-July. Re-scan without the
+                // status filter (bounded by min_close_ts=now inside fetch_markets) and let
+                // market_looks_open() do the filtering here. Harmless once the filter recovers:
+                // a genuinely empty series is one cheap extra request.
+                raw = self.fetch_markets(series, None, limit - out.len()).await?;
+                raw.retain(market_looks_open);
+                if !raw.is_empty() {
+                    eprintln!(
+                        "  {series}: status=open scan empty; unfiltered fallback found {} open markets",
+                        raw.len()
+                    );
+                }
+            }
             for m in &raw {
                 if let Some(mut row) = parse_kalshi_market(m) {
                     if active == row.outcome.is_none() && seen.insert(row.market_id.clone()) {
@@ -270,11 +286,14 @@ impl KalshiHistoryDownloader {
         out
     }
 
-    /// Cursor-paginate `GET /markets?series_ticker=<series>&status=<status>` up to `limit` rows.
+    /// Cursor-paginate `GET /markets?series_ticker=<series>[&status=<status>]` up to `limit` rows.
+    /// `status: None` is the fallback scan for when a server-side status filter silently breaks:
+    /// it bounds the walk with `min_close_ts = now` instead, so pagination never wades into the
+    /// hundreds of already-settled strikes each daily series accrues per season.
     async fn fetch_markets(
         &self,
         series: &str,
-        status: &str,
+        status: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>, KalshiHistoryError> {
         let path = format!("{API_PREFIX}/markets");
@@ -289,13 +308,20 @@ impl KalshiHistoryDownloader {
             let mut query: Vec<(&str, String)> = vec![
                 ("limit", "1000".to_string()),
                 ("series_ticker", series.to_string()),
-                ("status", status.to_string()),
             ];
-            if status == "settled" {
-                // Only recent resolutions matter (finalizing our own snapshots); each series
-                // accrues hundreds of settled strikes per season.
-                let since = Utc::now().timestamp() - 14 * 24 * 3600;
-                query.push(("min_close_ts", since.to_string()));
+            match status {
+                Some("settled") => {
+                    query.push(("status", "settled".to_string()));
+                    // Only recent resolutions matter (finalizing our own snapshots); each series
+                    // accrues hundreds of settled strikes per season.
+                    let since = Utc::now().timestamp() - 14 * 24 * 3600;
+                    query.push(("min_close_ts", since.to_string()));
+                }
+                Some(s) => query.push(("status", s.to_string())),
+                None => {
+                    // Unfiltered fallback: anything still trading closes in the future.
+                    query.push(("min_close_ts", Utc::now().timestamp().to_string()));
+                }
             }
             if let Some(c) = &cursor {
                 query.push(("cursor", c.clone()));
@@ -326,6 +352,28 @@ impl KalshiHistoryDownloader {
             }
         }
         Ok(out)
+    }
+}
+
+/// Client-side "is this market open for trading?" for the unfiltered fallback scan. Trusts the
+/// market's own `status` string when it's a value we recognize; otherwise falls back to "unresolved
+/// and closes in the future" (which also excludes closed-but-unsettled markets). Deliberately
+/// permissive about status VALUES we've never seen — if Kalshi renamed the states (the likely cause
+/// of the `status=open` query filter breaking), hard-coding today's names would re-break silently.
+fn market_looks_open(m: &Value) -> bool {
+    match json_str(m, &["status"]).as_deref() {
+        Some("active" | "open") => true,
+        Some("closed" | "settled" | "finalized" | "determined" | "initialized" | "inactive") => {
+            false
+        }
+        _ => {
+            kalshi_outcome(m).is_none()
+                && ["close_time", "expiration_time"]
+                    .iter()
+                    .find_map(|k| m.get(*k).and_then(|v| v.as_str()))
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .is_some_and(|t| t.timestamp() > Utc::now().timestamp())
+        }
     }
 }
 
@@ -474,6 +522,37 @@ fn ticker_date(ticker: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn market_looks_open_trusts_known_statuses() {
+        let open: Value = serde_json::from_str(r#"{"status":"active","result":""}"#).unwrap();
+        assert!(market_looks_open(&open));
+        let closed: Value =
+            serde_json::from_str(r#"{"status":"closed","close_time":"2099-01-01T05:00:00Z"}"#)
+                .unwrap();
+        assert!(!market_looks_open(&closed));
+        let settled: Value = serde_json::from_str(r#"{"status":"settled","result":"no"}"#).unwrap();
+        assert!(!market_looks_open(&settled));
+    }
+
+    #[test]
+    fn market_looks_open_unknown_status_falls_back_to_close_time() {
+        // Unknown/missing status: open iff unresolved AND close_time is in the future.
+        let future: Value = serde_json::from_str(
+            r#"{"status":"something_new","result":"","close_time":"2099-01-01T05:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(market_looks_open(&future));
+        let past: Value =
+            serde_json::from_str(r#"{"result":"","close_time":"2020-01-01T05:00:00Z"}"#).unwrap();
+        assert!(!market_looks_open(&past));
+        let resolved: Value =
+            serde_json::from_str(r#"{"result":"yes","close_time":"2099-01-01T05:00:00Z"}"#)
+                .unwrap();
+        assert!(!market_looks_open(&resolved));
+        let no_times: Value = serde_json::from_str(r#"{"result":""}"#).unwrap();
+        assert!(!market_looks_open(&no_times));
+    }
 
     // Throwaway 2048-bit RSA key (PKCS#8). Test-only — signs nothing real.
     const TEST_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
