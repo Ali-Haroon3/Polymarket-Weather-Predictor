@@ -264,6 +264,26 @@ def sigma_sweep(rows):
     print(f"\n  best Brier at c={best[0]} (lambda {best[1]:.3f}, Brier {best[2]:.4f} vs stored {base_brier:.4f})")
     print("  NOTE: a wider sigma shrinks every claimed edge, so lambda rising here means the model's")
     print("  disagreements were inflated by overconfidence rather than being genuinely wrong.")
+    # 2026-08-09 sigma-regime boundary: rows priced from a*spread (sigma_source == "ensemble")
+    # and rows priced from the constant tables answer DIFFERENT questions under this sweep, and
+    # their optima have already diverged once (constant rows wanted c~0.6-0.7 while ensemble rows
+    # wanted c>1 on the same day's data) — a pooled optimum is a blend of regimes, so per-regime
+    # optima are reported alongside it.
+    for tag, sel in [
+        ("constant-sigma", [r for r in have if r.get("sigma_source") != "ensemble"]),
+        ("ensemble-sigma", [r for r in have if r.get("sigma_source") == "ensemble"]),
+    ]:
+        if len(sel) < 40:
+            print(f"  {tag}: n={len(sel)} -- too few for a per-regime optimum")
+            continue
+        seg_best = None
+        for c in [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.7, 2.0]:
+            sq = [(price_shape(r, r["forecast_high"], r["forecast_sigma"] * c) - r["outcome"]) ** 2
+                  for r in sel
+                  if price_shape(r, r["forecast_high"], r["forecast_sigma"] * c) is not None]
+            if sq and (seg_best is None or sum(sq) / len(sq) < seg_best[1]):
+                seg_best = (c, sum(sq) / len(sq))
+        print(f"  {tag}: n={len(sel)}, best Brier at c={seg_best[0]} ({seg_best[1]:.4f})")
 
 
 def market_brier(rows):

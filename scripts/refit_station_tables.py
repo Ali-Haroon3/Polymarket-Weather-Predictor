@@ -26,12 +26,19 @@ having over-widened), and walk-forward Brier improved monotonically as the floor
 move per refit so each step is re-validated on a fresh sample rather than trusting one
 fortnight; lower it deliberately once the sample supports the rest.
 
+Since 2026-08-09, lead >= 1 station rows with an ensemble spread are priced at sigma =
+max(a*spread, 0.2) instead of the constant slot (sigma_source == "ensemble"). Those rows still
+take the table BIAS, so they stay in the bias fit and the walk-forward evaluation (bias-only
+there, sigma untouched) — but they are EXCLUDED from the z-based sigma rescale, which governs
+only the constant tables: pooling their stored forecast_sigma would mix two sigma regimes
+exactly the way pre-refit rows do.
+
 Prints the suggested per-station bias[1..2] / sigma[1..2] updates; applying them to
 src/stations.rs is a deliberate manual step (repo convention: the tables are the constants).
 Post/k=0 slots are never touched — day-of is obs-anchored and post is (near-)deterministic.
 
 Usage: python3 scripts/refit_station_tables.py [--captures data/captures.jsonl]
-                                              [--since 2026-07-20] [--sigma-floor 0.8]
+                                              [--since 2026-08-05] [--sigma-floor 0.8]
 """
 import argparse
 import collections
@@ -92,14 +99,19 @@ def residuals(rows, truth, since):
             lead,
             truth[key] - r["forecast_high"],
             r["forecast_sigma"],
+            r.get("sigma_source") == "ensemble",
         )
     return list(recs.values())
 
 
 def fit(train, sigma_floor):
+    # Bias is mu-side and regime-independent: fit it on EVERY row. The sigma rescale governs
+    # only the constant tables, so it is fitted on constant-sigma rows alone — pooling stored
+    # forecast_sigma across the 2026-08-09 ensemble-sigma regime boundary would corrupt the
+    # z-statistics exactly the way pre-refit rows do (see --since).
     by_v = collections.defaultdict(list)
     by_vc = collections.defaultdict(list)
-    for (_, s, c, _, res, _) in train:
+    for (_, s, c, _, res, _, _) in train:
         by_v[s].append(res)
         by_vc[(s, c)].append(res)
     venue_mean = {v: sum(x) / len(x) for v, x in by_v.items()}
@@ -109,8 +121,9 @@ def fit(train, sigma_floor):
         delta[(s, c)] = vm + (m - vm) * n / (n + K_SHRINK)
     scale = {}
     z2 = collections.defaultdict(list)
-    for (_, s, c, _, res, sig) in train:
-        z2[s].append(((res - delta[(s, c)]) / sig) ** 2)
+    for (_, s, c, _, res, sig, is_ens) in train:
+        if not is_ens:
+            z2[s].append(((res - delta[(s, c)]) / sig) ** 2)
     for s, x in z2.items():
         scale[s] = (
             min(2.0, max(sigma_floor, math.sqrt(sum(x) / len(x)))) if len(x) >= 20 else 1.0
@@ -161,7 +174,10 @@ def walk_forward(rows, recs, sigma_floor):
                 continue
             s, c = r["source"], r["city"]
             mu = r["forecast_high"] + delta.get((s, c), vm.get(s, 0.0))
-            p_new = price(mu, r["forecast_sigma"] * scale.get(s, 1.0), r)
+            # Mirror the daemon: every row gets the refit bias, but the sigma rescale only
+            # applies to constant-sigma rows — ensemble-sigma rows keep their a*spread sigma.
+            sig_scale = 1.0 if r.get("sigma_source") == "ensemble" else scale.get(s, 1.0)
+            p_new = price(mu, r["forecast_sigma"] * sig_scale, r)
             old.append((p_old - r["outcome"]) ** 2)
             new.append((p_new - r["outcome"]) ** 2)
     return old, new
@@ -172,11 +188,12 @@ def main():
     ap.add_argument("--captures", default="data/captures.jsonl")
     ap.add_argument(
         "--since",
-        default="2026-07-20",
-        help="ignore captures before this date (last blend/table change). Residuals measure drift "
-        "of the CURRENT tables, so rows priced under an EARLIER set of constants must be excluded "
-        "-- pooling the 07-20 refit's before and after mixes two regimes and the walk-forward check "
-        "correctly rejects the result (-2.8% vs +5.5% on post-refit rows alone).",
+        default="2026-08-05",
+        help="ignore captures before this date (last blend/table change; keep in step with the "
+        "most recent refit landing). Residuals measure drift of the CURRENT tables, so rows "
+        "priced under an EARLIER set of constants must be excluded -- pooling the 07-20 refit's "
+        "before and after mixed two regimes and the walk-forward check correctly rejected the "
+        "result (-2.8% vs +5.5% on post-refit rows alone).",
     )
     ap.add_argument(
         "--sigma-floor",
@@ -190,7 +207,12 @@ def main():
     rows = load(args.captures)
     truth = realized_highs(rows)
     recs = residuals(rows, truth, args.since)
-    print(f"{len(truth)} realized city-days, {len(recs)} residual observations (lead 1-2)")
+    n_ens = sum(1 for t in recs if t[6])
+    print(
+        f"{len(truth)} realized city-days, {len(recs)} residual observations (lead 1-2): "
+        f"{len(recs) - n_ens} constant-sigma (drive the sigma rescale) + {n_ens} ensemble-sigma "
+        f"(bias fit only)"
+    )
 
     old, new = walk_forward(rows, recs, args.sigma_floor)
     if old:
@@ -207,7 +229,7 @@ def main():
           f"{ {k: round(v, 3) for k, v in vm.items()} }")
     print(f"venue sigma scale (MULTIPLY sigma[1], sigma[2]): "
           f"{ {k: round(v, 3) for k, v in scale.items()} }")
-    counts = collections.Counter((s, c) for (_, s, c, _, _, _) in recs)
+    counts = collections.Counter((s, c) for (_, s, c, _, _, _, _) in recs)
     print("\nper-city shrunk deltas (n>=4):")
     for (s, c), dv in sorted(delta.items(), key=lambda kv: kv[1]):
         if counts[(s, c)] >= 4:
