@@ -103,6 +103,8 @@ fn run() -> Result<(), String> {
         shrink_edge: args.shrink_edge,
         segment_lambda: args.segment_lambda,
         min_forecast_distance: args.min_forecast_distance,
+        max_pm_spread: None,
+        skip_anti_lambda_cities: false,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -359,6 +361,19 @@ struct StrategyParams {
     /// axis were chosen by inspecting this sample, so this earns forward A/B evidence before it
     /// could become a default — and note a σ refit (the actual defect) may dissolve it entirely.
     min_forecast_distance: f64,
+    /// Skip Polymarket markets whose captured book is wider than this (ask − bid). A/B-only
+    /// candidate (no CLI flag yet), frozen 2026-08-17 from `scripts/microstructure_lambda.py`'s
+    /// first look: Polymarket books wider than ~2¢ carry NEGATIVE executable-price λ (−0.29) — a
+    /// wide book means the mid is stale and the fill eats the spread the model thinks is edge.
+    /// Kalshi was non-monotone on the same cut, so this gates Polymarket rows only. Rows without
+    /// captured book data pass (legacy history is not scoreable on this axis). None = no filter.
+    max_pm_spread: Option<f64>,
+    /// Skip (venue, city) pairs whose full-sample λ is NEGATIVE at large n. A/B-only candidate
+    /// (no CLI flag yet), frozen 2026-08-17 with the list fixed at kalshi/Denver (λ −0.217,
+    /// n=222) and kalshi/Chicago (−0.082, n=222) — the only negative cells with n ≥ 200 in
+    /// `scripts/lambda_diagnostics.py`'s (venue, city) table. The list is part of the freeze:
+    /// re-deriving it from later data would un-freeze the rule.
+    skip_anti_lambda_cities: bool,
 }
 
 /// How `decide` shrinks each side's claimed edge.
@@ -628,6 +643,29 @@ fn passes_forecast_distance(c: &Capture, p: &StrategyParams) -> bool {
         || forecast_distance_c(c).is_none_or(|d| d >= p.min_forecast_distance)
 }
 
+/// Market-level eligibility for `max_pm_spread`: Polymarket rows with a captured book must not be
+/// wider than the cap. Kalshi rows and rows without book data pass — see the field's rationale.
+fn passes_book_spread(c: &Capture, p: &StrategyParams) -> bool {
+    let Some(cap) = p.max_pm_spread else {
+        return true;
+    };
+    if c.source != "polymarket" {
+        return true;
+    }
+    match (c.best_bid, c.best_ask) {
+        (Some(b), Some(a)) => a - b <= cap,
+        _ => true,
+    }
+}
+
+/// Market-level eligibility for `skip_anti_lambda_cities` — the frozen 2026-08-17 list, see the
+/// field's rationale.
+fn passes_city_lambda(c: &Capture, p: &StrategyParams) -> bool {
+    !p.skip_anti_lambda_cities
+        || c.source != "kalshi"
+        || !matches!(c.city.as_str(), "Denver" | "Chicago")
+}
+
 /// Walk settled captures in resolution order, edge-filter, fractional-Kelly size on the compounding
 /// bankroll, and book PnL using the same per-share convention as the backtest engine
 /// (stake × (outcome − price) for a BUY, negated for a SELL).
@@ -663,10 +701,11 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         if let Some(o) = shrink_obs_of(c) {
             pending.push((o.venue, o.segment, o.x, o.y));
         }
-        // Gate before decide(), but AFTER the row is queued into the λ fit: the near-forecast band
-        // is still evidence about how real the model's claimed edges are, whether or not this
-        // config trades it.
-        if !passes_forecast_distance(c, p) {
+        // Gate before decide(), but AFTER the row is queued into the λ fit: filtered rows are
+        // still evidence about how real the model's claimed edges are, whether or not this
+        // config trades them.
+        if !passes_forecast_distance(c, p) || !passes_book_spread(c, p) || !passes_city_lambda(c, p)
+        {
             continue;
         }
         let shrink = match (p.shrink_edge, p.segment_lambda) {
@@ -1125,6 +1164,11 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             sell_only: false,
             shrink_edge: false,
             segment_lambda: false,
+            max_pm_spread: None,
+            skip_anti_lambda_cities: false,
+            // Pinned to the pre-08-17 default: frozen rows must replay the same rule forever,
+            // not drift with the CLI default they were frozen under.
+            edge_threshold: 0.05,
             ..*sp
         };
         let variants = [
@@ -1158,7 +1202,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 "2026-07-13",
                 StrategyParams {
                     trade_day_of: false,
-                    edge_threshold: sp.edge_threshold.max(0.10),
+                    edge_threshold: 0.10,
                     ..base
                 },
             ),
@@ -1172,7 +1216,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 },
             ),
             (
-                "Skip day-of + shrunk edge (default since 07-19; walk-forward λ)",
+                "Skip day-of + shrunk edge (default 07-19→08-17; walk-forward λ)",
                 "2026-07-13",
                 StrategyParams {
                     trade_day_of: false,
@@ -1199,13 +1243,17 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // row so far stacks on RAW edge, so the cut has never been measured against the shrunk
             // default it would actually replace. These two isolate that: threshold on the shrunk
             // edge, with and without the SELL-only gate.
+            // Promoted to DEFAULT 2026-08-17: led its forward window at both checkpoints with the
+            // lead GROWING as n doubled (+26.4% vs +11.0% at n=39 on 08-09; +32.7% vs +15.0% at
+            // n=77 on 08-17), robust with and without SELL-only. The row keeps its 07-26 freeze
+            // date — its forward record must stay continuous through the promotion.
             (
-                "Skip day-of + shrunk + edge ≥ 10%",
+                "Skip day-of + shrunk + edge ≥ 10% (default since 08-17)",
                 "2026-07-26",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
-                    edge_threshold: sp.edge_threshold.max(0.10),
+                    edge_threshold: 0.10,
                     ..base
                 },
             ),
@@ -1216,7 +1264,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     trade_day_of: false,
                     shrink_edge: true,
                     sell_only: true,
-                    edge_threshold: sp.edge_threshold.max(0.10),
+                    edge_threshold: 0.10,
                     ..base
                 },
             ),
@@ -1247,33 +1295,11 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
-            // Segment λ conditions the walk-forward fit on (venue, price band) instead of venue
-            // alone — the structural version of the price floor: anti-signal segments fit a
-            // negative slope, clamp to 0, and stop trading by construction, but the gate adapts
-            // if a segment turns healthy. The stacked SELL-only row tests whether the side filter
-            // still adds anything once the tail is zeroed (the λ breakdown says the tail, not the
-            // buy side, was the dead segment).
-            (
-                "Skip day-of + segment λ (venue × price band)",
-                "2026-07-26",
-                StrategyParams {
-                    trade_day_of: false,
-                    shrink_edge: true,
-                    segment_lambda: true,
-                    ..base
-                },
-            ),
-            (
-                "Skip day-of + segment λ + SELL only",
-                "2026-07-26",
-                StrategyParams {
-                    trade_day_of: false,
-                    shrink_edge: true,
-                    segment_lambda: true,
-                    sell_only: true,
-                    ..base
-                },
-            ),
+            // Segment λ (frozen 07-26) RETIRED 2026-08-17 after trailing its forward window at
+            // three straight reads (+5.9% vs +11.0% on 08-09; +10.3% vs +15.0% on 08-17, n=262)
+            // — the walk-forward prototype's lift never survived contact. Its real insight
+            // (negative price-band slopes clamp to λ=0, an adaptive price floor) lives on in the
+            // kalshi_pilot's per-order gate; `--segment-lambda` remains a functional CLI knob.
             // Distance-from-forecast (2026-08-05): the 07-20 σ rescale over-widened (post-refit
             // sd(z) = 0.78 against the Normal's 1.0), which flattens the posterior peak and
             // manufactures claimed edge on the buckets adjacent to the model's own forecast —
@@ -1300,16 +1326,42 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // Two candidates frozen 2026-08-17, each stacking ONE knob on the just-promoted
+            // default (shrunk + edge ≥ 10%) so the forward columns isolate the new filter's
+            // marginal effect. Rationale on the StrategyParams fields.
+            (
+                "Default + PM book ≤ 2¢",
+                "2026-08-17",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    max_pm_spread: Some(0.02),
+                    ..base
+                },
+            ),
+            (
+                "Default + drop λ<0 cities (kalshi Denver/Chicago)",
+                "2026-08-17",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    skip_anti_lambda_cities: true,
+                    ..base
+                },
+            ),
         ];
         // The default's trade list, replayed once: every candidate's forward window is scored
         // against the default on the IDENTICAL window, so the comparison can't be moved by which
         // weeks happen to fall inside a candidate's window.
-        let default_name = "Skip day-of + shrunk edge (default since 07-19; walk-forward λ)";
+        let default_name = "Skip day-of + shrunk + edge ≥ 10% (default since 08-17)";
         let default_trades: Vec<Trade> = run_strategy(
             captures,
             &StrategyParams {
                 trade_day_of: false,
                 shrink_edge: true,
+                edge_threshold: 0.10,
                 ..base
             },
         );
@@ -1499,7 +1551,11 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     let mut open: Vec<(&Capture, &'static str, f64, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
-        .filter(|c| passes_forecast_distance(c, sp))
+        .filter(|c| {
+            passes_forecast_distance(c, sp)
+                && passes_book_spread(c, sp)
+                && passes_city_lambda(c, sp)
+        })
         .filter_map(|c| {
             let est = c.model_estimate?;
             let shrink = match &open_fit {
@@ -2006,10 +2062,16 @@ impl Args {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data/forecast_cache")),
             forecast_sigma: map.get("--forecast-sigma").and_then(|v| v.parse().ok()),
+            // Promoted to DEFAULT 2026-08-17: with shrunk edges (the 07-19 default) a 10% floor
+            // led its forward-since-freeze window at both checkpoints and the lead GREW as n
+            // doubled — +26.4% vs the default's +11.0% (n=39, 08-09) and +32.7% vs +15.0% (n=77,
+            // 08-17), robust with and without SELL-only. Note this thresholds the SHRUNK edge;
+            // `config::backtest_params().edge_threshold` (0.05) still governs the raw-edge
+            // backtest engine, where 10% was never the validated cut.
             edge_threshold: map
                 .get("--edge-threshold")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| config::backtest_params().edge_threshold),
+                .unwrap_or(0.10),
             kelly_fraction: map
                 .get("--kelly-fraction")
                 .and_then(|v| v.parse().ok())
@@ -2052,7 +2114,7 @@ fn usage() -> String {
     "usage: cargo run --bin weather_dashboard -- [--markets <path.csv>] [--output dashboard.html] \
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
-     [--edge-threshold 0.05] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
+     [--edge-threshold 0.10] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
      [--max-edge 0.30] [--min-price 0.0] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
      [--raw-edge] [--segment-lambda] [--min-forecast-distance 0.0]"
         .to_string()
@@ -2107,6 +2169,8 @@ mod tests {
             shrink_edge: false,
             segment_lambda: false,
             min_forecast_distance: 0.0,
+            max_pm_spread: None,
+            skip_anti_lambda_cities: false,
         }
     }
 
