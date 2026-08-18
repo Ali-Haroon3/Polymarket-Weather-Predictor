@@ -56,7 +56,6 @@ use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs,
 };
 use polymarket_weather_predictor::backtesting::{lambda_segment, market_estimate, ShrinkageFit};
-use polymarket_weather_predictor::config;
 use polymarket_weather_predictor::data_pipeline::StationPricer;
 use polymarket_weather_predictor::models::BayesianWeatherModel;
 use polymarket_weather_predictor::types::SimulatedMarket;
