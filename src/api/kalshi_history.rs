@@ -204,7 +204,22 @@ impl KalshiHistoryDownloader {
                             raw.len()
                         );
                     }
+                    let before = out.len();
                     self.ingest_markets(&raw, true, &mut seen, &mut out).await;
+                    if !raw.is_empty() && out.len() == before {
+                        // The 08-18 failure mode was exactly this — markets found, all dropped —
+                        // and the log couldn't say why. Print what the parser saw.
+                        let m = &raw[0];
+                        eprintln!(
+                            "  {event}: ALL {} probe markets dropped by the parser — sample: ticker={:?} title={:?} strike_type={:?} status={:?} result={:?}",
+                            raw.len(),
+                            json_str(m, &["ticker", "id"]),
+                            json_str(m, &["title"]),
+                            json_str(m, &["strike_type"]),
+                            json_str(m, &["status"]),
+                            json_str(m, &["result"]),
+                        );
+                    }
                 }
             }
         }
@@ -453,28 +468,62 @@ fn market_looks_open(m: &Value) -> bool {
     }
 }
 
+/// Canonical `cities.rs` key for a weather series ticker prefix — the title-independent city
+/// source. The first seven match every historical capture row byte-for-byte; the `KXHIGHT*`
+/// series have never produced a row, so their keys come straight from `cities.rs`.
+fn series_city(series: &str) -> Option<&'static str> {
+    Some(match series {
+        "KXHIGHNY" => "NYC",
+        "KXHIGHCHI" => "Chicago",
+        "KXHIGHAUS" => "Austin",
+        "KXHIGHDEN" => "Denver",
+        "KXHIGHLAX" => "LA",
+        "KXHIGHMIA" => "Miami",
+        "KXHIGHPHIL" => "Philadelphia",
+        "KXHIGHTDAL" => "Dallas",
+        "KXHIGHTSEA" => "Seattle",
+        "KXHIGHTATL" => "Atlanta",
+        "KXHIGHTBOS" => "Boston",
+        "KXHIGHTPHX" => "Phoenix",
+        "KXHIGHTLV" => "Vegas",
+        "KXHIGHTDC" => "Washington",
+        "KXHIGHTHOU" => "Houston",
+        _ => return None,
+    })
+}
+
 /// Parse one raw Kalshi market into a `WeatherMarketRow` (None if it isn't a priceable weather market).
-/// City/weather-gate reuse the shared title parsers; the bucket shape comes from Kalshi's structured
-/// strikes (with the title parser as a fallback for shapes without strikes, e.g. rain yes/no).
+/// City/weather-gate reuse the shared title parsers when a title is present; the bucket shape comes
+/// from Kalshi's structured strikes (with the title parser as a fallback for shapes without strikes,
+/// e.g. rain yes/no).
+///
+/// 2026-08-18: markets listed since ~08-14 stopped carrying parseable titles in the market list
+/// (the event-ticker probe found 6 open markets per event and the title-gated parser dropped every
+/// one), so for tickers under a known `WEATHER_SERIES` the parse is TITLE-INDEPENDENT: the series
+/// prefix supplies the city (`series_city`), the structured strikes supply the shape, and the
+/// weather gate is satisfied by construction. Unknown tickers still require the title path.
 fn parse_kalshi_market(m: &Value) -> Option<WeatherMarketRow> {
-    let title = json_str(m, &["title"])?;
+    let ticker = json_str(m, &["ticker", "id"])?;
+    let from_series = series_city(ticker.split('-').next().unwrap_or(""));
+    let title = json_str(m, &["title"]).unwrap_or_default();
     let subtitle = json_str(m, &["yes_sub_title", "subtitle"]).unwrap_or_default();
     let combined = format!("{title} {subtitle}");
     let lower = combined.to_ascii_lowercase();
-    if !is_weather_like_market(&lower) {
+    if from_series.is_none() && !is_weather_like_market(&lower) {
         return None;
     }
-    let city = crate::cities::infer_city(&combined)?;
+    let city = crate::cities::infer_city(&combined).or(from_series)?;
     let (market_type, threshold, threshold_upper, unit) =
         strike_shape(m).or_else(|| infer_market_type_and_threshold(&combined))?;
 
     Some(WeatherMarketRow {
         target_date: kalshi_target_date(m)?,
-        market_id: json_str(m, &["ticker", "id"])?,
-        market_title: if subtitle.is_empty() {
-            title
-        } else {
-            format!("{title} — {subtitle}")
+        market_id: ticker.clone(),
+        market_title: match (title.is_empty(), subtitle.is_empty()) {
+            (true, true) => ticker,
+            (true, false) => format!("{ticker} — {subtitle}"),
+            (false, true) => title,
+            (false, false) => format!("{title} — {subtitle}"),
         },
         market_type,
         threshold,
@@ -598,6 +647,33 @@ fn ticker_date(ticker: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titleless_market_under_known_series_parses_from_ticker_and_strikes() {
+        // The 08-18 regression: open markets listed since ~08-14 carry no parseable title, so
+        // the parse must survive on ticker prefix (city) + structured strikes (shape) alone.
+        let row = parse_kalshi_market(&serde_json::from_str::<Value>(
+            r#"{"ticker":"KXHIGHNY-26AUG19-B87.5","strike_type":"between",
+                "floor_strike":87,"cap_strike":88,"status":"active","result":"",
+                "yes_bid":22,"yes_ask":27,"close_time":"2026-08-20T04:59:00Z"}"#,
+        ).unwrap())
+        .expect("should parse without a title");
+        assert_eq!(row.city, "NYC");
+        assert_eq!(row.market_type, "temp_bucket");
+        assert_eq!(row.threshold, 87.0);
+        assert_eq!(row.threshold_upper, Some(88.0));
+        assert_eq!(
+            row.target_date,
+            NaiveDate::from_ymd_opt(2026, 8, 19).unwrap()
+        );
+        assert_eq!(row.market_title, "KXHIGHNY-26AUG19-B87.5");
+        // An unknown series without a title still fails the weather gate.
+        assert!(parse_kalshi_market(&serde_json::from_str::<Value>(
+            r#"{"ticker":"KXFED-26AUG19-T3","strike_type":"greater","floor_strike":3,
+                "status":"active","result":""}"#,
+        ).unwrap())
+        .is_none());
+    }
 
     #[test]
     fn event_ticker_roundtrips_through_ticker_date() {
