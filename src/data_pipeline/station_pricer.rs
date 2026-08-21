@@ -218,7 +218,10 @@ impl StationPricer {
     fn obs(&mut self, st: &Station, target: NaiveDate) -> Option<&[(NaiveDateTime, f64)]> {
         if !self.obs_cache.contains_key(st.iem_id) {
             let start = (target - Duration::days(1)).min(self.today - Duration::days(1));
-            let got = self.obs_fetcher.fetch_tmpf_utc(st, start, self.today);
+            let got =
+                fetch_with_retry(st.iem_id, "obs", || {
+                    self.obs_fetcher.fetch_tmpf_utc(st, start, self.today)
+                });
             self.obs_cache.insert(st.iem_id.to_string(), got);
         }
         let v = self.obs_cache.get(st.iem_id).unwrap();
@@ -228,15 +231,41 @@ impl StationPricer {
     fn forecast(&mut self, st: &Station) -> Option<&[Vec<(NaiveDateTime, f64)>]> {
         if !self.forecast_cache.contains_key(st.iem_id) {
             // 16-day horizon; a target beyond it simply yields no hours -> legacy fallback.
-            let got = self.open_meteo.fetch_forecast_hourly_models_utc(
-                st.lat,
-                st.lon,
-                self.today - Duration::days(1),
-                self.today + Duration::days(15),
-            );
+            let got = fetch_with_retry(st.iem_id, "forecast", || {
+                self.open_meteo.fetch_forecast_hourly_models_utc(
+                    st.lat,
+                    st.lon,
+                    self.today - Duration::days(1),
+                    self.today + Duration::days(15),
+                )
+            });
             self.forecast_cache.insert(st.iem_id.to_string(), got);
         }
         let v = self.forecast_cache.get(st.iem_id).unwrap();
         (!v.is_empty()).then_some(v.as_slice())
     }
+}
+
+/// Retry a fallible fetch (empty result = failure) with a short backoff before giving up.
+///
+/// The underlying fetchers degrade to an empty `Vec` on ANY failure — including a rate-limit
+/// response — and the per-run caches above negative-cache that emptiness, so one throttled reply
+/// used to cost a city its estimates for the whole run. That is exactly what the 08-19/08-20
+/// pilot logs showed: `skip_no_estimate` for the FIRST cities processed (Austin, Chicago) seconds
+/// after `capture_prices` had finished a burst of requests against the same hosts, while the
+/// capture daemon itself — first to the window — priced them fine. A genuinely-empty result (a
+/// station with no obs yet) just pays the two sleeps for its one station and falls back as before.
+fn fetch_with_retry<T>(station: &str, what: &str, mut fetch: impl FnMut() -> Vec<T>) -> Vec<T> {
+    for delay_s in [2u64, 5] {
+        let got = fetch();
+        if !got.is_empty() {
+            return got;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(delay_s));
+    }
+    let got = fetch();
+    if got.is_empty() {
+        eprintln!("  {station}: {what} fetch empty after 3 attempts — falling back");
+    }
+    got
 }
