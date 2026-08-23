@@ -1300,35 +1300,32 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // — the walk-forward prototype's lift never survived contact. Its real insight
             // (negative price-band slopes clamp to λ=0, an adaptive price floor) lives on in the
             // kalshi_pilot's per-order gate; `--segment-lambda` remains a functional CLI knob.
-            // Distance-from-forecast (2026-08-05): the 07-20 σ rescale over-widened (post-refit
-            // sd(z) = 0.78 against the Normal's 1.0), which flattens the posterior peak and
-            // manufactures claimed edge on the buckets adjacent to the model's own forecast —
-            // exactly where realized capture goes negative (−27% inside 1.5 °C vs +52% outside).
-            // Nearly orthogonal to the price floor, so it gets its own row plus a SELL-only stack.
-            (
-                "Skip day-of + shrunk + bucket ≥ 1.5°C from forecast",
-                "2026-08-05",
-                StrategyParams {
-                    trade_day_of: false,
-                    shrink_edge: true,
-                    min_forecast_distance: 1.5,
-                    ..base
-                },
-            ),
-            (
-                "Skip day-of + shrunk + SELL only + bucket ≥ 1.5°C from forecast",
-                "2026-08-05",
-                StrategyParams {
-                    trade_day_of: false,
-                    shrink_edge: true,
-                    sell_only: true,
-                    min_forecast_distance: 1.5,
-                    ..base
-                },
-            ),
+            // Distance-from-forecast (frozen 08-05) RETIRED 2026-08-23, and unlike segment λ it is
+            // retired for SUCCEEDING as a diagnostic. It was never a filter worth keeping on its
+            // own: it fired because the 07-20 σ rescale over-widened (post-refit sd(z) = 0.78
+            // against the Normal's 1.0), flattening the posterior peak and manufacturing claimed
+            // edge on the buckets adjacent to the model's own forecast — exactly where realized
+            // capture went negative (−27% inside 1.5 °C vs +52% outside). The 08-05 refit sharpened
+            // σ ×0.8 to fix that CAUSE, and the rows were kept only to watch whether they would
+            // converge on the default as post-refit captures accrued. At the 08-23 read they had:
+            // +30.4% · 75 forward and +31.9% · 67 SELL-only, against the default's +32.3% · 73 on
+            // the identical window — parity or slightly behind, down from a 2.3× lead over the OLD
+            // default. That is the pre-committed retirement condition (the σ defect is priced out,
+            // so the symptom filter has nothing left to remove). `--min-forecast-distance` remains
+            // a functional CLI knob; re-freeze a row only if a future σ change reopens the gap.
             // Two candidates frozen 2026-08-17, each stacking ONE knob on the just-promoted
             // default (shrunk + edge ≥ 10%) so the forward columns isolate the new filter's
             // marginal effect. Rationale on the StrategyParams fields.
+            // First forward read 2026-08-23 (6 days, both still far too thin to act on): PM book
+            // ≤ 2¢ leads at +37.5% · 24 vs the default's +29.8% · 31 — the right sign, no more.
+            // The λ<0-cities row is a forward NO-OP: +29.8% · 31 against a default of +29.8% · 31,
+            // the same n, because Denver and Chicago produced no qualifying trades at all since
+            // the freeze. It is not losing, it is not measuring; if the two stay identical it needs
+            // retiring for lack of exposure rather than for underperforming. Read both against a
+            // POPULATION CHANGE: PR #34 (merged 08-19) fixed title-less Kalshi parsing and Kalshi
+            // captures went 42/day → 90/day, so forward rows scored after 08-19 are drawn from a
+            // roughly doubled Kalshi universe. That shift is common to every row and its own
+            // same-window default column, but it makes cross-freeze-date comparisons unsafe.
             (
                 "Default + PM book ≤ 2¢",
                 "2026-08-17",
