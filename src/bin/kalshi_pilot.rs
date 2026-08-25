@@ -41,6 +41,22 @@
 //! guard still applies `--lambda-floor` at the candidate's band as defense in depth (binding when
 //! a large claimed edge would clear the gate at a band λ under the floor, e.g. λ 0.15 × 0.60).
 //!
+//! Since 2026-08-25 the same two ideas — no fit, no trade; a fitted anti-signal slope clamps to
+//! zero — are ALSO applied on the CITY axis (`city_gate`), because the tradeable universe turned
+//! out not to be static. PR #34 (2026-08-19) fixed title-less Kalshi parsing and the eight
+//! `KXHIGHT*` cities, which had never produced a single capture row, entered the universe at once
+//! carrying per-(city, lead) bias/σ constants fitted Jan–Apr 2026 that neither seasonal refit
+//! (07-20, 08-05) could touch — a city with no captures contributes nothing to a refit. Vegas
+//! priced four straight days 2–4σ below the realized high (mean z +2.52; its 24 rows fit λ −0.84)
+//! and took four of the pilot's next six paper orders, both settled ones losing. So a (kalshi,
+//! city) is now withheld until it has `ShrinkageFit::MIN_N` resolved rows of its own, and withheld
+//! after that whenever its own fitted λ sits under `--lambda-floor`. Both gates reuse constants
+//! that were already argued for elsewhere; neither adds a city list to keep up to date. On the
+//! captures as of 2026-08-25 the rule withholds all eight new cities on coverage and Denver
+//! (λ −0.20) and Chicago (λ −0.08) on slope — reproducing, from data alone, exactly the pair the
+//! dashboard's hand-picked `skip_anti_lambda_cities` row froze on 08-17 and has been unable to
+//! extend since.
+//!
 //!   cargo run --release --bin kalshi_pilot            # dry run: print + log intended orders
 //!   cargo run --release --bin kalshi_pilot -- --live  # place real limit orders
 
@@ -218,7 +234,8 @@ async fn run() -> Result<(), String> {
     // candidate's edge gate reads its OWN bid band via `gate_lambda` (see module docs); the
     // breaker watches the traded (px ≥ 0.10) band; the venue fold remains only as the thin-
     // segment fallback inside `lambda_seg` and the logged value for no-bid rows.
-    let fit = fit_shrinkage_from_captures(&cfg.captures_path);
+    let fits = fit_shrinkage_from_captures(&cfg.captures_path);
+    let fit = &fits.band;
     let lambda = fit.lambda("kalshi");
     let traded_seg = lambda_segment(0.10); // boundary value ⇒ the ≥ 10¢ band's canonical name
     let lambda_traded = fit.lambda_seg("kalshi", traded_seg);
@@ -345,7 +362,7 @@ async fn run() -> Result<(), String> {
             model.set_point_forecast(mu, sigma);
             market_estimate(&model, &to_sim(r))
         });
-        let candidate_lambda = gate_lambda(&fit, r.best_bid, lambda);
+        let candidate_lambda = gate_lambda(fit, r.best_bid, lambda);
         let d = decide_sell(
             today,
             r.target_date,
@@ -366,7 +383,11 @@ async fn run() -> Result<(), String> {
             // band λ, but a large claimed edge can clear the gate at a band λ under the floor —
             // the floor is an absolute stop, not a scale, so it's applied per order too.
             let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(1.0 - no_price));
-            if seg_lambda < cfg.lambda_floor {
+            // The city gate runs first among the order-path guards: it disqualifies the CITY, not
+            // this order, so a row logged under it says plainly which city was withheld and why.
+            if let Some(reason) = city_gate(&fits.city, &r.city, cfg.lambda_floor) {
+                row.decision = reason.into();
+            } else if seg_lambda < cfg.lambda_floor {
                 row.decision = "skip_segment_lambda_floor".into();
             } else if placed >= cfg.max_orders {
                 row.decision = "skip_max_orders".into();
@@ -517,18 +538,29 @@ fn size_contracts(stake: f64, no_price: f64) -> i64 {
     (stake / no_price).floor() as i64
 }
 
-/// Shrinkage fit for Kalshi from resolved lead ≥ 1 captures — the same fit and hygiene as the
+/// The same observations keyed two ways. One pass, two `ShrinkageFit`s: identical venue folds,
+/// different segment axes. Keeping them separate (rather than mixing band and city tags into one
+/// map) leaves `rows_seg()` diagnostics and every venue fold counting each row exactly once.
+#[derive(Default)]
+struct PilotFits {
+    /// Tagged by price band: sizing, the edge gate (`gate_lambda`) and the λ-floor breaker.
+    band: ShrinkageFit,
+    /// Tagged by city: the per-city trading gate (`city_gate`).
+    city: ShrinkageFit,
+}
+
+/// Shrinkage fits for Kalshi from resolved lead ≥ 1 captures — the same fit and hygiene as the
 /// dashboard's full-sample fit (book mid as reference price, lead ≤ 0 excluded). Returns the
 /// whole fit so the caller can read both the venue fold (sizing) and the traded-segment λ (the
 /// floor breaker); a missing file yields an empty fit, whose every lookup is 1.0 (NO shrink).
-fn fit_shrinkage_from_captures(path: &PathBuf) -> ShrinkageFit {
-    let mut fit = ShrinkageFit::default();
+fn fit_shrinkage_from_captures(path: &PathBuf) -> PilotFits {
+    let mut fits = PilotFits::default();
     let Ok(text) = std::fs::read_to_string(path) else {
         eprintln!(
             "warning: no captures at {} — λ falls back to 1.0 (NO shrink); pass --captures",
             path.display()
         );
-        return fit;
+        return fits;
     };
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(c) = serde_json::from_str::<CaptureRow>(line) else {
@@ -551,10 +583,14 @@ fn fit_shrinkage_from_captures(path: &PathBuf) -> ShrinkageFit {
             // Tagged by price band: the edge gate and the floor breaker read `lambda_seg`; venue-
             // level lookups fold across segments, which tagging never changes (proven by the
             // fold-identity test in shrinkage.rs).
-            fit.observe_seg(&c.source, lambda_segment(px), est - px, outcome - px);
+            fits.band
+                .observe_seg(&c.source, lambda_segment(px), est - px, outcome - px);
+            // Same row, keyed by city, for `city_gate`.
+            fits.city
+                .observe_seg(&c.source, &c.city, est - px, outcome - px);
         }
     }
-    fit
+    fits
 }
 
 /// λ the edge gate shrinks a candidate by: its own bid band's segment fit (a SELL fills at the
@@ -566,6 +602,30 @@ fn gate_lambda(fit: &ShrinkageFit, best_bid: Option<f64>, venue_fold: f64) -> f6
         Some(b) if b > 0.0 && b < 1.0 => fit.lambda_seg("kalshi", lambda_segment(b)),
         _ => venue_fold,
     }
+}
+
+/// Whether the pilot may trade a (kalshi, city) AT ALL, independent of any one market's edge.
+/// Two ways a city fails, both read off its own forward fit so there is no list to maintain:
+///
+///   * fewer than `MIN_N` resolved rows — the city's pricing constants (per-(city, lead) bias and
+///     σ, `stations.rs`) were fitted Jan–Apr 2026 and neither seasonal refit could touch a city
+///     with no captures, so nothing has yet checked them forward. `lambda_seg` cannot express
+///     this: under `MIN_N` it answers from the venue fold, which reports a healthy λ for a city
+///     that has never been measured. Hence `n_seg` first.
+///   * a fitted λ under the floor — its disagreements are anti-signal. This is the band gate's
+///     adaptive price floor applied on the city axis: a clamped-to-zero city can never clear the
+///     edge threshold, so no hand-picked city list can go stale behind it.
+///
+/// Both matter because the Kalshi universe is not static: PR #34 (2026-08-19) fixed title-less
+/// parsing and eight `KXHIGHT*` cities that had never produced a capture row entered the
+/// tradeable universe at once, carrying exactly those unvalidated constants. Vegas priced four
+/// straight days 2–4σ under the realized high (λ −0.84 on its first 24 rows) and took four of the
+/// pilot's next six paper orders.
+fn city_gate(fit: &ShrinkageFit, city: &str, floor: f64) -> Option<&'static str> {
+    if fit.n_seg("kalshi", city) < ShrinkageFit::MIN_N {
+        return Some("skip_city_unvalidated");
+    }
+    (fit.lambda_seg("kalshi", city) < floor).then_some("skip_city_lambda_floor")
 }
 
 /// Spread→σ fit observations from the captures file — the population hygiene lives in the shared
@@ -1077,23 +1137,67 @@ mod tests {
             r#"{"captured_at":"2026-07-02","target_date":"2026-07-02","market_id":"day0","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.5,"model_estimate":0.9,"outcome":0.9,"source":"kalshi"}"#.to_string(),
         );
         std::fs::write(&path, lines.join("\n")).unwrap();
-        let fit = fit_shrinkage_from_captures(&path);
-        let lambda = fit.lambda("kalshi");
+        let fits = fit_shrinkage_from_captures(&path);
+        let lambda = fits.band.lambda("kalshi");
         assert!(
             (lambda - 0.5).abs() < 1e-9,
             "outcome−price = 0.1 over est−price = 0.2 ⇒ λ = 0.5, lead-0 row excluded; got {lambda}"
         );
         // The rows sit at mid 0.5, so the traded (≥ 10¢) segment carries the same fit — the
         // breaker's lookup must see it, proving observations were tagged, not bare-venue.
-        let traded = fit.lambda_seg("kalshi", lambda_segment(0.10));
+        let traded = fits.band.lambda_seg("kalshi", lambda_segment(0.10));
         assert!(
             (traded - 0.5).abs() < 1e-9,
             "traded-segment λ, got {traded}"
         );
+        // The SAME rows are keyed by city in the second fit — same count, same venue fold, so the
+        // two views can never disagree about how much evidence a run is standing on.
+        assert_eq!(fits.city.n_seg("kalshi", "NYC"), ShrinkageFit::MIN_N);
+        assert!((fits.city.lambda("kalshi") - lambda).abs() < 1e-12);
         // Missing file → an empty fit: every lookup is 1.0 (no shrink), never a crash.
         let empty = fit_shrinkage_from_captures(&dir.join("nope.jsonl"));
-        assert_eq!(empty.lambda("kalshi"), 1.0);
-        assert_eq!(empty.lambda_seg("kalshi", lambda_segment(0.10)), 1.0);
+        assert_eq!(empty.band.lambda("kalshi"), 1.0);
+        assert_eq!(empty.band.lambda_seg("kalshi", lambda_segment(0.10)), 1.0);
+        assert_eq!(empty.city.n_seg("kalshi", "NYC"), 0);
+    }
+
+    #[test]
+    fn city_gate_withholds_unvalidated_and_anti_signal_cities() {
+        let mut fit = ShrinkageFit::default();
+        // An established, healthy city; an established anti-signal one; a young one.
+        for _ in 0..ShrinkageFit::MIN_N {
+            fit.observe_seg("kalshi", "Miami", 0.10, 0.075); // λ 0.75
+            fit.observe_seg("kalshi", "Denver", 0.10, -0.02); // λ −0.2 ⇒ clamps to 0
+        }
+        for _ in 0..ShrinkageFit::MIN_N - 1 {
+            fit.observe_seg("kalshi", "Vegas", 0.10, 0.09); // λ 0.9, but one row short
+        }
+        let floor = 0.2;
+        assert_eq!(city_gate(&fit, "Miami", floor), None, "healthy city trades");
+        assert_eq!(
+            city_gate(&fit, "Denver", floor),
+            Some("skip_city_lambda_floor"),
+            "a fitted anti-signal city is withheld on its own λ — no hand-picked list"
+        );
+        // One row short of a fit, and a λ that would sail through the floor if it were trusted:
+        // coverage is checked FIRST precisely so a flattering thin slope can't open the gate.
+        assert_eq!(fit.n_seg("kalshi", "Vegas"), ShrinkageFit::MIN_N - 1);
+        assert!(fit.lambda_seg("kalshi", "Vegas") > floor);
+        assert_eq!(
+            city_gate(&fit, "Vegas", floor),
+            Some("skip_city_unvalidated")
+        );
+        // A city with no rows at all — a series that just started listing — is withheld too.
+        assert_eq!(
+            city_gate(&fit, "Phoenix", floor),
+            Some("skip_city_unvalidated")
+        );
+        // An empty fit withholds everything rather than trading on the 1.0 no-shrink fallback.
+        let empty = ShrinkageFit::default();
+        assert_eq!(
+            city_gate(&empty, "Miami", floor),
+            Some("skip_city_unvalidated")
+        );
     }
 
     #[test]
