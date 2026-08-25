@@ -106,6 +106,16 @@ impl ShrinkageFit {
             .unwrap_or_else(|| self.lambda(venue))
     }
 
+    /// Resolved rows behind one (venue, segment) key — the COVERAGE question, separate from the
+    /// slope question `lambda_seg` answers. `lambda_seg` deliberately falls back to the venue fold
+    /// under `MIN_N`, so a key with no fit of its own still returns a plausible λ; a caller that
+    /// must distinguish "fitted and healthy" from "never fitted" has to ask this first.
+    pub fn n_seg(&self, venue: &str, segment: &str) -> usize {
+        self.by_key
+            .get(&(venue.to_string(), segment.to_string()))
+            .map_or(0, |s| s.2)
+    }
+
     /// (venue, raw unclamped slope, n) per venue, for diagnostics tables. Folds across segments.
     pub fn rows(&self) -> Vec<(String, f64, usize)> {
         let mut venues: Vec<String> = self.by_key.keys().map(|k| k.0.clone()).collect();
@@ -197,6 +207,21 @@ mod tests {
         // The venue fold sits between them, exactly as the per-venue fit always did.
         let v = fit.lambda("polymarket");
         assert!(v > 0.0 && v < 0.4);
+    }
+
+    #[test]
+    fn n_seg_counts_only_its_own_key_and_never_falls_back() {
+        let mut fit = ShrinkageFit::default();
+        feed(&mut fit, "kalshi", "Vegas", -0.9, 24); // a young city, under MIN_N
+        feed(&mut fit, "kalshi", "NYC", 0.4, 258);
+        assert_eq!(fit.n_seg("kalshi", "Vegas"), 24);
+        assert_eq!(fit.n_seg("kalshi", "NYC"), 258);
+        assert_eq!(fit.n_seg("kalshi", "Nowhere"), 0);
+        assert_eq!(fit.n_seg("polymarket", "NYC"), 0, "keys are per venue");
+        // The point of the accessor: λ hides the thin sample behind the venue fold, so a caller
+        // reading λ alone cannot tell a never-fitted city from a healthy one.
+        assert_eq!(fit.lambda_seg("kalshi", "Vegas"), fit.lambda("kalshi"));
+        assert!(fit.lambda_seg("kalshi", "Vegas") > 0.0);
     }
 
     #[test]
