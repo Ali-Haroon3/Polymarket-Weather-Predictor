@@ -151,6 +151,35 @@ impl ShrinkageFit {
     }
 }
 
+/// Why a (venue, segment) has not earned the right to be traded on its own forward evidence, or
+/// `None` when it has. The rule the pilot's city gate and the dashboard's computed A/B row BOTH
+/// apply — it lives here, next to `lambda_segment`, for the same reason that boundary does: two
+/// bins asking the same question must not drift apart on the answer.
+///
+/// Order matters and is the whole subtlety. `lambda_seg` deliberately falls back to the venue fold
+/// under `MIN_N`, so a segment with no fit of its own still reports a plausible λ — on 2026-08-25
+/// every one of the eight then-new Kalshi cities answered with the venue's healthy 0.355 while
+/// three of them were running negative slopes. Coverage is therefore checked FIRST, via `n_seg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentVeto {
+    /// Fewer than `ShrinkageFit::MIN_N` resolved rows: nothing has measured this segment forward.
+    Unvalidated,
+    /// Fitted λ under the caller's floor: measured, and the disagreements are anti-signal.
+    BelowFloor,
+}
+
+pub fn segment_veto(
+    fit: &ShrinkageFit,
+    venue: &str,
+    segment: &str,
+    floor: f64,
+) -> Option<SegmentVeto> {
+    if fit.n_seg(venue, segment) < ShrinkageFit::MIN_N {
+        return Some(SegmentVeto::Unvalidated);
+    }
+    (fit.lambda_seg(venue, segment) < floor).then_some(SegmentVeto::BelowFloor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +251,36 @@ mod tests {
         // reading λ alone cannot tell a never-fitted city from a healthy one.
         assert_eq!(fit.lambda_seg("kalshi", "Vegas"), fit.lambda("kalshi"));
         assert!(fit.lambda_seg("kalshi", "Vegas") > 0.0);
+    }
+
+    #[test]
+    fn segment_veto_checks_coverage_before_slope() {
+        let mut fit = ShrinkageFit::default();
+        feed(&mut fit, "kalshi", "Miami", 0.75, ShrinkageFit::MIN_N);
+        feed(&mut fit, "kalshi", "Denver", -0.2, ShrinkageFit::MIN_N);
+        feed(&mut fit, "kalshi", "Vegas", 0.9, ShrinkageFit::MIN_N - 1);
+        let floor = 0.2;
+        assert_eq!(segment_veto(&fit, "kalshi", "Miami", floor), None);
+        assert_eq!(
+            segment_veto(&fit, "kalshi", "Denver", floor),
+            Some(SegmentVeto::BelowFloor)
+        );
+        // One row short, with a slope that would sail through the floor if it were trusted —
+        // and `lambda_seg` reports the venue fold for it, which is exactly the trap.
+        assert!(fit.lambda_seg("kalshi", "Vegas") > floor);
+        assert_eq!(
+            segment_veto(&fit, "kalshi", "Vegas", floor),
+            Some(SegmentVeto::Unvalidated)
+        );
+        // Never seen, and an empty fit: withheld, not waved through on the 1.0 no-shrink default.
+        assert_eq!(
+            segment_veto(&fit, "kalshi", "Nowhere", floor),
+            Some(SegmentVeto::Unvalidated)
+        );
+        assert_eq!(
+            segment_veto(&ShrinkageFit::default(), "kalshi", "Miami", floor),
+            Some(SegmentVeto::Unvalidated)
+        );
     }
 
     #[test]

@@ -71,7 +71,9 @@ use polymarket_weather_predictor::api::{KalshiHistoryDownloader, WeatherMarketRo
 use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs,
 };
-use polymarket_weather_predictor::backtesting::{lambda_segment, market_estimate, ShrinkageFit};
+use polymarket_weather_predictor::backtesting::{
+    lambda_segment, market_estimate, segment_veto, SegmentVeto, ShrinkageFit,
+};
 use polymarket_weather_predictor::data_pipeline::StationPricer;
 use polymarket_weather_predictor::models::BayesianWeatherModel;
 use polymarket_weather_predictor::types::SimulatedMarket;
@@ -622,10 +624,12 @@ fn gate_lambda(fit: &ShrinkageFit, best_bid: Option<f64>, venue_fold: f64) -> f6
 /// straight days 2–4σ under the realized high (λ −0.84 on its first 24 rows) and took four of the
 /// pilot's next six paper orders.
 fn city_gate(fit: &ShrinkageFit, city: &str, floor: f64) -> Option<&'static str> {
-    if fit.n_seg("kalshi", city) < ShrinkageFit::MIN_N {
-        return Some("skip_city_unvalidated");
-    }
-    (fit.lambda_seg("kalshi", city) < floor).then_some("skip_city_lambda_floor")
+    // The rule itself lives in `backtesting::shrinkage` so the dashboard's computed A/B row and
+    // this gate cannot drift; only the ledger's decision strings are the pilot's own.
+    segment_veto(fit, "kalshi", city, floor).map(|v| match v {
+        SegmentVeto::Unvalidated => "skip_city_unvalidated",
+        SegmentVeto::BelowFloor => "skip_city_lambda_floor",
+    })
 }
 
 /// Spread→σ fit observations from the captures file — the population hygiene lives in the shared

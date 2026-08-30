@@ -10,7 +10,8 @@ use chrono::{Duration, NaiveDate};
 
 use polymarket_weather_predictor::backtesting::{
     evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
-    kelly_fraction_of_capital, lambda_segment, MarketEvaluation, RealMarketLoader, ShrinkageFit,
+    kelly_fraction_of_capital, lambda_segment, segment_veto, MarketEvaluation, RealMarketLoader,
+    ShrinkageFit,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -104,7 +105,7 @@ fn run() -> Result<(), String> {
         segment_lambda: args.segment_lambda,
         min_forecast_distance: args.min_forecast_distance,
         max_pm_spread: None,
-        skip_anti_lambda_cities: false,
+        city_lambda_floor: None,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -373,7 +374,14 @@ struct StrategyParams {
     /// n=222) and kalshi/Chicago (−0.082, n=222) — the only negative cells with n ≥ 200 in
     /// `scripts/lambda_diagnostics.py`'s (venue, city) table. The list is part of the freeze:
     /// re-deriving it from later data would un-freeze the rule.
-    skip_anti_lambda_cities: bool,
+    /// Withhold a (venue, city) that has not earned trading on its OWN forward evidence, at this
+    /// λ floor — `backtesting::segment_veto`, the same rule the Kalshi pilot's `city_gate` applies.
+    /// Replaces the 2026-08-17 hand-picked `skip_anti_lambda_cities` literal, retired 08-30 for
+    /// lack of exposure: its Denver/Chicago list was frozen two days before PR #34 doubled the
+    /// Kalshi universe, and across three reads it moved the trade count by 0, 0 and 1 trades while
+    /// the universe's actual anti-signal cities went unnamed. Computed walk-forward from the same
+    /// per-date fit as the shrunk edge, so it cannot be tuned on the trades it grades.
+    city_lambda_floor: Option<f64>,
 }
 
 /// How `decide` shrinks each side's claimed edge.
@@ -415,6 +423,8 @@ struct ShrinkObs {
     date: NaiveDate,
     venue: String,
     segment: &'static str,
+    /// Canonical city key — the second segment axis, for `city_lambda_floor`.
+    city: String,
     /// Claimed edge: model estimate − reference price.
     x: f64,
     /// Realized edge: outcome − reference price.
@@ -437,6 +447,7 @@ fn shrink_obs_of(c: &Capture) -> Option<ShrinkObs> {
         date: c.target_date,
         venue: c.source.clone(),
         segment: lambda_segment(px),
+        city: c.city.clone(),
         x: est - px,
         y: outcome - px,
     })
@@ -460,6 +471,16 @@ fn fit_shrinkage(captures: &[Capture]) -> ShrinkageFit {
     let mut fit = ShrinkageFit::default();
     for o in shrinkage_obs(captures) {
         fit.observe_seg(&o.venue, o.segment, o.x, o.y);
+    }
+    fit
+}
+
+/// The same observations keyed by city — the fit `city_lambda_floor` reads. Full-sample is causal
+/// wherever it is used (the open book), since every observed resolution predates any open market.
+fn fit_city_shrinkage(captures: &[Capture]) -> ShrinkageFit {
+    let mut fit = ShrinkageFit::default();
+    for o in shrinkage_obs(captures) {
+        fit.observe_seg(&o.venue, &o.city, o.x, o.y);
     }
     fit
 }
@@ -658,12 +679,14 @@ fn passes_book_spread(c: &Capture, p: &StrategyParams) -> bool {
     }
 }
 
-/// Market-level eligibility for `skip_anti_lambda_cities` — the frozen 2026-08-17 list, see the
-/// field's rationale.
-fn passes_city_lambda(c: &Capture, p: &StrategyParams) -> bool {
-    !p.skip_anti_lambda_cities
-        || c.source != "kalshi"
-        || !matches!(c.city.as_str(), "Denver" | "Chicago")
+/// Market-level eligibility for `city_lambda_floor`, read off the walk-forward city fit as of this
+/// row's date. Unlike the retired literal list this covers BOTH venues, so Polymarket's own
+/// anti-signal cities are withheld too — the hand-picked row never named one.
+fn passes_city_lambda(c: &Capture, p: &StrategyParams, city_fit: &ShrinkageFit) -> bool {
+    let Some(floor) = p.city_lambda_floor else {
+        return true;
+    };
+    segment_veto(city_fit, &c.source, &c.city, floor).is_none()
 }
 
 /// Walk settled captures in resolution order, edge-filter, fractional-Kelly size on the compounding
@@ -681,8 +704,11 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     settled.sort_by(|a, b| a.target_date.cmp(&b.target_date).then(a.city.cmp(&b.city)));
 
     let mut fit = ShrinkageFit::default();
-    // Current date's rows, not yet observable: (venue, segment, claimed, realized).
-    let mut pending: Vec<(String, &'static str, f64, f64)> = Vec::new();
+    // The same observations keyed by city, for `city_lambda_floor`. Fed from the same queue below,
+    // so it inherits the identical walk-forward and same-day-resolution hygiene.
+    let mut city_fit = ShrinkageFit::default();
+    // Current date's rows, not yet observable: (venue, segment, city, claimed, realized).
+    let mut pending: Vec<(String, &'static str, String, f64, f64)> = Vec::new();
     let mut fit_date: Option<NaiveDate> = None;
 
     let mut equity = p.bankroll;
@@ -691,20 +717,23 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         // Same-day markets resolve together: fold a date's rows into the fit only once the walk
         // moves past it, so no trade sees its own (or a same-day) outcome.
         if fit_date != Some(c.target_date) {
-            for (venue, seg, x, y) in pending.drain(..) {
+            for (venue, seg, city, x, y) in pending.drain(..) {
                 fit.observe_seg(&venue, seg, x, y);
+                city_fit.observe_seg(&venue, &city, x, y);
             }
             fit_date = Some(c.target_date);
         }
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
         if let Some(o) = shrink_obs_of(c) {
-            pending.push((o.venue, o.segment, o.x, o.y));
+            pending.push((o.venue, o.segment, o.city, o.x, o.y));
         }
         // Gate before decide(), but AFTER the row is queued into the λ fit: filtered rows are
         // still evidence about how real the model's claimed edges are, whether or not this
         // config trades them.
-        if !passes_forecast_distance(c, p) || !passes_book_spread(c, p) || !passes_city_lambda(c, p)
+        if !passes_forecast_distance(c, p)
+            || !passes_book_spread(c, p)
+            || !passes_city_lambda(c, p, &city_fit)
         {
             continue;
         }
@@ -1165,7 +1194,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             shrink_edge: false,
             segment_lambda: false,
             max_pm_spread: None,
-            skip_anti_lambda_cities: false,
+            city_lambda_floor: None,
             // Pinned to the pre-08-17 default: frozen rows must replay the same rule forever,
             // not drift with the CLI default they were frozen under.
             edge_threshold: 0.05,
@@ -1337,14 +1366,21 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // Replaces the 2026-08-17 "drop λ<0 cities (kalshi Denver/Chicago)" row, RETIRED
+            // 2026-08-30 on its pre-committed rule — lack of exposure, not underperformance. Its
+            // literal list was frozen two days before PR #34 doubled the Kalshi universe, so it
+            // named the old universe's anti-signal cities and never learned the new one's; across
+            // three reads (08-23, 08-25, 08-30) it moved the forward trade count by 0, 0 and 1
+            // trades against its own default column, which can never resolve to a verdict. This
+            // row asks the same question of the DATA instead, per date, and covers both venues.
             (
-                "Default + drop λ<0 cities (kalshi Denver/Chicago)",
-                "2026-08-17",
+                "Default + drop cities under λ 0.2 (computed, walk-forward)",
+                "2026-08-30",
                 StrategyParams {
                     trade_day_of: false,
                     shrink_edge: true,
                     edge_threshold: 0.10,
-                    skip_anti_lambda_cities: true,
+                    city_lambda_floor: Some(0.2),
                     ..base
                 },
             ),
@@ -1545,13 +1581,14 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // When shrinking, open positions use the full-sample λ — causal here, since every observed
     // resolution predates any open market's outcome.
     let open_fit = sp.shrink_edge.then(|| fit_shrinkage(captures));
+    let open_city_fit = fit_city_shrinkage(captures);
     let mut open: Vec<(&Capture, &'static str, f64, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
         .filter(|c| {
             passes_forecast_distance(c, sp)
                 && passes_book_spread(c, sp)
-                && passes_city_lambda(c, sp)
+                && passes_city_lambda(c, sp, &open_city_fit)
         })
         .filter_map(|c| {
             let est = c.model_estimate?;
@@ -2167,7 +2204,7 @@ mod tests {
             segment_lambda: false,
             min_forecast_distance: 0.0,
             max_pm_spread: None,
-            skip_anti_lambda_cities: false,
+            city_lambda_floor: None,
         }
     }
 

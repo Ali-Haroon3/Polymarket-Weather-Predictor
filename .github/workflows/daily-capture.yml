@@ -10,7 +10,16 @@ name: daily-capture
 
 on:
   schedule:
+    # Primary, then a backup 37 minutes later. On 2026-08-26 GitHub delivered the schedule five
+    # times in twenty minutes and gave none of them a runner (two startup_failure, two failure,
+    # one cancelled) — that day captured nothing, and a capture gap is PERMANENT: Polymarket
+    # purges price history shortly after a market resolves, so a missed day can never be
+    # backfilled. The backup stands down when the day is already committed (see the guard step),
+    # so the normal cost is one cheap checkout. 15:27 is still inside the drift this workflow has
+    # always tolerated (the Jul 13 run fired at 16:01), so a rescued day is priced at essentially
+    # the geometry the sigma/bias tables were fitted at.
     - cron: "50 14 * * *"
+    - cron: "27 15 * * *"
   workflow_dispatch:
 
 permissions:
@@ -27,18 +36,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stand down if today is already captured
+        id: guard
+        # Asks the DATA, not the workflow's own run history: a scheduled run is pinned to the SHA
+        # at trigger time, so fast-forward to the branch tip first — that also lands every later
+        # step on the newest main instead of racing the commit step against it. The primary run
+        # normally finds nothing here; the backup finds today's rows and skips the rest.
+        run: |
+          git fetch --quiet origin main
+          git reset --quiet --hard origin/main
+          today=$(date -u +%F)
+          if grep -q "\"captured_at\":\"$today\"" data/captures.jsonl; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::captures for $today already committed — standing down"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "no captures for $today yet — proceeding"
+          fi
+
       - uses: Swatinem/rust-cache@v2
+        if: steps.guard.outputs.already != 'true'
 
       - name: Build
+        if: steps.guard.outputs.already != 'true'
         run: cargo build --release --bin capture_prices --bin weather_dashboard --bin kalshi_pilot
 
       - name: Capture prices
+        if: steps.guard.outputs.already != 'true'
         # Tolerate transient fetch failures (same contract as scripts/daily_capture.sh): the
         # dashboard still re-renders from the last-good captures.jsonl.
         continue-on-error: true
         run: ./target/release/capture_prices
 
       - name: Kalshi pilot (dry run)
+        if: steps.guard.outputs.already != 'true'
         # Paper decisions only — no --live and no credentials here, so the pilot degrades to
         # ledger-only dedupe and appends every intended order and skip to data/pilot_trades.jsonl.
         # This is the go-live gate's evidence accruing daily: settled dry orders feed the weekly
@@ -48,9 +79,11 @@ jobs:
         run: ./target/release/kalshi_pilot
 
       - name: Render dashboard
+        if: steps.guard.outputs.already != 'true'
         run: ./target/release/weather_dashboard --output dashboard.html
 
       - name: Commit data
+        if: steps.guard.outputs.already != 'true'
         run: |
           git config user.name "daily-capture"
           git config user.email "actions@users.noreply.github.com"
