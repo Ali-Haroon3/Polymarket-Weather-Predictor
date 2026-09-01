@@ -18,6 +18,11 @@ pub struct BayesianWeatherModel {
     pub temp_predictive_sigma: f64,
     pub precip_posterior_alpha: f64,
     pub precip_posterior_beta: f64,
+    /// Whether the Beta posterior above ever saw an observation. A model built by
+    /// `set_point_forecast` is a TEMPERATURE-only object — it leaves the Beta at its Default
+    /// (1, 1), whose mean is 0.5 — so without this flag a precipitation question answered from
+    /// such a model returns a confident-looking coin flip that is really the untouched prior.
+    precip_trained: bool,
     pub precip_posterior_mean: f64,
 }
 
@@ -37,6 +42,7 @@ impl BayesianWeatherModel {
             temp_predictive_sigma: 1.0,
             precip_posterior_alpha: 1.0,
             precip_posterior_beta: 1.0,
+            precip_trained: false,
             precip_posterior_mean: 0.5,
         }
     }
@@ -133,6 +139,7 @@ impl BayesianWeatherModel {
         self.precip_posterior_beta = beta + failures;
         self.precip_posterior_mean =
             self.precip_posterior_alpha / (self.precip_posterior_alpha + self.precip_posterior_beta);
+        self.precip_trained = !precipitation_occurred.is_empty();
     }
 
     /// Dated, target-aware training. Fits a local linear trend of the daily high on day-offset
@@ -303,6 +310,14 @@ impl BayesianWeatherModel {
     ) -> Result<(f64, (f64, f64)), String> {
         if !self.is_trained {
             return Err("model must be trained before prediction".to_string());
+        }
+        // `is_trained` is set by the TEMPERATURE paths too, `set_point_forecast` among them, so it
+        // is not evidence that the Beta ever saw a rain observation. Answering anyway returns the
+        // Default (1, 1) prior — a 0.5 that reads as a real opinion and manufactures a huge edge
+        // against a 3c market. Refuse instead: `market_estimate` maps the Err to None, and a
+        // market with no estimate is simply not traded.
+        if !self.precip_trained {
+            return Err("precipitation model was never trained (temperature-only model)".to_string());
         }
 
         let beta_dist = Beta::new(self.precip_posterior_alpha, self.precip_posterior_beta)
