@@ -2,8 +2,8 @@ use chrono::{Datelike, Duration, NaiveDate};
 use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};
 
-use polymarket_weather_predictor::models::{BayesianWeatherModel, CalibrationAnalyzer};
 use polymarket_weather_predictor::backtesting::market_estimate;
+use polymarket_weather_predictor::models::{BayesianWeatherModel, CalibrationAnalyzer};
 use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 
 fn sample_data() -> Vec<WeatherRecord> {

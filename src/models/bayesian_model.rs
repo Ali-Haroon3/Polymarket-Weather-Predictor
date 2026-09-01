@@ -317,7 +317,9 @@ impl BayesianWeatherModel {
         // against a 3c market. Refuse instead: `market_estimate` maps the Err to None, and a
         // market with no estimate is simply not traded.
         if !self.precip_trained {
-            return Err("precipitation model was never trained (temperature-only model)".to_string());
+            return Err(
+                "precipitation model was never trained (temperature-only model)".to_string(),
+            );
         }
 
         let beta_dist = Beta::new(self.precip_posterior_alpha, self.precip_posterior_beta)

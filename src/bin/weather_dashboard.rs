@@ -106,6 +106,7 @@ fn run() -> Result<(), String> {
         min_forecast_distance: args.min_forecast_distance,
         max_pm_spread: None,
         city_lambda_floor: None,
+        venue: None,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -319,6 +320,11 @@ struct StrategyParams {
     /// win) — the model's "cheap longshot" signals realized ~3% of their claimed edge. Candidate
     /// filter, tracked in the A/B table before becoming a default.
     sell_only: bool,
+    /// Restrict trading to ONE venue. A diagnostic, not a strategy knob: the pilot is Kalshi only,
+    /// so a venue split of the pilot-shaped config is the honest way to ask "how would the pilot
+    /// fare on Polymarket?" without building a second pilot and guessing at its fee model. Rows are
+    /// folded into the λ fit BEFORE this gate, so the excluded venue still informs λ.
+    venue: Option<&'static str>,
     /// Trade on the SHRUNK edge λ·(model − price) instead of the raw disagreement, where λ is a
     /// per-venue regression coefficient fitted walk-forward on already-resolved captures (see
     /// `ShrinkageFit`). Forward evidence: the model realizes only ~⅓ of the edge it claims, so raw
@@ -689,6 +695,11 @@ fn passes_city_lambda(c: &Capture, p: &StrategyParams, city_fit: &ShrinkageFit) 
     segment_veto(city_fit, &c.source, &c.city, floor).is_none()
 }
 
+/// Market-level eligibility for `venue`.
+fn passes_venue(c: &Capture, p: &StrategyParams) -> bool {
+    p.venue.is_none_or(|v| c.source == v)
+}
+
 /// Walk settled captures in resolution order, edge-filter, fractional-Kelly size on the compounding
 /// bankroll, and book PnL using the same per-share convention as the backtest engine
 /// (stake × (outcome − price) for a BUY, negated for a SELL).
@@ -734,6 +745,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         if !passes_forecast_distance(c, p)
             || !passes_book_spread(c, p)
             || !passes_city_lambda(c, p, &city_fit)
+            || !passes_venue(c, p)
         {
             continue;
         }
@@ -1195,6 +1207,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             segment_lambda: false,
             max_pm_spread: None,
             city_lambda_floor: None,
+            venue: None,
             // Pinned to the pre-08-17 default: frozen rows must replay the same rule forever,
             // not drift with the CLI default they were frozen under.
             edge_threshold: 0.05,
@@ -1373,6 +1386,44 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             // three reads (08-23, 08-25, 08-30) it moved the forward trade count by 0, 0 and 1
             // trades against its own default column, which can never resolve to a verdict. This
             // row asks the same question of the DATA instead, per date, and covers both venues.
+            // Venue split of the PILOT-SHAPED config, frozen 2026-09-01 to answer "how would the
+            // Kalshi pilot fare on Polymarket?" continuously, instead of building a second pilot
+            // and inventing a Polymarket fee model. Both rows carry the city gate because a
+            // scratch replay of the pilot's rule showed it is decisive on Polymarket, not
+            // cosmetic: without it Polymarket runs 81 trades at −14.5%, with it 9 at +3.9%
+            // (Kalshi-style fee) or 20 at +9.7% (zero fee). Read the two rows against EACH OTHER,
+            // not against the default — the default trades both venues, so it is not a control
+            // for a venue question. NEITHER row models fees, and the two venues' costs are not
+            // the same shape: the pilot charges Kalshi's ceil(0.07·C·P·(1−P)) per order, and
+            // Polymarket's structure has not been modelled here at all. So this is a pre-cost
+            // comparison on both sides, and which side it flatters more is not yet established —
+            // that question is what a real Polymarket pilot would have to answer.
+            (
+                "Pilot shape · kalshi only (SELL + edge ≥ 10% + city λ 0.2)",
+                "2026-09-01",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    sell_only: true,
+                    city_lambda_floor: Some(0.2),
+                    venue: Some("kalshi"),
+                    ..base
+                },
+            ),
+            (
+                "Pilot shape · polymarket only (SELL + edge ≥ 10% + city λ 0.2)",
+                "2026-09-01",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    sell_only: true,
+                    city_lambda_floor: Some(0.2),
+                    venue: Some("polymarket"),
+                    ..base
+                },
+            ),
             (
                 "Default + drop cities under λ 0.2 (computed, walk-forward)",
                 "2026-08-30",
@@ -1589,6 +1640,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             passes_forecast_distance(c, sp)
                 && passes_book_spread(c, sp)
                 && passes_city_lambda(c, sp, &open_city_fit)
+                && passes_venue(c, sp)
         })
         .filter_map(|c| {
             let est = c.model_estimate?;
@@ -2205,6 +2257,7 @@ mod tests {
             min_forecast_distance: 0.0,
             max_pm_spread: None,
             city_lambda_floor: None,
+            venue: None,
         }
     }
 
