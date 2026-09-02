@@ -2,8 +2,9 @@ use chrono::{Datelike, Duration, NaiveDate};
 use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};
 
+use polymarket_weather_predictor::backtesting::market_estimate;
 use polymarket_weather_predictor::models::{BayesianWeatherModel, CalibrationAnalyzer};
-use polymarket_weather_predictor::types::WeatherRecord;
+use polymarket_weather_predictor::types::{SimulatedMarket, WeatherRecord};
 
 fn sample_data() -> Vec<WeatherRecord> {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
@@ -434,4 +435,50 @@ fn test_seasonal_temp_empty_window_errors() {
     let mut m = BayesianWeatherModel::default();
     assert!(m.train_for_target(&recs, target).is_err());
     assert!(!m.is_trained);
+}
+
+/// The 2026-09-01 defect: `evaluate_markets_inner` builds a point-forecast model for any city with
+/// a temperature forecast, then asks `market_estimate` every market shape — rain included.
+/// `set_point_forecast` never touches the Beta, so the answer was its Default (1, 1) prior (0.496
+/// after sampling) reported as a real opinion. In production it showed up as the SAME 0.496 across
+/// 11 climatically unrelated cities (Dubai, Seattle, LA, Hong Kong, ...), scoring Brier 0.233
+/// against the market's 0.066 on 33 resolved captures.
+#[test]
+fn point_forecast_model_refuses_to_answer_rain_from_the_untouched_prior() {
+    let mut temp_only = BayesianWeatherModel::default();
+    temp_only.set_point_forecast(30.0, 1.5);
+    assert!(
+        temp_only.prob_at_least(28.0) > 0.5,
+        "the temperature side must still answer"
+    );
+    assert!(
+        temp_only.predict_precipitation_probability(5000).is_err(),
+        "a temperature-only model must not answer a rain question from the Beta prior"
+    );
+
+    // The trading path turns that refusal into "no estimate", which is "no trade".
+    let rain = SimulatedMarket {
+        date: NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+        market_id: "m".into(),
+        market_title: "Will it rain in LA?".into(),
+        market_type: "precipitation".into(),
+        threshold: 0.0,
+        threshold_upper: None,
+        unit: None,
+        market_price: 0.03,
+        actual_outcome: 0.0,
+        city: "LA".into(),
+    };
+    assert_eq!(market_estimate(&temp_only, &rain), None);
+
+    // A model that DID see rain observations still answers, and reflects what it saw.
+    let mut trained = BayesianWeatherModel::default();
+    trained
+        .train_from_arrays(&[20.0, 21.0, 22.0, 23.0], &[false, false, false, true])
+        .unwrap();
+    let (p, _) = trained.predict_precipitation_probability(5000).unwrap();
+    assert!(
+        p > 0.0 && p < 0.5,
+        "one wet day in four should price well under the 0.5 prior, got {p}"
+    );
 }
