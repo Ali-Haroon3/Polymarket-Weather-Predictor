@@ -387,7 +387,7 @@ async fn run() -> Result<(), String> {
             let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(1.0 - no_price));
             // The city gate runs first among the order-path guards: it disqualifies the CITY, not
             // this order, so a row logged under it says plainly which city was withheld and why.
-            if let Some(reason) = city_gate(&fits.city, &r.city, cfg.lambda_floor) {
+            if let Some(reason) = city_gate(&fits.city, &r.city, cfg.lambda_floor, today) {
                 row.decision = reason.into();
             } else if seg_lambda < cfg.lambda_floor {
                 row.decision = "skip_segment_lambda_floor".into();
@@ -587,9 +587,10 @@ fn fit_shrinkage_from_captures(path: &PathBuf) -> PilotFits {
             // fold-identity test in shrinkage.rs).
             fits.band
                 .observe_seg(&c.source, lambda_segment(px), est - px, outcome - px);
-            // Same row, keyed by city, for `city_gate`.
+            // Same row, keyed by city and DATED, for `city_gate`: the trailing check needs to
+            // know when each observation resolved, not just that it did.
             fits.city
-                .observe_seg(&c.source, &c.city, est - px, outcome - px);
+                .observe_seg_dated(&c.source, &c.city, c.target_date, est - px, outcome - px);
         }
     }
     fits
@@ -623,12 +624,18 @@ fn gate_lambda(fit: &ShrinkageFit, best_bid: Option<f64>, venue_fold: f64) -> f6
 /// tradeable universe at once, carrying exactly those unvalidated constants. Vegas priced four
 /// straight days 2–4σ under the realized high (λ −0.84 on its first 24 rows) and took four of the
 /// pilot's next six paper orders.
-fn city_gate(fit: &ShrinkageFit, city: &str, floor: f64) -> Option<&'static str> {
+fn city_gate(
+    fit: &ShrinkageFit,
+    city: &str,
+    floor: f64,
+    today: NaiveDate,
+) -> Option<&'static str> {
     // The rule itself lives in `backtesting::shrinkage` so the dashboard's computed A/B row and
     // this gate cannot drift; only the ledger's decision strings are the pilot's own.
-    segment_veto(fit, "kalshi", city, floor).map(|v| match v {
+    segment_veto(fit, "kalshi", city, floor, today).map(|v| match v {
         SegmentVeto::Unvalidated => "skip_city_unvalidated",
         SegmentVeto::BelowFloor => "skip_city_lambda_floor",
+        SegmentVeto::TrailingBelowFloor => "skip_city_trailing_lambda_floor",
     })
 }
 
@@ -1177,9 +1184,9 @@ mod tests {
             fit.observe_seg("kalshi", "Vegas", 0.10, 0.09); // λ 0.9, but one row short
         }
         let floor = 0.2;
-        assert_eq!(city_gate(&fit, "Miami", floor), None, "healthy city trades");
+        assert_eq!(city_gate(&fit, "Miami", floor, d("2026-09-06")), None, "healthy city trades");
         assert_eq!(
-            city_gate(&fit, "Denver", floor),
+            city_gate(&fit, "Denver", floor, d("2026-09-06")),
             Some("skip_city_lambda_floor"),
             "a fitted anti-signal city is withheld on its own λ — no hand-picked list"
         );
@@ -1188,18 +1195,18 @@ mod tests {
         assert_eq!(fit.n_seg("kalshi", "Vegas"), ShrinkageFit::MIN_N - 1);
         assert!(fit.lambda_seg("kalshi", "Vegas") > floor);
         assert_eq!(
-            city_gate(&fit, "Vegas", floor),
+            city_gate(&fit, "Vegas", floor, d("2026-09-06")),
             Some("skip_city_unvalidated")
         );
         // A city with no rows at all — a series that just started listing — is withheld too.
         assert_eq!(
-            city_gate(&fit, "Phoenix", floor),
+            city_gate(&fit, "Phoenix", floor, d("2026-09-06")),
             Some("skip_city_unvalidated")
         );
         // An empty fit withholds everything rather than trading on the 1.0 no-shrink fallback.
         let empty = ShrinkageFit::default();
         assert_eq!(
-            city_gate(&empty, "Miami", floor),
+            city_gate(&empty, "Miami", floor, d("2026-09-06")),
             Some("skip_city_unvalidated")
         );
     }
