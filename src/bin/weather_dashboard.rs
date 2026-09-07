@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use chrono::{Duration, NaiveDate};
 
 use polymarket_weather_predictor::backtesting::{
-    evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
-    kelly_fraction_of_capital, lambda_segment, segment_veto, shape_segment, MarketEvaluation,
-    RealMarketLoader, ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
+    evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius, fill_prices,
+    kelly_fraction_of_capital, lambda_segment, reference_price, segment_veto, shape_segment,
+    MarketEvaluation, RealMarketLoader, ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -439,14 +439,15 @@ impl Shrink<'_> {
     }
 }
 
-/// The price a capture's model-vs-market disagreement is measured against for the shrinkage fit:
-/// book mid when a sane book was captured, else the last trade. `None` when nothing usable.
+/// The price a capture's model-vs-market disagreement is measured against for the shrinkage fit.
+/// The rule is the shared `backtesting::reference_price` — book mid when a sane two-sided book was
+/// captured, the quoted side of a one-sided book, the last trade only when no book was reported —
+/// so this fit, the pilot's, and `scripts/lambda_diagnostics.py` cannot drift on it. (Until
+/// 2026-09-07 this fell back to the last trade per row, which on Kalshi is a 0.50 placeholder
+/// whenever the book is one-sided: 133 phantom observations made the venue's λ read +0.38 where
+/// the clean fit is −0.02. See the shared fn's docs.)
 fn ref_price(c: &Capture) -> Option<f64> {
-    let px = match (c.best_bid, c.best_ask) {
-        (Some(b), Some(a)) if b > 0.0 && a < 1.0 && b <= a => (a + b) / 2.0,
-        _ => c.entry_price,
-    };
-    (px > 0.0 && px < 1.0).then_some(px)
+    reference_price(c.entry_price, c.best_bid, c.best_ask)
 }
 
 /// One resolved lead ≥ 1 shrinkage observation: the model's claimed edge vs what realized.
@@ -620,7 +621,9 @@ struct Trade {
 
 /// Decide a trade from one capture's model estimate and EXECUTABLE prices: a BUY fills at the ask,
 /// a SELL at the bid — the last trade (`entry_price`) is only the fallback when the venue reported
-/// no book (legacy rows). `shrink` multiplies the model-vs-price disagreement before thresholding
+/// no book at all (legacy rows; the shared `backtesting::fill_prices` rule — a missing side of a
+/// reported book is untradable, never the last trade, which on Kalshi is a 0.50 placeholder for
+/// exactly those rows). `shrink` multiplies the model-vs-price disagreement before thresholding
 /// and Kelly (pass `Shrink::Off` for the raw edge; `run_strategy` passes the walk-forward λ when
 /// `shrink_edge` is on — per-side under `Shrink::Seg`, since a BUY at the ask and a SELL at the
 /// bid can sit in different price bands). Returns (side, fractional-Kelly stake fraction,
@@ -640,10 +643,7 @@ fn decide(
     if lead == 0 && !p.trade_day_of {
         return None; // day-of: the market's intraday information set beats ours (see StrategyParams)
     }
-    let tradable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
-    let fallback = tradable(entry_price);
-    let buy_px = best_ask.and_then(tradable).or(fallback);
-    let sell_px = best_bid.and_then(tradable).or(fallback);
+    let (buy_px, sell_px) = fill_prices(entry_price, best_bid, best_ask);
 
     // Shrunk edge per side at its own executable price; take the better one.
     let edge_buy = buy_px
@@ -2484,6 +2484,25 @@ mod tests {
             decide(0.20, 0.0, Some(0.40), None, mt, 1, &Shrink::Off, &sp)
                 .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.40).abs() < 1e-9)
         );
+    }
+
+    /// The 2026-09-07 phantom fill: a Kalshi row with a 1¢ ask, NO bid, and the venue's 0.50
+    /// "no trade / no book" placeholder stored as its last trade. A SELL has nobody to sell to;
+    /// it must not fill at the placeholder (est 0.02 vs 0.50 was a 48-point "edge" that won 133
+    /// times out of 133, since a 1¢ market resolves NO). The BUY side is still a real 1¢ fill.
+    #[test]
+    fn decide_never_sells_into_a_placeholder_when_the_book_has_no_bid() {
+        let sp = params();
+        let mt = "temp_at_least";
+        assert!(
+            decide(0.02, 0.50, None, Some(0.01), mt, 1, &Shrink::Off, &sp).is_none(),
+            "no bid ⇒ no SELL, and the 0.50 last trade is not a fallback once a book was reported"
+        );
+        // Bid-only book with the same placeholder: no BUY at 0.50 either.
+        assert!(decide(0.98, 0.50, Some(0.99), None, mt, 1, &Shrink::Off, &sp).is_none());
+        // With no book at all the last trade still fills (legacy rows).
+        assert!(decide(0.02, 0.50, None, None, mt, 1, &Shrink::Off, &sp)
+            .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.50).abs() < 1e-9));
     }
 
     #[test]

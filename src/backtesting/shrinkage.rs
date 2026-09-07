@@ -73,6 +73,65 @@ pub fn shape_segment(market_type: &str, px: f64) -> &'static str {
     }
 }
 
+/// The price a capture's model-vs-market disagreement is measured against, shared by every λ fit
+/// (the dashboard's `ref_price`, the pilot's capture fit, and mirrored by the analysis scripts):
+/// the mid of a sane two-sided book; the one side a one-sided book quotes; the last trade
+/// (`entry_price`) ONLY for rows on which the venue reported no book at all (legacy captures
+/// predating book capture). `None` when nothing usable — a 0/1 price is an empty side, not a
+/// price, and a crossed book is not trusted.
+///
+/// Why the one-sided case is its own rule (2026-09-07): Kalshi's anonymous market list nulls
+/// `last_price`, so `kalshi_price` writes the 0.50 "no trade / no book" PLACEHOLDER as
+/// `entry_price` whenever the book is not two-sided — and every consumer that fell back to the
+/// last trade read that placeholder as a real 50¢ price on markets with a 1¢ ask and no bid.
+/// 133 resolved lead ≥ 1 Kalshi rows carried it (all resolved NO, as a 1¢ market does), entering
+/// the fit as x ≈ −0.48, y = −0.50: realized ≈ claimed, at ~25× the x² weight of a typical row.
+/// Those rows alone made the Kalshi px ≥ 0.10 λ read +0.474 (n=1801); without them it is −0.006
+/// (n=1668), and the venue fold goes +0.380 → −0.019. The dashboard's `decide()` was worse off
+/// still: it "sold" those markets at 0.50 (see `fill_prices`).
+pub fn reference_price(
+    entry_price: f64,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+) -> Option<f64> {
+    let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    let reported_book = best_bid.is_some() || best_ask.is_some();
+    let px = match (best_bid.and_then(usable), best_ask.and_then(usable)) {
+        (Some(b), Some(a)) if b <= a => (a + b) / 2.0,
+        (Some(_), Some(_)) => return None, // crossed book: nothing to trust
+        (Some(b), None) => b,
+        (None, Some(a)) => a,
+        (None, None) if reported_book => return None, // a reported book with nothing on it
+        (None, None) => entry_price,
+    };
+    usable(px)
+}
+
+/// The EXECUTABLE prices a strategy replay may fill at: `(buy_px, sell_px)` — a BUY fills at the
+/// ask, a SELL at the bid. The last trade (`entry_price`) is the fallback for BOTH sides only on
+/// rows with no book at all (legacy captures); once the venue reported a book, a missing side is
+/// simply untradable — there is nobody to sell to without a bid and nothing to buy without an
+/// ask. Before 2026-09-07 the fallback applied PER SIDE, so a Kalshi row with a 1¢ ask and no bid
+/// became a SELL at its 0.50 placeholder (`reference_price`): 133 phantom wins at the position
+/// cap, compounding a $100k bankroll to $517M on the dashboard, and 7 of the open book's 10
+/// positions on the day it was found.
+pub fn fill_prices(
+    entry_price: f64,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+) -> (Option<f64>, Option<f64>) {
+    let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    let fallback = if best_bid.is_some() || best_ask.is_some() {
+        None
+    } else {
+        usable(entry_price)
+    };
+    (
+        best_ask.and_then(usable).or(fallback),
+        best_bid.and_then(usable).or(fallback),
+    )
+}
+
 /// Trailing window (in days of resolved target dates) for the drift view of λ. The full-sample
 /// slope grows sluggish as history accrues — a two-week anti-signal stretch barely moves it — so
 /// the trailing slope is the early-warning view. Shared by the dashboard's λ diagnostics and the
@@ -296,6 +355,44 @@ pub fn segment_veto(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_price_never_reads_the_placeholder_behind_a_reported_book() {
+        // Two-sided sane book: the mid, whatever the last trade says.
+        assert!((reference_price(0.5, Some(0.40), Some(0.44)).unwrap() - 0.42).abs() < 1e-12);
+        // The 2026-09-07 defect: a Kalshi row with a 1¢ ask, no bid, and the 0.50 placeholder
+        // stored as its "last trade" is a 1¢ market, not a 50¢ one.
+        assert!((reference_price(0.5, None, Some(0.01)).unwrap() - 0.01).abs() < 1e-12);
+        // Bid-only book (a 99¢ market with no ask): the bid.
+        assert!((reference_price(0.5, Some(0.99), None).unwrap() - 0.99).abs() < 1e-12);
+        // No book at all (legacy rows): the last trade is all there is.
+        assert!((reference_price(0.31, None, None).unwrap() - 0.31).abs() < 1e-12);
+        assert_eq!(reference_price(0.0, None, None), None, "0/1 is not a price");
+        // A reported book with nothing usable on it never falls through to the last trade —
+        // a 0-cent bid and a 100-cent ask are empty sides.
+        assert_eq!(reference_price(0.5, Some(0.0), Some(1.0)), None);
+        // Crossed book: not trusted.
+        assert_eq!(reference_price(0.5, Some(0.60), Some(0.40)), None);
+    }
+
+    #[test]
+    fn fill_prices_need_the_side_they_hit_once_a_book_was_reported() {
+        // Two-sided: BUY at the ask, SELL at the bid.
+        assert_eq!(
+            fill_prices(0.5, Some(0.40), Some(0.44)),
+            (Some(0.44), Some(0.40))
+        );
+        // The phantom: ask 1¢, no bid, placeholder 0.50 — a BUY can fill at 1¢, a SELL cannot
+        // fill at all (and certainly not at 0.50).
+        assert_eq!(fill_prices(0.5, None, Some(0.01)), (Some(0.01), None));
+        // Bid-only: SELL at the bid, nothing to buy.
+        assert_eq!(fill_prices(0.5, Some(0.99), None), (None, Some(0.99)));
+        // No book at all: the last trade fills both sides (legacy rows).
+        assert_eq!(fill_prices(0.31, None, None), (Some(0.31), Some(0.31)));
+        assert_eq!(fill_prices(0.0, None, None), (None, None));
+        // Empty sides reported as 0 / 1 are not fills either.
+        assert_eq!(fill_prices(0.5, Some(0.0), Some(1.0)), (None, None));
+    }
 
     /// Feed n observations with exact slope `s` (x = 0.1, y = 0.1·s) under one key.
     fn feed(fit: &mut ShrinkageFit, venue: &str, seg: &str, s: f64, n: usize) {

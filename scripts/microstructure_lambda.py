@@ -63,11 +63,18 @@ def lead(r):
 
 
 def mid_price(r):
-    # Same in-range gate as the dashboard's ref_price: a 0/1 side is an empty book side.
+    # Mirrors backtesting::reference_price: a 0/1 side is an empty book side; a one-sided book
+    # is priced at its quoted side; the last trade is read ONLY when no book was reported, since
+    # Kalshi's entry_price is a 0.50 placeholder whenever its book is one-sided (2026-09-07).
     b, a = r.get("best_bid"), r.get("best_ask")
-    if b is not None and a is not None and 0.0 < b <= a < 1.0:
-        return (b + a) / 2.0
-    return r["entry_price"]
+    usable = lambda x: x if (x is not None and 0.0 < x < 1.0) else None
+    reported_book = b is not None or a is not None
+    b, a = usable(b), usable(a)
+    if b is not None and a is not None:
+        return (b + a) / 2.0 if b <= a else None
+    if b is not None or a is not None:
+        return b if b is not None else a
+    return None if reported_book else usable(r["entry_price"])
 
 
 def lam(pairs):
@@ -172,8 +179,11 @@ def main():
             edges = quartile_edges([v for _, v in have], args.buckets)
             groups = collections.defaultdict(list)
             for r, v in valued:
-                x = r["model_estimate"] - mid_price(r)
-                y = r["outcome"] - mid_price(r)
+                px = mid_price(r)
+                if px is None:
+                    continue  # a reported book with nothing usable on it: no reference price
+                x = r["model_estimate"] - px
+                y = r["outcome"] - px
                 name = "missing" if v is None else f"Q{bucket_of(v, edges) + 1}"
                 groups[name].append((x, y))
             order = [f"Q{i + 1}" for i in range(args.buckets)] + ["missing"]
