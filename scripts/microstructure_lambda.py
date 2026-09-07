@@ -74,7 +74,9 @@ def mid_price(r):
         return (b + a) / 2.0 if b <= a else None
     if b is not None or a is not None:
         return b if b is not None else a
-    return None if reported_book else usable(r["entry_price"])
+    if reported_book or abs(r["entry_price"] - 0.5) < 1e-9:
+        return None  # a reported-but-empty book, or the never-traded 0.50 default
+    return usable(r["entry_price"])
 
 
 def lam(pairs):

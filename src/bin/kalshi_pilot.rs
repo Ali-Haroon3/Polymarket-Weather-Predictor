@@ -77,6 +77,24 @@
 //!
 //!   cargo run --release --bin kalshi_pilot            # dry run: print + log intended orders
 //!   cargo run --release --bin kalshi_pilot -- --live  # place real limit orders
+//!
+//! **Since 2026-09-07 the pilot's DEFAULT strategy is MARKET SHAPE (`--strategy market-shape`;
+//! `backtesting::market_shape`), and the weather model is not consulted at all under it.** The
+//! phantom-fill defect found that morning took the model's realized edge to zero on both venues
+//! (its λ-floor breaker fires on the clean fit, and `--strategy model-shrunk` keeps that path
+//! for the record). What survived a strict walk-forward, fee-inclusive replay was the Kalshi
+//! market's own ladder, re-shaped: Normal(μ + b, k·σ) fitted to each city-day's mids, with (b, k)
+//! fitted by cell Brier over the ladders that had resolved before the trading day. It trades
+//! BOTH sides — BUY NO against an over-priced tail (the old SELL) and BUY YES on an under-priced
+//! favourite — at executable prices net of the fee, floored at 10¢ on either side. Every ledger
+//! row now carries `strategy`, `side` and `price` (paid per contract on that side); rows without
+//! them are the legacy NO-side model rows. The breakers under market shape are the weekly-loss
+//! breaker as before and, in place of the λ floor, `shape_stand_down_reason`: no (b, k) until
+//! `MIN_LADDERS` resolved ladders exist, and stand down when the trailing `--trailing-days`
+//! walk-forward replay of the strategy over the captures realizes under `--min-trailing-roi` on
+//! at least `TRAILING_MIN_TRADES` trades — "has the edge stopped realizing lately", the same
+//! question the λ floor asked of the model. The go-live gate scores each strategy's orders as
+//! its own sample (`scripts/go_live_gate.py --strategy`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -85,14 +103,19 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::kalshi_trade::{
-    fee_frac, KalshiFill, KalshiOrder, KalshiTradeClient,
+    fee_frac, KalshiFill, KalshiOrder, KalshiTradeClient, OrderSide,
 };
 use polymarket_weather_predictor::api::{KalshiHistoryDownloader, WeatherMarketRow};
+use polymarket_weather_predictor::backtesting::market_shape::{
+    DEFAULT_EDGE_THRESHOLD, MIN_LADDERS, MIN_PRICE,
+};
 use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs,
 };
 use polymarket_weather_predictor::backtesting::{
-    lambda_segment, market_estimate, reference_price, segment_veto, SegmentVeto, ShrinkageFit,
+    build_ladders, decide_cell, fit_shape, lambda_segment, market_estimate, reference_price,
+    replay, replay_roi, segment_veto, shape_history, LadderInput, SegmentVeto, ShapeParams,
+    ShapeSide, ShrinkageFit,
 };
 use polymarket_weather_predictor::data_pipeline::StationPricer;
 use polymarket_weather_predictor::models::BayesianWeatherModel;
@@ -125,6 +148,13 @@ const DEFAULT_ORDER_TTL_MINS: i64 = 240;
 /// Stop asking Kalshi about a live order this many days after its target day: by then its
 /// market has long settled and the answer cannot change what the pilot does next.
 const RECONCILE_GIVE_UP_DAYS: i64 = 14;
+/// Market-shape breaker: stand down when the trailing walk-forward replay of the strategy over
+/// the captures (the same rule, fees and floor the pilot trades) realizes under this ROI on at
+/// least `TRAILING_MIN_TRADES` trades. −10% is far below anything the 07-05..09-06 replay showed
+/// in any month (+10..17%), so it trips on a regime change, not on a bad week.
+const DEFAULT_MIN_TRAILING_ROI: f64 = -0.10;
+const DEFAULT_TRAILING_DAYS: i64 = 30;
+const TRAILING_MIN_TRADES: usize = 30;
 
 /// One ledger line: every decision the pilot makes, tradable or not, dry or live.
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,6 +178,35 @@ struct LedgerRow {
     order_id: Option<String>,
     order_status: Option<String>,
     error: Option<String>,
+    /// Which strategy wrote the row: "market-shape" (default since 2026-09-07) or the legacy
+    /// "model-shrunk". Rows written before the field existed are model-shrunk.
+    #[serde(default = "legacy_strategy")]
+    strategy: String,
+    /// Contract bought — "no" (a SELL signal, the only kind before 2026-09-07) or "yes".
+    #[serde(default = "no_side")]
+    side: String,
+    /// Price paid per contract on `side`. Legacy NO rows carry it in `no_price` only, so readers
+    /// go through `paid_price`.
+    #[serde(default)]
+    price: Option<f64>,
+    #[serde(default)]
+    yes_ask: Option<f64>,
+    /// The market-shape probability the cell was judged at (market-shape rows only).
+    #[serde(default)]
+    shape_estimate: Option<f64>,
+}
+
+fn legacy_strategy() -> String {
+    "model-shrunk".into()
+}
+
+fn no_side() -> String {
+    "no".into()
+}
+
+/// Price paid per contract on the row's own side, whichever field a row of its vintage used.
+fn paid_price(row: &LedgerRow) -> Option<f64> {
+    row.price.or(row.no_price)
 }
 
 /// The subset of a capture row the λ fit and the loss breaker need. Extra fields in
@@ -197,8 +256,29 @@ fn default_source() -> String {
     "polymarket".to_string()
 }
 
+/// Which rule decides the orders. See the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Strategy {
+    MarketShape,
+    ModelShrunk,
+}
+
+impl Strategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Strategy::MarketShape => "market-shape",
+            Strategy::ModelShrunk => "model-shrunk",
+        }
+    }
+}
+
 struct PilotConfig {
     live: bool,
+    strategy: Strategy,
+    /// Executable-price floor on both sides under market shape (`market_shape::MIN_PRICE`).
+    min_price: f64,
+    min_trailing_roi: f64,
+    trailing_days: i64,
     stake: f64,
     max_exposure: f64,
     max_orders: usize,
@@ -233,8 +313,22 @@ fn parse_args() -> PilotConfig {
     let val = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
     let fval = |name: &str, d: f64| val(name).and_then(|v| v.parse().ok()).unwrap_or(d);
     let stake = fval("--stake", DEFAULT_STAKE);
+    let strategy = match val("--strategy").as_deref() {
+        None | Some("market-shape") => Strategy::MarketShape,
+        Some("model-shrunk") => Strategy::ModelShrunk,
+        Some(other) => {
+            eprintln!("unknown --strategy '{other}' (market-shape | model-shrunk)");
+            std::process::exit(2);
+        }
+    };
     PilotConfig {
         live: flag("--live"),
+        strategy,
+        min_price: fval("--min-price", MIN_PRICE),
+        min_trailing_roi: fval("--min-trailing-roi", DEFAULT_MIN_TRAILING_ROI),
+        trailing_days: val("--trailing-days")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_TRAILING_DAYS),
         stake,
         max_exposure: fval("--max-exposure", DEFAULT_MAX_EXPOSURE),
         max_orders: val("--max-orders")
@@ -244,7 +338,15 @@ fn parse_args() -> PilotConfig {
         // 10% floor led its forward A/B window at both checkpoints (+32.7% vs +15.0%, n=77, at
         // promotion). The old source, config::backtest_params().edge_threshold (0.05), still
         // governs the raw-edge backtest engine, where 10% was never the validated cut.
-        edge_threshold: fval("--edge-threshold", 0.10),
+        // Market shape: the module's 3% net-of-fee threshold (the replay's sweet spot). Model
+        // shrunk: 0.10 since 2026-08-17, matching the dashboard's then-promoted default.
+        edge_threshold: fval(
+            "--edge-threshold",
+            match strategy {
+                Strategy::MarketShape => DEFAULT_EDGE_THRESHOLD,
+                Strategy::ModelShrunk => 0.10,
+            },
+        ),
         fee_buffer: fval("--fee-buffer", DEFAULT_FEE_BUFFER),
         lambda_floor: fval("--lambda-floor", DEFAULT_LAMBDA_FLOOR),
         max_weekly_loss: fval("--max-weekly-loss", DEFAULT_MAX_WEEKLY_LOSS),
@@ -264,6 +366,32 @@ fn parse_args() -> PilotConfig {
 async fn run() -> Result<(), String> {
     let cfg = parse_args();
     let today = Utc::now().date_naive();
+    println!("strategy: {}", cfg.strategy.as_str());
+
+    // Market shape: (b, k) over the captures' resolved ladders as of today, and the trailing
+    // walk-forward replay the breaker reads. Nothing here touches a forecast API.
+    let shape = (cfg.strategy == Strategy::MarketShape).then(|| {
+        shape_run_from_captures(
+            &cfg.captures_path,
+            today,
+            cfg.edge_threshold + cfg.fee_buffer,
+            cfg.min_price,
+            cfg.trailing_days,
+        )
+    });
+    if let Some(sr) = &shape {
+        match sr.params {
+            Some(p) => println!(
+                "market shape: Normal(μ {:+.1} °C, σ × {:.2}) from {} resolved complete ladders \
+                 (as of {today}); trailing {}-day replay {:+.1}% on {} trades",
+                p.bias_c, p.sigma_scale, sr.hist_n, cfg.trailing_days, sr.trailing_roi * 100.0, sr.trailing_n
+            ),
+            None => println!(
+                "market shape: only {} resolved complete ladders, under the {MIN_LADDERS} the fit needs",
+                sr.hist_n
+            ),
+        }
+    }
 
     // λ from the same captures the paper evidence came from: resolved, lead ≥ 1 only. Each
     // candidate's edge gate reads its OWN bid band via `gate_lambda` (see module docs); the
@@ -301,13 +429,23 @@ async fn run() -> Result<(), String> {
             if cfg.live { "live" } else { "dry-run" },
         );
     }
-    if let Some(reason) = stand_down_reason(
-        lambda_traded,
-        cfg.lambda_floor,
-        week_pnl,
-        week_settled,
-        cfg.max_weekly_loss,
-    ) {
+    let reason = match &shape {
+        Some(sr) => shape_stand_down_reason(
+            sr,
+            cfg.min_trailing_roi,
+            week_pnl,
+            week_settled,
+            cfg.max_weekly_loss,
+        ),
+        None => stand_down_reason(
+            lambda_traded,
+            cfg.lambda_floor,
+            week_pnl,
+            week_settled,
+            cfg.max_weekly_loss,
+        ),
+    };
+    if let Some(reason) = reason {
         eprintln!(
             "STAND DOWN: {reason}. No orders this run. Resuming is a human decision — \
              re-run with --lambda-floor / --max-weekly-loss overridden once you've looked."
@@ -403,6 +541,13 @@ async fn run() -> Result<(), String> {
     println!("{} open Kalshi weather markets", markets.len());
 
     let mut pricer = StationPricer::new(today, spread_scale);
+    // Market shape: today's live ladders, re-priced under the fitted (b, k). Every market of a
+    // complete ladder gets its probability; markets of an incomplete ladder, or with no usable
+    // price at all, get a skip reason of their own so the ledger says why.
+    let live_prob: HashMap<String, LadderProb> = match &shape {
+        Some(sr) => live_ladder_probs(&markets, today, sr.params),
+        None => HashMap::new(),
+    };
     let mut ledger: Vec<LedgerRow> = Vec::new();
     let mut placed = 0usize;
     let mut exposure = position_cost_estimate(&positions);
@@ -411,47 +556,97 @@ async fn run() -> Result<(), String> {
     let mut sorted: Vec<&WeatherMarketRow> = markets.iter().collect();
     sorted.sort_by(|a, b| (a.target_date, &a.market_id).cmp(&(b.target_date, &b.market_id)));
 
+    // Pass 1: decide every market. Pass 2 places in order of net edge, so a per-run cap keeps
+    // the best candidates rather than the first tickers alphabetically (under market shape a
+    // day offers ~30 candidates across the ladders, and `--max-orders` 5 would otherwise trade
+    // Austin and Chicago every morning and Vegas never).
+    let mut decided: Vec<Decided> = Vec::new();
     for r in sorted {
         if committed.contains(&r.market_id) {
             continue; // silently: already handled in a previous run
         }
-        let est = pricer.estimate(r).and_then(|(mu, sigma)| {
-            let mut model = BayesianWeatherModel::default();
-            model.set_point_forecast(mu, sigma);
-            market_estimate(&model, &to_sim(r))
-        });
-        let candidate_lambda = gate_lambda(fit, r.best_bid, lambda);
-        let d = decide_sell(
-            today,
-            r.target_date,
-            r.best_bid,
+        let (est, shape_est, candidate_lambda, d) = match cfg.strategy {
+            Strategy::ModelShrunk => {
+                let est = pricer.estimate(r).and_then(|(mu, sigma)| {
+                    let mut model = BayesianWeatherModel::default();
+                    model.set_point_forecast(mu, sigma);
+                    market_estimate(&model, &to_sim(r))
+                });
+                let candidate_lambda = gate_lambda(fit, r.best_bid, lambda);
+                let d = decide_sell(
+                    today,
+                    r.target_date,
+                    r.best_bid,
+                    est,
+                    candidate_lambda,
+                    cfg.edge_threshold,
+                    cfg.fee_buffer,
+                );
+                (est, None, candidate_lambda, d)
+            }
+            Strategy::MarketShape => {
+                let lp = live_prob
+                    .get(&r.market_id)
+                    .copied()
+                    .unwrap_or(LadderProb::NoLadder);
+                let d = decide_shape(
+                    today,
+                    r.target_date,
+                    lp,
+                    r.best_bid,
+                    r.best_ask,
+                    cfg.edge_threshold,
+                    cfg.fee_buffer,
+                    cfg.min_price,
+                );
+                let shape_est = match lp {
+                    LadderProb::Prob(q) => Some(q),
+                    _ => None,
+                };
+                (None, shape_est, 1.0, d)
+            }
+        };
+        decided.push((r, d, est, shape_est, candidate_lambda));
+    }
+    rank_for_placement(&mut decided);
+    for (r, d, est, shape_est, candidate_lambda) in decided {
+        let mut row = ledger_row(
+            r,
+            &d,
             est,
+            shape_est,
             candidate_lambda,
-            cfg.edge_threshold,
-            cfg.fee_buffer,
+            cfg.live,
+            cfg.strategy,
         );
-        let mut row = ledger_row(r, &d, est, candidate_lambda, cfg.live);
         if let Decision::Order {
-            no_price,
-            claimed: _,
-            shrunk: _,
+            side,
+            price,
+            yes_price,
+            ..
         } = d
         {
-            // Defense in depth for `--lambda-floor`: the gate above already shrank by this same
-            // band λ, but a large claimed edge can clear the gate at a band λ under the floor —
-            // the floor is an absolute stop, not a scale, so it's applied per order too.
-            let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(1.0 - no_price));
-            // The city gate runs first among the order-path guards: it disqualifies the CITY, not
-            // this order, so a row logged under it says plainly which city was withheld and why.
-            if let Some(reason) = city_gate(&fits.city, &r.city, cfg.lambda_floor, today) {
+            // Model strategy only — defense in depth for `--lambda-floor`: the gate above already
+            // shrank by this same band λ, but a large claimed edge can clear the gate at a band λ
+            // under the floor; the floor is an absolute stop, not a scale, so it's applied per
+            // order too. And the city gate, which disqualifies the CITY, not this order, so a row
+            // logged under it says plainly which city was withheld and why. Neither applies to
+            // market shape, which has no per-city model to distrust.
+            let model_guard = match cfg.strategy {
+                Strategy::ModelShrunk => city_gate(&fits.city, &r.city, cfg.lambda_floor, today)
+                    .or_else(|| {
+                        let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(yes_price));
+                        (seg_lambda < cfg.lambda_floor).then_some("skip_segment_lambda_floor")
+                    }),
+                Strategy::MarketShape => None,
+            };
+            if let Some(reason) = model_guard {
                 row.decision = reason.into();
-            } else if seg_lambda < cfg.lambda_floor {
-                row.decision = "skip_segment_lambda_floor".into();
             } else if placed >= cfg.max_orders {
                 row.decision = "skip_max_orders".into();
             } else {
-                let contracts = size_contracts(cfg.stake, no_price);
-                let cost = contracts as f64 * no_price;
+                let contracts = size_contracts(cfg.stake, price);
+                let cost = contracts as f64 * price;
                 let city_key = (r.city.clone(), r.target_date);
                 let city_spent = city_exposure.get(&city_key).copied().unwrap_or(0.0);
                 if contracts == 0 {
@@ -466,7 +661,7 @@ async fn run() -> Result<(), String> {
                     row.cost = cost;
                     // Kalshi prices are whole cents in 1..=99; a bid of 0.995 must not round
                     // into an illegal 100.
-                    let cents = ((no_price * 100.0).round() as i64).clamp(1, 99);
+                    let cents = ((price * 100.0).round() as i64).clamp(1, 99);
                     // Stable per (ticker, day): a crashed-and-rerun pilot reuses the same id and
                     // Kalshi rejects the duplicate instead of double-filling.
                     let coid = format!("pilot-{}-{}", r.market_id, today);
@@ -474,10 +669,17 @@ async fn run() -> Result<(), String> {
                         // Live always has a client: the no-auth path above errors out for --live.
                         let t = trader.as_ref().expect("live run without trade client");
                         let expires = expiration_ts(Utc::now(), cfg.order_ttl_mins);
-                        match t
-                            .buy_no_limit(&r.market_id, contracts, cents, &coid, expires)
-                            .await
-                        {
+                        let placed_order = match side {
+                            OrderSide::No => {
+                                t.buy_no_limit(&r.market_id, contracts, cents, &coid, expires)
+                                    .await
+                            }
+                            OrderSide::Yes => {
+                                t.buy_yes_limit(&r.market_id, contracts, cents, &coid, expires)
+                                    .await
+                            }
+                        };
+                        match placed_order {
                             Ok(o) => {
                                 row.order_id = Some(o.order_id);
                                 row.order_status = Some(o.status);
@@ -498,16 +700,22 @@ async fn run() -> Result<(), String> {
             }
         }
         println!(
-            "{:<28} {} lead={} bid={} est={} shrunk={} -> {}{}",
+            "{:<28} {} lead={} bid={} ask={} est={} edge={} -> {}{}",
             r.market_id,
             r.target_date,
             (r.target_date - today).num_days(),
             fmt(r.best_bid),
-            fmt(est),
+            fmt(r.best_ask),
+            fmt(row.shape_estimate.or(row.model_estimate)),
             fmt(row.shrunk_edge),
             row.decision,
             if row.contracts > 0 {
-                format!(" ({} @ ~${:.2})", row.contracts, row.cost)
+                format!(
+                    " ({} {} @ ~${:.2})",
+                    row.contracts,
+                    row.side.to_uppercase(),
+                    row.cost
+                )
             } else {
                 String::new()
             }
@@ -545,9 +753,12 @@ async fn run() -> Result<(), String> {
 /// The tradable decision for one market, or why not.
 #[derive(Debug, PartialEq)]
 enum Decision {
-    /// SELL YES via BUY NO at `no_price` (= 1 − yes bid, the executable taker price).
+    /// Buy `side` at `price` per contract (NO at 1 − yes bid, YES at the yes ask — the executable
+    /// taker prices); `yes_price` is the YES-side quote the edge was measured against.
     Order {
-        no_price: f64,
+        side: OrderSide,
+        price: f64,
+        yes_price: f64,
         claimed: f64,
         shrunk: f64,
     },
@@ -600,18 +811,270 @@ fn decide_sell(
         };
     }
     Decision::Order {
-        no_price,
+        side: OrderSide::No,
+        price: no_price,
+        yes_price: bid,
         claimed,
         shrunk,
     }
 }
 
-/// Whole contracts a flat dollar stake buys at `no_price`. Never rounds up past the stake.
-fn size_contracts(stake: f64, no_price: f64) -> i64 {
-    if no_price <= 0.0 {
+/// What the market-shape ladder had to say about one market.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LadderProb {
+    /// No ladder could be built around it (no usable price on it or its neighbours).
+    NoLadder,
+    /// Its ladder was not complete (mids not summing to ~1 over ≥ 4 cells): untrusted.
+    Incomplete,
+    /// The cell's re-shaped probability.
+    Prob(f64),
+}
+
+/// The market-shape strategy's decision for one market: its ladder's re-shaped probability
+/// against the executable book, BOTH sides, net of fee, at or above the price floor
+/// (`market_shape::decide_cell`), lead ≥ 1 only. `claimed` in the ledger is the raw disagreement
+/// with the executable quote on the better side and `shrunk` the same net of fee — the number
+/// that had to clear `threshold + fee_buffer`.
+#[allow(clippy::too_many_arguments)]
+fn decide_shape(
+    today: NaiveDate,
+    target: NaiveDate,
+    prob: LadderProb,
+    yes_bid: Option<f64>,
+    yes_ask: Option<f64>,
+    threshold: f64,
+    fee_buffer: f64,
+    min_price: f64,
+) -> Decision {
+    if (target - today).num_days() < 1 {
+        return Decision::Skip("skip_lead0"); // day-of: the market's intraday info wins
+    }
+    let q = match prob {
+        LadderProb::NoLadder => return Decision::Skip("skip_no_ladder"),
+        LadderProb::Incomplete => return Decision::Skip("skip_incomplete_ladder"),
+        LadderProb::Prob(q) => q,
+    };
+    let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    let (bid, ask) = (yes_bid.and_then(usable), yes_ask.and_then(usable));
+    if bid.is_none() && ask.is_none() {
+        return Decision::Skip("skip_no_book");
+    }
+    if let Some(d) = decide_cell(q, bid, ask, fee_frac, threshold + fee_buffer, min_price) {
+        return Decision::Order {
+            side: match d.side {
+                ShapeSide::BuyYes => OrderSide::Yes,
+                ShapeSide::BuyNo => OrderSide::No,
+            },
+            price: d.price,
+            yes_price: d.yes_price,
+            claimed: (d.prob - d.yes_price).abs(),
+            shrunk: d.edge,
+        };
+    }
+    // Diagnostics for the skip: the better side's raw and net edge, floor or not.
+    let buy = ask.map(|a| (q - a, a));
+    let sell = bid.map(|b| (b - q, b));
+    let (raw, px) = match (buy, sell) {
+        (Some(b), Some(s)) => {
+            if b.0 >= s.0 {
+                b
+            } else {
+                s
+            }
+        }
+        (Some(b), None) => b,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("one side is usable here"),
+    };
+    Decision::SkipWithEdge {
+        reason: if px < min_price {
+            "skip_price_floor"
+        } else {
+            "skip_edge_below_costs"
+        },
+        claimed: raw,
+        shrunk: raw - fee_frac(px),
+    }
+}
+
+/// One decided market awaiting placement: (row, decision, model estimate, shape estimate, λ).
+type Decided<'a> = (
+    &'a WeatherMarketRow,
+    Decision,
+    Option<f64>,
+    Option<f64>,
+    f64,
+);
+
+/// Net edge a decision cleared (or failed) the gate with; skips without one sort last.
+fn decision_edge(d: &Decision) -> f64 {
+    match d {
+        Decision::Order { shrunk, .. } | Decision::SkipWithEdge { shrunk, .. } => *shrunk,
+        Decision::Skip(_) => f64::NEG_INFINITY,
+    }
+}
+
+/// Placement order: largest net edge first, ties by ticker so a run is deterministic.
+fn rank_for_placement(decided: &mut [Decided]) {
+    decided.sort_by(|a, b| {
+        decision_edge(&b.1)
+            .partial_cmp(&decision_edge(&a.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.market_id.cmp(&b.0.market_id))
+    });
+}
+
+/// Whole contracts a flat dollar stake buys at `price` per contract. Never rounds up past the
+/// stake.
+fn size_contracts(stake: f64, price: f64) -> i64 {
+    if price <= 0.0 {
         return 0;
     }
-    (stake / no_price).floor() as i64
+    (stake / price).floor() as i64
+}
+
+/// The market-shape inputs a run needs from the captures: (b, k) as of `today` over the resolved
+/// ladders, how many there were, and the trailing walk-forward replay the breaker reads.
+struct ShapeRun {
+    params: Option<ShapeParams>,
+    hist_n: usize,
+    trailing_roi: f64,
+    trailing_n: usize,
+}
+
+fn capture_ladder_inputs(path: &PathBuf) -> Vec<LadderInput> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<CaptureRow>(l).ok())
+        .filter_map(|c| {
+            Some(LadderInput {
+                venue: c.source.clone(),
+                city: c.city.clone(),
+                target: c.target_date,
+                captured: c.captured_at,
+                market_id: c.market_id.clone()?,
+                market_type: c.market_type.clone(),
+                threshold: c.threshold?,
+                threshold_upper: c.threshold_upper,
+                unit: c.unit.clone(),
+                price: reference_price(c.entry_price, c.best_bid, c.best_ask),
+                bid: c.best_bid.and_then(usable),
+                ask: c.best_ask.and_then(usable),
+                outcome: c.outcome,
+            })
+        })
+        .collect()
+}
+
+fn shape_run_from_captures(
+    path: &PathBuf,
+    today: NaiveDate,
+    theta: f64,
+    min_price: f64,
+    trailing_days: i64,
+) -> ShapeRun {
+    let ladders = build_ladders(capture_ladder_inputs(path));
+    let hist = shape_history(&ladders, "kalshi", today);
+    let params = fit_shape(&hist);
+    let trades = replay(
+        &ladders,
+        "kalshi",
+        today - chrono::Duration::days(trailing_days),
+        today,
+        fee_frac,
+        theta,
+        min_price,
+    );
+    let (trailing_roi, trailing_n) = replay_roi(&trades);
+    ShapeRun {
+        params,
+        hist_n: hist.len(),
+        trailing_roi,
+        trailing_n,
+    }
+}
+
+/// Today's live markets as ladders under the fitted (b, k): every market of a complete ladder
+/// maps to its re-shaped probability, every market of an incomplete one to `Incomplete`. With no
+/// parameters (under `MIN_LADDERS`) nothing is priced — the breaker has already stood down.
+fn live_ladder_probs(
+    markets: &[WeatherMarketRow],
+    today: NaiveDate,
+    params: Option<ShapeParams>,
+) -> HashMap<String, LadderProb> {
+    let Some(p) = params else {
+        return HashMap::new();
+    };
+    let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+    let inputs: Vec<LadderInput> = markets
+        .iter()
+        .map(|r| LadderInput {
+            venue: r.source.clone(),
+            city: r.city.clone(),
+            target: r.target_date,
+            captured: today,
+            market_id: r.market_id.clone(),
+            market_type: r.market_type.clone(),
+            threshold: r.threshold,
+            threshold_upper: r.threshold_upper,
+            unit: r.unit.clone(),
+            price: reference_price(r.price, r.best_bid, r.best_ask),
+            bid: r.best_bid.and_then(usable),
+            ask: r.best_ask.and_then(usable),
+            outcome: r.outcome,
+        })
+        .collect();
+    let mut out = HashMap::new();
+    for l in build_ladders(inputs) {
+        if l.is_complete() {
+            for (q, c) in l.shaped_probs(&p).iter().zip(&l.cells) {
+                out.insert(c.market_id.clone(), LadderProb::Prob(*q));
+            }
+        } else {
+            for c in &l.cells {
+                out.insert(c.market_id.clone(), LadderProb::Incomplete);
+            }
+        }
+    }
+    out
+}
+
+/// Why a market-shape run must not trade, if any breaker tripped: no fit yet (under
+/// `MIN_LADDERS` resolved ladders), the trailing replay under its floor on enough trades, or
+/// the weekly-loss breaker shared with the model strategy. Resuming is a human decision.
+fn shape_stand_down_reason(
+    run: &ShapeRun,
+    min_trailing_roi: f64,
+    week_pnl: f64,
+    week_settled: usize,
+    max_weekly_loss: f64,
+) -> Option<String> {
+    if run.params.is_none() {
+        return Some(format!(
+            "market-shape fit has {} resolved complete ladders, under the {MIN_LADDERS} it needs",
+            run.hist_n
+        ));
+    }
+    if run.trailing_n >= TRAILING_MIN_TRADES && run.trailing_roi < min_trailing_roi {
+        return Some(format!(
+            "trailing market-shape replay is {:+.1}% on {} trades, under the {:+.0}% floor — the \
+             edge has stopped realizing",
+            run.trailing_roi * 100.0,
+            run.trailing_n,
+            min_trailing_roi * 100.0
+        ));
+    }
+    if week_settled > 0 && week_pnl < -max_weekly_loss {
+        return Some(format!(
+            "trailing-7-day realized PnL ${week_pnl:+.2} breaches the −${max_weekly_loss:.2} \
+             weekly loss breaker"
+        ));
+    }
+    None
 }
 
 /// The same observations keyed two ways. One pass, two `ShrinkageFit`s: identical venue folds,
@@ -808,8 +1271,8 @@ fn reconciliation_by_order(rows: &[LedgerRow]) -> HashMap<String, &LedgerRow> {
 /// direction the breaker wants, since an order was placed because the model liked it.
 fn effective_fill(row: &LedgerRow, fills: &HashMap<String, &LedgerRow>) -> (i64, Option<f64>, f64) {
     match row.order_id.as_ref().and_then(|id| fills.get(id)) {
-        Some(f) => (f.contracts, f.no_price, f.cost),
-        None => (row.contracts, row.no_price, row.cost),
+        Some(f) => (f.contracts, paid_price(f), f.cost),
+        None => (row.contracts, paid_price(row), row.cost),
     }
 }
 
@@ -911,8 +1374,8 @@ async fn reconcile_orders(
             rec.decision,
             rec.contracts,
             row.contracts,
-            fmt(rec.no_price),
-            fmt(row.no_price),
+            fmt(paid_price(&rec)),
+            fmt(paid_price(row)),
             order.status
         );
         out.push(rec);
@@ -946,7 +1409,11 @@ fn reconciliation_row(
             )
         })
     };
-    let avg = (filled > 0).then(|| cost / filled as f64);
+    // Fills are NO-normalised; a YES order paid the complement per contract.
+    let avg_no = (filled > 0).then(|| cost / filled as f64);
+    let yes_side = order_row.side == "yes";
+    let paid = avg_no.map(|a| if yes_side { 1.0 - a } else { a });
+    let cost = paid.map_or(0.0, |p| filled as f64 * p);
     LedgerRow {
         run_at: now,
         ticker: order_row.ticker.clone(),
@@ -955,17 +1422,22 @@ fn reconciliation_row(
         decision: if filled > 0 { "fill" } else { "unfilled" }.into(),
         dry_run: false,
         yes_bid: None,
-        no_price: avg,
+        no_price: if yes_side { None } else { avg_no },
         model_estimate: None,
         lambda: 0.0,
         claimed_edge: None,
         shrunk_edge: None,
-        fee_frac: avg.map(fee_frac),
+        fee_frac: paid.map(fee_frac),
         contracts: filled,
         cost,
         order_id: order_row.order_id.clone(),
         order_status: Some(order.status.clone()),
         error: None,
+        strategy: order_row.strategy.clone(),
+        side: order_row.side.clone(),
+        price: paid,
+        yes_ask: None,
+        shape_estimate: None,
     }
 }
 
@@ -1000,15 +1472,21 @@ fn realized_week_pnl(
         if row.target_date < week_ago || row.target_date >= today {
             continue; // outside the trailing week, or not yet settled
         }
-        let (contracts, no_price, _) = effective_fill(row, &fills);
-        let (Some(no_price), Some(outcome)) = (no_price, outcomes.get(&row.ticker).copied()) else {
+        let (contracts, price, _) = effective_fill(row, &fills);
+        let (Some(price), Some(outcome)) = (price, outcomes.get(&row.ticker).copied()) else {
             continue;
         };
         if contracts <= 0 {
             continue; // never filled: nothing was at risk
         }
-        // BUY NO pays $1/contract when the market resolves NO (outcome 0); fee paid either way.
-        let per_contract = (1.0 - outcome) - no_price - fee_frac(no_price);
+        // A NO contract pays $1 when the market resolves NO (outcome 0), a YES contract when it
+        // resolves YES; the fee is paid either way, on the price paid.
+        let payout = if row.side == "yes" {
+            outcome
+        } else {
+            1.0 - outcome
+        };
+        let per_contract = payout - price - fee_frac(price);
         pnl += contracts as f64 * per_contract;
         settled += 1;
     }
@@ -1096,30 +1574,42 @@ fn append_ledger(path: &PathBuf, rows: &[LedgerRow]) -> Result<(), String> {
         .map_err(|e| format!("append {}: {e}", path.display()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ledger_row(
     r: &WeatherMarketRow,
     d: &Decision,
     est: Option<f64>,
+    shape_est: Option<f64>,
     lambda: f64,
     live: bool,
+    strategy: Strategy,
 ) -> LedgerRow {
-    let (decision, no_price, claimed, shrunk) = match d {
+    let (decision, side, price, claimed, shrunk) = match d {
         Decision::Order {
-            no_price,
+            side,
+            price,
             claimed,
             shrunk,
+            ..
         } => (
             "order".to_string(),
-            Some(*no_price),
+            *side,
+            Some(*price),
             Some(*claimed),
             Some(*shrunk),
         ),
-        Decision::Skip(reason) => (reason.to_string(), None, None, None),
+        Decision::Skip(reason) => (reason.to_string(), OrderSide::No, None, None, None),
         Decision::SkipWithEdge {
             reason,
             claimed,
             shrunk,
-        } => (reason.to_string(), None, Some(*claimed), Some(*shrunk)),
+        } => (
+            reason.to_string(),
+            OrderSide::No,
+            None,
+            Some(*claimed),
+            Some(*shrunk),
+        ),
     };
     LedgerRow {
         run_at: Utc::now(),
@@ -1129,17 +1619,26 @@ fn ledger_row(
         decision,
         dry_run: !live,
         yes_bid: r.best_bid,
-        no_price,
+        // `no_price` keeps its legacy meaning — the NO price paid — so only a NO order sets it.
+        no_price: match side {
+            OrderSide::No => price,
+            OrderSide::Yes => None,
+        },
         model_estimate: est,
         lambda,
         claimed_edge: claimed,
         shrunk_edge: shrunk,
-        fee_frac: no_price.map(fee_frac),
+        fee_frac: price.map(fee_frac),
         contracts: 0,
         cost: 0.0,
         order_id: None,
         order_status: None,
         error: None,
+        strategy: strategy.as_str().into(),
+        side: side.as_str().into(),
+        price,
+        yes_ask: r.best_ask,
+        shape_estimate: shape_est,
     }
 }
 
@@ -1178,11 +1677,14 @@ mod tests {
         // fee_frac(0.6) ≈ 0.0168; required = 0.05 + 0.0168 + 0.01 ≈ 0.077 → order.
         match decide_sell(today, tomorrow, Some(0.40), Some(0.10), 0.5, 0.05, 0.01) {
             Decision::Order {
-                no_price,
+                side,
+                price,
                 claimed,
                 shrunk,
+                ..
             } => {
-                assert!((no_price - 0.60).abs() < 1e-9);
+                assert_eq!(side, OrderSide::No);
+                assert!((price - 0.60).abs() < 1e-9);
                 assert!((claimed - 0.30).abs() < 1e-9);
                 assert!((shrunk - 0.15).abs() < 1e-9);
             }
@@ -1274,6 +1776,11 @@ mod tests {
             order_id: None,
             order_status: None,
             error: None,
+            strategy: "model-shrunk".into(),
+            side: "no".into(),
+            price: None,
+            yes_ask: None,
+            shape_estimate: None,
         }
     }
 
@@ -1404,12 +1911,12 @@ mod tests {
         let mut lines: Vec<String> = (0..ShrinkageFit::MIN_N)
             .map(|i| {
                 format!(
-                    r#"{{"captured_at":"2026-07-01","target_date":"2026-07-02","market_id":"m{i}","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.5,"model_estimate":0.7,"outcome":0.6,"source":"kalshi"}}"#
+                    r#"{{"captured_at":"2026-07-01","target_date":"2026-07-02","market_id":"m{i}","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.4,"model_estimate":0.6,"outcome":0.5,"source":"kalshi"}}"#
                 )
             })
             .collect();
         lines.push(
-            r#"{"captured_at":"2026-07-02","target_date":"2026-07-02","market_id":"day0","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.5,"model_estimate":0.9,"outcome":0.9,"source":"kalshi"}"#.to_string(),
+            r#"{"captured_at":"2026-07-02","target_date":"2026-07-02","market_id":"day0","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.4,"model_estimate":0.9,"outcome":0.9,"source":"kalshi"}"#.to_string(),
         );
         // A one-sided book (1¢ ask, no bid) carrying the venue's 0.50 placeholder as its last
         // trade. Read at the placeholder it would be x = −0.48, y = −0.50 — a near-perfect
@@ -1431,7 +1938,8 @@ mod tests {
             1,
             "the no-bid row lands in the tail band at its ask, not at 0.50"
         );
-        // The rows sit at mid 0.5, so the traded (≥ 10¢) segment carries the same fit — the
+        // The rows sit at a 0.4 last trade (bookless legacy rows; 0.50 exactly would be the
+        // never-traded placeholder), so the traded (≥ 10¢) segment carries the same fit — the
         // breaker's lookup must see it, proving observations were tagged, not bare-venue.
         let traded = fits.band.lambda_seg("kalshi", lambda_segment(0.10));
         assert!(
@@ -1737,5 +2245,411 @@ mod tests {
         let exp = open_city_exposure(&ledger, today, true);
         let nyc = exp[&("NYC".to_string(), d("2026-09-10"))];
         assert!((nyc - 10.0).abs() < 1e-9, "got {nyc}");
+    }
+
+    #[test]
+    fn shape_decision_trades_both_sides_and_names_every_skip() {
+        let (today, target) = (d("2026-09-07"), d("2026-09-08"));
+        let fee = |p: f64| 0.07 * p * (1.0 - p);
+        // Under-priced favourite: prob 0.62 vs ask 0.50 → BUY YES at the ask.
+        match decide_shape(
+            today,
+            target,
+            LadderProb::Prob(0.62),
+            Some(0.48),
+            Some(0.50),
+            0.03,
+            0.01,
+            0.10,
+        ) {
+            Decision::Order {
+                side,
+                price,
+                yes_price,
+                claimed,
+                shrunk,
+            } => {
+                assert_eq!(side, OrderSide::Yes);
+                assert!((price - 0.50).abs() < 1e-9 && (yes_price - 0.50).abs() < 1e-9);
+                assert!((claimed - 0.12).abs() < 1e-9);
+                assert!((shrunk - (0.12 - fee(0.50))).abs() < 1e-9);
+            }
+            other => panic!("expected a YES order, got {other:?}"),
+        }
+        // Over-priced tail: prob 0.04 vs bid 0.20 → BUY NO at 0.80.
+        match decide_shape(
+            today,
+            target,
+            LadderProb::Prob(0.04),
+            Some(0.20),
+            Some(0.22),
+            0.03,
+            0.01,
+            0.10,
+        ) {
+            Decision::Order {
+                side,
+                price,
+                yes_price,
+                ..
+            } => {
+                assert_eq!(side, OrderSide::No);
+                assert!((price - 0.80).abs() < 1e-9 && (yes_price - 0.20).abs() < 1e-9);
+            }
+            other => panic!("expected a NO order, got {other:?}"),
+        }
+        // Skips, each with its own name.
+        assert_eq!(
+            decide_shape(
+                today,
+                today,
+                LadderProb::Prob(0.04),
+                Some(0.20),
+                Some(0.22),
+                0.03,
+                0.01,
+                0.10
+            ),
+            Decision::Skip("skip_lead0")
+        );
+        assert_eq!(
+            decide_shape(
+                today,
+                target,
+                LadderProb::NoLadder,
+                Some(0.20),
+                Some(0.22),
+                0.03,
+                0.01,
+                0.10
+            ),
+            Decision::Skip("skip_no_ladder")
+        );
+        assert_eq!(
+            decide_shape(
+                today,
+                target,
+                LadderProb::Incomplete,
+                Some(0.20),
+                Some(0.22),
+                0.03,
+                0.01,
+                0.10
+            ),
+            Decision::Skip("skip_incomplete_ladder")
+        );
+        assert_eq!(
+            decide_shape(
+                today,
+                target,
+                LadderProb::Prob(0.5),
+                None,
+                None,
+                0.03,
+                0.01,
+                0.10
+            ),
+            Decision::Skip("skip_no_book")
+        );
+        // Edge inside the threshold: the diagnostics name the better side's raw and net edge.
+        match decide_shape(
+            today,
+            target,
+            LadderProb::Prob(0.52),
+            Some(0.49),
+            Some(0.50),
+            0.03,
+            0.01,
+            0.10,
+        ) {
+            Decision::SkipWithEdge {
+                reason,
+                claimed,
+                shrunk,
+            } => {
+                assert_eq!(reason, "skip_edge_below_costs");
+                // The better side is the BUY at the 0.50 ask (raw +0.02); the NO side is −0.03.
+                assert!(
+                    (claimed - 0.02).abs() < 1e-9 && (shrunk - (0.02 - fee(0.50))).abs() < 1e-9
+                );
+            }
+            other => panic!("expected a diagnostic skip, got {other:?}"),
+        }
+        // A big edge at a sub-floor quote is the floor's skip, not the threshold's.
+        match decide_shape(
+            today,
+            target,
+            LadderProb::Prob(0.01),
+            Some(0.08),
+            Some(0.09),
+            0.03,
+            0.01,
+            0.10,
+        ) {
+            Decision::SkipWithEdge { reason, .. } => assert_eq!(reason, "skip_price_floor"),
+            other => panic!("expected the floor skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_stand_down_needs_a_fit_and_a_realizing_edge() {
+        let ok = ShapeRun {
+            params: Some(ShapeParams {
+                bias_c: 0.2,
+                sigma_scale: 0.8,
+            }),
+            hist_n: 300,
+            trailing_roi: 0.08,
+            trailing_n: 120,
+        };
+        assert_eq!(shape_stand_down_reason(&ok, -0.10, 0.0, 0, 50.0), None);
+        let unfit = ShapeRun {
+            params: None,
+            hist_n: 12,
+            ..ok_copy(&ok)
+        };
+        assert!(shape_stand_down_reason(&unfit, -0.10, 0.0, 0, 50.0)
+            .unwrap()
+            .contains("12 resolved"));
+        let bleeding = ShapeRun {
+            trailing_roi: -0.25,
+            trailing_n: 40,
+            ..ok_copy(&ok)
+        };
+        assert!(shape_stand_down_reason(&bleeding, -0.10, 0.0, 0, 50.0)
+            .unwrap()
+            .contains("-25.0%"));
+        // Too few trailing trades to judge: the replay floor does not apply.
+        let thin = ShapeRun {
+            trailing_roi: -0.25,
+            trailing_n: 10,
+            ..ok_copy(&ok)
+        };
+        assert_eq!(shape_stand_down_reason(&thin, -0.10, 0.0, 0, 50.0), None);
+        // The weekly-loss breaker is shared.
+        assert!(shape_stand_down_reason(&ok, -0.10, -60.0, 3, 50.0)
+            .unwrap()
+            .contains("weekly loss"));
+    }
+
+    fn ok_copy(r: &ShapeRun) -> ShapeRun {
+        ShapeRun {
+            params: r.params,
+            hist_n: r.hist_n,
+            trailing_roi: r.trailing_roi,
+            trailing_n: r.trailing_n,
+        }
+    }
+
+    #[test]
+    fn weekly_pnl_pays_yes_orders_on_yes_and_fills_convert_the_side() {
+        let dir = std::env::temp_dir().join("pilot_test_yes_side");
+        let _ = std::fs::create_dir_all(&dir);
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let today = d("2026-09-10");
+        let mut yes = order_row("Y", "NYC", "2026-09-08", 0.55, 10, false);
+        yes.side = "yes".into();
+        yes.price = Some(0.45);
+        yes.no_price = None;
+        yes.cost = 4.5;
+        yes.strategy = "market-shape".into();
+        let no = order_row("N", "NYC", "2026-09-08", 0.60, 10, false);
+        write_jsonl(&ledger, &[yes, no]);
+        let cap_line = |id: &str, outcome: f64| {
+            format!(
+                r#"{{"captured_at":"2026-09-07","target_date":"2026-09-08","market_id":"{id}","entry_price":0.4,"model_estimate":0.4,"outcome":{outcome},"source":"kalshi"}}"#
+            )
+        };
+        std::fs::write(
+            &captures,
+            [cap_line("Y", 1.0), cap_line("N", 1.0)].join("\n"),
+        )
+        .unwrap();
+        let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
+        assert_eq!(settled, 2);
+        // Y resolved YES: the YES order wins 10×(0.55 − fee); the NO order loses 10×(0.60 + fee).
+        let expect = 10.0 * (0.55 - fee_frac(0.45)) + 10.0 * (-0.60 - fee_frac(0.60));
+        assert!((pnl - expect).abs() < 1e-9, "got {pnl}, want {expect}");
+        // A YES order's fill row converts the NO-normalised fill price to what was paid.
+        let mut order = order_row("Y", "NYC", "2026-09-08", 0.55, 10, false);
+        order.side = "yes".into();
+        order.price = Some(0.45);
+        order.order_id = Some("o1".into());
+        let ko = KalshiOrder {
+            order_id: "o1".into(),
+            ticker: "Y".into(),
+            status: "executed".into(),
+            count: Some(10),
+            remaining_count: Some(0),
+            no_price_cents: Some(55),
+        };
+        let fill = KalshiFill {
+            fill_id: "f".into(),
+            order_id: "o1".into(),
+            ticker: "Y".into(),
+            count: 10,
+            no_price_cents: 56,
+            is_taker: true,
+            created_time: String::new(),
+        };
+        let rec = reconciliation_row(&order, &ko, &[fill], Utc::now());
+        assert_eq!(rec.side, "yes");
+        assert!(
+            (rec.price.unwrap() - 0.44).abs() < 1e-9,
+            "paid 1 − 0.56 per YES contract"
+        );
+        assert!((rec.cost - 4.4).abs() < 1e-9);
+        assert_eq!(rec.no_price, None);
+        assert_eq!(rec.strategy, "model-shrunk");
+    }
+
+    /// The glue after the market fetch, end to end on a synthetic live ladder: `live_ladder_probs`
+    /// re-prices every cell of a complete ladder, marks an incomplete one, and `decide_shape`
+    /// turns the re-priced cells into orders on BOTH sides and named skips.
+    #[test]
+    fn live_ladder_probs_and_decide_shape_glue_end_to_end() {
+        let today = d("2026-09-07");
+        let target = d("2026-09-08");
+        let row =
+            |id: &str, mt: &str, t: f64, tu: Option<f64>, bid: f64, ask: f64| WeatherMarketRow {
+                target_date: target,
+                market_id: id.into(),
+                market_title: String::new(),
+                market_type: mt.into(),
+                threshold: t,
+                threshold_upper: tu,
+                unit: Some("F".into()),
+                city: "NYC".into(),
+                price: (bid + ask) / 2.0,
+                outcome: None,
+                source: "kalshi".into(),
+                best_bid: Some(bid),
+                best_ask: Some(ask),
+                volume: None,
+                volume_24h: None,
+                open_interest: None,
+                liquidity: None,
+            };
+        // A ladder priced roughly Normal(88 °F, 2 °F): the market is wide and, under a +0.3 °C /
+        // ×0.8 re-shaping, its centre bucket is under-priced and its cold tail over-priced.
+        let markets = vec![
+            row("LO", "temp_at_most", 83.0, None, 0.06, 0.08),
+            row("B84", "temp_bucket", 84.0, Some(85.0), 0.14, 0.16),
+            row("B86", "temp_bucket", 86.0, Some(87.0), 0.24, 0.26),
+            row("B88", "temp_bucket", 88.0, Some(89.0), 0.27, 0.29),
+            row("B90", "temp_bucket", 90.0, Some(91.0), 0.17, 0.19),
+            row("HI", "temp_at_least", 92.0, None, 0.07, 0.09),
+            // A second city with only two markets captured: not a ladder at all.
+            WeatherMarketRow {
+                city: "Boston".into(),
+                ..row("BOS1", "temp_bucket", 70.0, Some(71.0), 0.40, 0.42)
+            },
+            WeatherMarketRow {
+                city: "Boston".into(),
+                ..row("BOS2", "temp_bucket", 72.0, Some(73.0), 0.30, 0.32)
+            },
+        ];
+        let params = Some(ShapeParams {
+            bias_c: 0.3,
+            sigma_scale: 0.8,
+        });
+        let probs = live_ladder_probs(&markets, today, params);
+        assert_eq!(
+            probs.len(),
+            6,
+            "only the complete NYC ladder is priced: {probs:?}"
+        );
+        assert!(!probs.contains_key("BOS1"));
+        let total: f64 = probs
+            .values()
+            .map(|p| match p {
+                LadderProb::Prob(q) => *q,
+                _ => 0.0,
+            })
+            .sum();
+        assert!(
+            (total - 1.0).abs() < 0.02,
+            "re-shaped cells still sum to ~1: {total}"
+        );
+        // No parameters ⇒ nothing priced (the breaker has stood the run down anyway).
+        assert!(live_ladder_probs(&markets, today, None).is_empty());
+
+        let mut orders = Vec::new();
+        for m in &markets {
+            let lp = probs
+                .get(&m.market_id)
+                .copied()
+                .unwrap_or(LadderProb::NoLadder);
+            let dcs = decide_shape(today, target, lp, m.best_bid, m.best_ask, 0.03, 0.01, 0.10);
+            match (&dcs, m.market_id.as_str()) {
+                (Decision::Skip(r), "BOS1" | "BOS2") => assert_eq!(*r, "skip_no_ladder"),
+                (Decision::Order { side, price, .. }, id) => {
+                    orders.push((id.to_string(), *side, *price))
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            orders
+                .iter()
+                .any(|(id, side, _)| id == "B88" && *side == OrderSide::Yes),
+            "the sharpened centre is bought as YES: {orders:?}"
+        );
+        assert!(
+            orders.iter().any(|(_, side, _)| *side == OrderSide::No),
+            "an over-priced tail is bought as NO: {orders:?}"
+        );
+        assert!(orders.iter().all(|(_, _, p)| *p > 0.0 && *p < 1.0));
+    }
+
+    #[test]
+    fn placement_ranks_by_net_edge_then_ticker() {
+        let mk = |id: &str| WeatherMarketRow {
+            target_date: d("2026-09-08"),
+            market_id: id.into(),
+            market_title: String::new(),
+            market_type: "temp_bucket".into(),
+            threshold: 80.0,
+            threshold_upper: Some(81.0),
+            unit: Some("F".into()),
+            city: "NYC".into(),
+            price: 0.5,
+            outcome: None,
+            source: "kalshi".into(),
+            best_bid: Some(0.49),
+            best_ask: Some(0.51),
+            volume: None,
+            volume_24h: None,
+            open_interest: None,
+            liquidity: None,
+        };
+        let (a, b, c, e) = (mk("A"), mk("B"), mk("C"), mk("E"));
+        let order = |shrunk: f64| Decision::Order {
+            side: OrderSide::No,
+            price: 0.7,
+            yes_price: 0.3,
+            claimed: shrunk + 0.02,
+            shrunk,
+        };
+        let mut decided = vec![
+            (
+                &a,
+                Decision::Skip("skip_lead0"),
+                None::<f64>,
+                None::<f64>,
+                1.0,
+            ),
+            (&b, order(0.05), None, None, 1.0),
+            (&c, order(0.11), None, None, 1.0),
+            (&e, order(0.05), None, None, 1.0),
+        ];
+        rank_for_placement(&mut decided);
+        let ids: Vec<&str> = decided.iter().map(|x| x.0.market_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["C", "B", "E", "A"],
+            "largest edge first, ties by ticker, skips last"
+        );
     }
 }

@@ -114,7 +114,11 @@ def ref_price(r):
     elif reported_book:
         px = None
     else:
+        # A no-book row's last trade -- unless it is exactly the 0.50 both venues answer for a
+        # market nobody ever traded (21 of the first three days' 241 no-book Polymarket rows).
         px = r.get("entry_price")
+        if px is not None and abs(px - 0.5) < 1e-9:
+            px = None
     return usable(px)
 
 
