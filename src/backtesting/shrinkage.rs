@@ -21,6 +21,8 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{Duration, NaiveDate};
+
 /// The λ segment a price falls in. One boundary, at 10¢: `scripts/lambda_diagnostics.py`
 /// (2026-07-26) found λ negative on BOTH sides below it and healthy on both sides above it, and
 /// the walk-forward prototype showed the single-boundary scheme is where nearly all the gain is
@@ -36,13 +38,31 @@ pub fn lambda_segment(px: f64) -> &'static str {
     }
 }
 
+/// Trailing window (in days of resolved target dates) for the drift view of λ. The full-sample
+/// slope grows sluggish as history accrues — a two-week anti-signal stretch barely moves it — so
+/// the trailing slope is the early-warning view. Shared by the dashboard's λ diagnostics and the
+/// `segment_veto` trailing check, so the number a human watches on the dashboard is the number
+/// the pilot acts on.
+pub const TRAIL_WINDOW_DAYS: i64 = 14;
+/// Minimum rows inside the trailing window before its slope is trusted at all; under this it is
+/// mostly noise and the trailing check simply does not apply.
+pub const TRAIL_MIN_N: usize = 20;
+
 #[derive(Default)]
 pub struct ShrinkageFit {
     /// (venue, segment) → (Σx², Σxy, n) running sums for the through-origin slope Σxy/Σx².
     /// Untagged observations land under segment `""`. BTreeMap, not HashMap: folds sum floats in
     /// key order, so every fold is deterministic run to run (determinism is load-bearing here).
     by_key: BTreeMap<(String, String), (f64, f64, usize)>,
+    /// (venue, segment) → dated (x, y) observations, populated only by `observe_seg_dated`, for
+    /// `trailing_slope`. The running sums above answer "what has this segment done, ever"; a
+    /// trailing window answers "what has it done lately", which is a different question once the
+    /// segment has enough history that its full-sample slope can no longer move on a bad fortnight.
+    dated: BTreeMap<(String, String), Vec<DatedObs>>,
 }
+
+/// One dated λ observation: (target date, claimed edge, realized edge).
+type DatedObs = (NaiveDate, f64, f64);
 
 impl ShrinkageFit {
     /// Minimum resolved rows before a fitted λ is trusted over the fallback chain
@@ -63,6 +83,45 @@ impl ShrinkageFit {
         e.0 += predicted * predicted;
         e.1 += predicted * realized;
         e.2 += 1;
+    }
+
+    /// `observe_seg`, additionally remembering the observation's target date so `trailing_slope`
+    /// can answer for a window. The running sums are updated identically, so every existing lookup
+    /// (`lambda`, `lambda_seg`, `n_seg`, `rows*`) is unchanged by which observe variant fed it.
+    pub fn observe_seg_dated(
+        &mut self,
+        venue: &str,
+        segment: &str,
+        date: NaiveDate,
+        predicted: f64,
+        realized: f64,
+    ) {
+        self.observe_seg(venue, segment, predicted, realized);
+        self.dated
+            .entry((venue.to_string(), segment.to_string()))
+            .or_default()
+            .push((date, predicted, realized));
+    }
+
+    /// Raw (unclamped, no fallback) through-origin slope over the segment's dated observations
+    /// with target date in the `TRAIL_WINDOW_DAYS`-day window ending at `as_of`, and the row count
+    /// behind it. A diagnostic value, not a trading value: it can be negative, and it is `None`
+    /// under `TRAIL_MIN_N` rows rather than falling back to anything — a thin window says nothing.
+    /// Only observations recorded through `observe_seg_dated` are visible here.
+    pub fn trailing_slope(&self, venue: &str, segment: &str, as_of: NaiveDate) -> Option<f64> {
+        let from = as_of - Duration::days(TRAIL_WINDOW_DAYS - 1);
+        let (xx, xy, n) = self
+            .dated
+            .get(&(venue.to_string(), segment.to_string()))
+            .map(|v| {
+                v.iter()
+                    .filter(|(d, _, _)| *d >= from && *d <= as_of)
+                    .fold((0.0, 0.0, 0usize), |a, (_, x, y)| {
+                        (a.0 + x * x, a.1 + x * y, a.2 + 1)
+                    })
+            })
+            .unwrap_or((0.0, 0.0, 0));
+        (n >= TRAIL_MIN_N && xx > 0.0).then(|| xy / xx)
     }
 
     fn slope(sums: &(f64, f64, usize)) -> Option<f64> {
@@ -160,12 +219,25 @@ impl ShrinkageFit {
 /// under `MIN_N`, so a segment with no fit of its own still reports a plausible λ — on 2026-08-25
 /// every one of the eight then-new Kalshi cities answered with the venue's healthy 0.355 while
 /// three of them were running negative slopes. Coverage is therefore checked FIRST, via `n_seg`.
+///
+/// The third check exists because the first two have a blind spot that cost the pilot three
+/// straight trades. A full-sample λ over hundreds of rows cannot move on a bad fortnight: Kalshi LA
+/// flipped from a −0.96 °C to a +1.35 °C residual regime on 2026-08-31 (mean z +1.72 over four
+/// days), the pilot sold three LA buckets that all hit, and LA's full-sample λ stayed at +0.35 on
+/// n=318 — comfortably above the floor. Vegas was caught only because it was NEW; a mature city
+/// going wrong is invisible to the first two checks for weeks. So the segment's trailing
+/// `TRAIL_WINDOW_DAYS` slope, as of the caller's date, is held to the same floor. The window and
+/// its minimum are the dashboard's own drift-diagnostic constants, chosen there long before this
+/// gate existed — not fitted to the LA sample that motivated it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentVeto {
     /// Fewer than `ShrinkageFit::MIN_N` resolved rows: nothing has measured this segment forward.
     Unvalidated,
-    /// Fitted λ under the caller's floor: measured, and the disagreements are anti-signal.
+    /// Fitted full-sample λ under the caller's floor: measured, and the disagreements are anti-signal.
     BelowFloor,
+    /// Full-sample λ is fine but the trailing `TRAIL_WINDOW_DAYS` slope (≥ `TRAIL_MIN_N` rows)
+    /// is under the floor: the segment has gone wrong RECENTLY and history is masking it.
+    TrailingBelowFloor,
 }
 
 pub fn segment_veto(
@@ -173,11 +245,17 @@ pub fn segment_veto(
     venue: &str,
     segment: &str,
     floor: f64,
+    as_of: NaiveDate,
 ) -> Option<SegmentVeto> {
     if fit.n_seg(venue, segment) < ShrinkageFit::MIN_N {
         return Some(SegmentVeto::Unvalidated);
     }
-    (fit.lambda_seg(venue, segment) < floor).then_some(SegmentVeto::BelowFloor)
+    if fit.lambda_seg(venue, segment) < floor {
+        return Some(SegmentVeto::BelowFloor);
+    }
+    fit.trailing_slope(venue, segment, as_of)
+        .filter(|s| *s < floor)
+        .map(|_| SegmentVeto::TrailingBelowFloor)
 }
 
 #[cfg(test)]
@@ -253,34 +331,83 @@ mod tests {
         assert!(fit.lambda_seg("kalshi", "Vegas") > 0.0);
     }
 
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
     #[test]
     fn segment_veto_checks_coverage_before_slope() {
         let mut fit = ShrinkageFit::default();
         feed(&mut fit, "kalshi", "Miami", 0.75, ShrinkageFit::MIN_N);
         feed(&mut fit, "kalshi", "Denver", -0.2, ShrinkageFit::MIN_N);
         feed(&mut fit, "kalshi", "Vegas", 0.9, ShrinkageFit::MIN_N - 1);
-        let floor = 0.2;
-        assert_eq!(segment_veto(&fit, "kalshi", "Miami", floor), None);
+        let (floor, today) = (0.2, d("2026-09-06"));
+        assert_eq!(segment_veto(&fit, "kalshi", "Miami", floor, today), None);
         assert_eq!(
-            segment_veto(&fit, "kalshi", "Denver", floor),
+            segment_veto(&fit, "kalshi", "Denver", floor, today),
             Some(SegmentVeto::BelowFloor)
         );
         // One row short, with a slope that would sail through the floor if it were trusted —
         // and `lambda_seg` reports the venue fold for it, which is exactly the trap.
         assert!(fit.lambda_seg("kalshi", "Vegas") > floor);
         assert_eq!(
-            segment_veto(&fit, "kalshi", "Vegas", floor),
+            segment_veto(&fit, "kalshi", "Vegas", floor, today),
             Some(SegmentVeto::Unvalidated)
         );
         // Never seen, and an empty fit: withheld, not waved through on the 1.0 no-shrink default.
         assert_eq!(
-            segment_veto(&fit, "kalshi", "Nowhere", floor),
+            segment_veto(&fit, "kalshi", "Nowhere", floor, today),
             Some(SegmentVeto::Unvalidated)
         );
         assert_eq!(
-            segment_veto(&ShrinkageFit::default(), "kalshi", "Miami", floor),
+            segment_veto(&ShrinkageFit::default(), "kalshi", "Miami", floor, today),
             Some(SegmentVeto::Unvalidated)
         );
+    }
+
+    /// The LA shape in miniature: a long healthy history that pins the full-sample λ well above
+    /// the floor, then a fortnight of anti-signal that the full-sample fit cannot see.
+    #[test]
+    fn trailing_veto_catches_a_mature_segment_that_has_gone_wrong_recently() {
+        let mut fit = ShrinkageFit::default();
+        let floor = 0.2;
+        // 60 days × 5 rows of healthy λ 0.5, target dates 2026-06-01 .. 2026-07-30.
+        for i in 0..60 {
+            let day = d("2026-06-01") + Duration::days(i);
+            for _ in 0..5 {
+                fit.observe_seg_dated("kalshi", "LA", day, 0.1, 0.05);
+            }
+        }
+        // Then 5 days × 5 rows of λ −0.5 — 25 rows, over TRAIL_MIN_N — ending 2026-08-04.
+        for i in 0..5 {
+            let day = d("2026-07-31") + Duration::days(i);
+            for _ in 0..5 {
+                fit.observe_seg_dated("kalshi", "LA", day, 0.1, -0.05);
+            }
+        }
+        let today = d("2026-08-04");
+        // Full-sample λ barely notices: 300 healthy rows against 25 bad ones.
+        let full = fit.lambda_seg("kalshi", "LA");
+        assert!(full > floor, "full-sample λ should still look healthy, got {full}");
+        // The trailing 14-day window ending today is 9 healthy days (45 rows) + 5 bad (25 rows):
+        // slope (45·0.005 − 25·0.005)/(70·0.01) = 0.143 < 0.2. Vetoed on the trailing check.
+        let trail = fit.trailing_slope("kalshi", "LA", today).unwrap();
+        assert!(trail < floor, "trailing slope should be under the floor, got {trail}");
+        assert_eq!(
+            segment_veto(&fit, "kalshi", "LA", floor, today),
+            Some(SegmentVeto::TrailingBelowFloor)
+        );
+        // Asked as of a date before the bad stretch, the same fit passes: the veto is causal.
+        assert_eq!(
+            segment_veto(&fit, "kalshi", "LA", floor, d("2026-07-30")),
+            None
+        );
+        // A window with too few rows says nothing rather than something: undated observations
+        // never populate it, so a fit fed via plain `observe_seg` has no trailing opinion.
+        let mut undated = ShrinkageFit::default();
+        feed(&mut undated, "kalshi", "LA", 0.5, ShrinkageFit::MIN_N);
+        assert_eq!(undated.trailing_slope("kalshi", "LA", today), None);
+        assert_eq!(segment_veto(&undated, "kalshi", "LA", floor, today), None);
     }
 
     #[test]

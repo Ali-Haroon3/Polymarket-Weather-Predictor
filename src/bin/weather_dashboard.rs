@@ -11,7 +11,7 @@ use chrono::{Duration, NaiveDate};
 use polymarket_weather_predictor::backtesting::{
     evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
     kelly_fraction_of_capital, lambda_segment, segment_veto, MarketEvaluation, RealMarketLoader,
-    ShrinkageFit,
+    ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -459,6 +459,10 @@ fn shrink_obs_of(c: &Capture) -> Option<ShrinkObs> {
     })
 }
 
+/// One λ observation queued inside `run_strategy` until the walk moves past its date:
+/// (venue, price-band segment, city, target date, claimed edge, realized edge).
+type PendingObs = (String, &'static str, String, NaiveDate, f64, f64);
+
 /// The resolved lead ≥ 1 observations the shrinkage fit runs on, sorted by target date. Shared by
 /// the full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is
 /// fitted on exactly the same rows.
@@ -486,17 +490,13 @@ fn fit_shrinkage(captures: &[Capture]) -> ShrinkageFit {
 fn fit_city_shrinkage(captures: &[Capture]) -> ShrinkageFit {
     let mut fit = ShrinkageFit::default();
     for o in shrinkage_obs(captures) {
-        fit.observe_seg(&o.venue, &o.city, o.x, o.y);
+        fit.observe_seg_dated(&o.venue, &o.city, o.date, o.x, o.y);
     }
     fit
 }
 
-/// Trailing window (in days of resolved target dates) for the λ-drift diagnostics. The
-/// full-sample slope grows sluggish as history accrues — a two-week anti-signal stretch barely
-/// moves it — so the trailing slope is the early-warning view.
-const TRAIL_WINDOW_DAYS: i64 = 14;
-/// Minimum window rows before a trailing slope is shown; under this the slope is mostly noise.
-const TRAIL_MIN_N: usize = 20;
+// `TRAIL_WINDOW_DAYS` / `TRAIL_MIN_N` moved to `backtesting::shrinkage` on 2026-09-06 so the
+// drift diagnostics drawn here and the trailing veto the pilot acts on share one window.
 
 /// Raw through-origin slope over one venue's observations with target date in [from, to]:
 /// (slope, n). Unlike `ShrinkageFit::lambda` this is unclamped and has no fallback chain — it is
@@ -688,11 +688,16 @@ fn passes_book_spread(c: &Capture, p: &StrategyParams) -> bool {
 /// Market-level eligibility for `city_lambda_floor`, read off the walk-forward city fit as of this
 /// row's date. Unlike the retired literal list this covers BOTH venues, so Polymarket's own
 /// anti-signal cities are withheld too — the hand-picked row never named one.
-fn passes_city_lambda(c: &Capture, p: &StrategyParams, city_fit: &ShrinkageFit) -> bool {
+fn passes_city_lambda(
+    c: &Capture,
+    p: &StrategyParams,
+    city_fit: &ShrinkageFit,
+    as_of: NaiveDate,
+) -> bool {
     let Some(floor) = p.city_lambda_floor else {
         return true;
     };
-    segment_veto(city_fit, &c.source, &c.city, floor).is_none()
+    segment_veto(city_fit, &c.source, &c.city, floor, as_of).is_none()
 }
 
 /// Market-level eligibility for `venue`.
@@ -718,8 +723,8 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     // The same observations keyed by city, for `city_lambda_floor`. Fed from the same queue below,
     // so it inherits the identical walk-forward and same-day-resolution hygiene.
     let mut city_fit = ShrinkageFit::default();
-    // Current date's rows, not yet observable: (venue, segment, city, claimed, realized).
-    let mut pending: Vec<(String, &'static str, String, f64, f64)> = Vec::new();
+    // Current date's rows, not yet observable.
+    let mut pending: Vec<PendingObs> = Vec::new();
     let mut fit_date: Option<NaiveDate> = None;
 
     let mut equity = p.bankroll;
@@ -728,23 +733,23 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         // Same-day markets resolve together: fold a date's rows into the fit only once the walk
         // moves past it, so no trade sees its own (or a same-day) outcome.
         if fit_date != Some(c.target_date) {
-            for (venue, seg, city, x, y) in pending.drain(..) {
+            for (venue, seg, city, date, x, y) in pending.drain(..) {
                 fit.observe_seg(&venue, seg, x, y);
-                city_fit.observe_seg(&venue, &city, x, y);
+                city_fit.observe_seg_dated(&venue, &city, date, x, y);
             }
             fit_date = Some(c.target_date);
         }
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
         if let Some(o) = shrink_obs_of(c) {
-            pending.push((o.venue, o.segment, o.city, o.x, o.y));
+            pending.push((o.venue, o.segment, o.city, o.date, o.x, o.y));
         }
         // Gate before decide(), but AFTER the row is queued into the λ fit: filtered rows are
         // still evidence about how real the model's claimed edges are, whether or not this
         // config trades them.
         if !passes_forecast_distance(c, p)
             || !passes_book_spread(c, p)
-            || !passes_city_lambda(c, p, &city_fit)
+            || !passes_city_lambda(c, p, &city_fit, c.target_date)
             || !passes_venue(c, p)
         {
             continue;
@@ -1633,13 +1638,19 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // resolution predates any open market's outcome.
     let open_fit = sp.shrink_edge.then(|| fit_shrinkage(captures));
     let open_city_fit = fit_city_shrinkage(captures);
+    // "As of" for the open book's trailing check: the latest resolved target date, i.e. the last
+    // day the fit could have learned anything from — the same anchor the λ diagnostics table uses.
+    let open_as_of = shrinkage_obs(captures)
+        .last()
+        .map(|o| o.date)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
     let mut open: Vec<(&Capture, &'static str, f64, f64, f64)> = captures
         .iter()
         .filter(|c| c.outcome.is_none())
         .filter(|c| {
             passes_forecast_distance(c, sp)
                 && passes_book_spread(c, sp)
-                && passes_city_lambda(c, sp, &open_city_fit)
+                && passes_city_lambda(c, sp, &open_city_fit, open_as_of)
                 && passes_venue(c, sp)
         })
         .filter_map(|c| {

@@ -12,4 +12,6 @@ pub use backtest_engine::{
 pub use market_simulator::{fahrenheit_to_celsius, MarketSimulator};
 pub use performance_metrics::{PerformanceAnalyzer, PerformanceMetrics};
 pub use real_market_loader::{RealMarketLoadError, RealMarketLoader};
-pub use shrinkage::{lambda_segment, segment_veto, SegmentVeto, ShrinkageFit};
+pub use shrinkage::{
+    lambda_segment, segment_veto, SegmentVeto, ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
+};
