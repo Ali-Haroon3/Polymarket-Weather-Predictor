@@ -3,9 +3,14 @@
 # tables in src/stations.rs were fitted at (launchd's 9:00 Denver drifts an hour with DST; this
 # doesn't). Scheduled at 14:50, not 15:00 — top-of-hour crons queue behind GitHub's rush and can
 # slip badly (the Jul 13 run fired at 16:01); an off-peak minute lands closer to the target hour
-# on average. Every API this workflow touches is anonymous, so there are no secrets here: the
-# kalshi_pilot step is dry-run only and, finding no trade credentials, degrades to ledger-only
-# dedupe by design (going --live is a human act on a credentialed machine, never this file's).
+# on average. Capture and dashboard touch only anonymous APIs. The kalshi_pilot step is the
+# canonical driver in BOTH of its modes: dry by default (no credentials ⇒ ledger-only dedupe,
+# paper decisions accrue for the go-live gate), and LIVE — real limit orders — only when the
+# repository variable PILOT_LIVE is "1" AND the KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM
+# secrets are set. The trade host comes from the KALSHI_BASE_URL variable (unset ⇒ the code's
+# demo default), so real money needs two explicit settings in the GitHub UI: PILOT_LIVE=1 and
+# KALSHI_BASE_URL=https://api.elections.kalshi.com. Neither is a code change, and flipping
+# PILOT_LIVE back (or setting the PILOT_DISABLE variable to 1) stands the pilot down next morning.
 name: daily-capture
 
 on:
@@ -68,15 +73,39 @@ jobs:
         continue-on-error: true
         run: ./target/release/capture_prices
 
-      - name: Kalshi pilot (dry run)
+      - name: Go-live gate readout
         if: steps.guard.outputs.already != 'true'
-        # Paper decisions only — no --live and no credentials here, so the pilot degrades to
-        # ledger-only dedupe and appends every intended order and skip to data/pilot_trades.jsonl.
-        # This is the go-live gate's evidence accruing daily: settled dry orders feed the weekly
-        # -loss breaker rehearsal and the paper-PnL readout. Runs after capture (fresh λ fit and
-        # outcomes), tolerates failure so a pilot hiccup can't block the dashboard.
+        # The decision rule (scripts/go_live_gate.py) scored on the ledger as of this morning,
+        # printed into every run's log so the verdict travels with the data it was read from.
+        # Advisory: it does not gate the step below — arming is a human act (PILOT_LIVE).
         continue-on-error: true
-        run: ./target/release/kalshi_pilot
+        run: python3 scripts/go_live_gate.py
+
+      - name: Kalshi pilot
+        if: steps.guard.outputs.already != 'true'
+        # Runs after capture (fresh λ fit and outcomes); tolerates failure so a pilot hiccup can't
+        # block the dashboard. Dry by default: every intended order and skip is appended to
+        # data/pilot_trades.jsonl — the go-live gate's evidence. With PILOT_LIVE=1 the SAME code
+        # path places real limit orders (TTL-bounded, see the pilot's docs), reconciles earlier
+        # ones into `fill`/`unfilled` rows, and the commit step below carries the ledger home.
+        # One mode per day: the ledger dedupe is mode-scoped, so a dry run must not precede a
+        # live one on the same morning. The 15:27 backup re-executes this step only when the
+        # primary left no captures for today; a credentialed pilot then dedupes against Kalshi's
+        # own resting orders and positions, so a lost commit cannot double-order.
+        continue-on-error: true
+        env:
+          PILOT_LIVE: ${{ vars.PILOT_LIVE }}
+          PILOT_DISABLE: ${{ vars.PILOT_DISABLE }}
+          KALSHI_BASE_URL: ${{ vars.KALSHI_BASE_URL }}
+          KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
+          KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+        run: |
+          if [ "$PILOT_LIVE" = "1" ]; then
+            echo "::warning::PILOT_LIVE=1 — placing REAL limit orders against ${KALSHI_BASE_URL:-<code default: demo host>}"
+            ./target/release/kalshi_pilot --live
+          else
+            ./target/release/kalshi_pilot
+          fi
 
       - name: Render dashboard
         if: steps.guard.outputs.already != 'true'
