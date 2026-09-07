@@ -57,16 +57,36 @@
 //! dashboard's hand-picked `skip_anti_lambda_cities` row froze on 08-17 and has been unable to
 //! extend since.
 //!
+//! The REAL-MONEY path (2026-09-07) closes the gaps a paper run never exercised. Every live
+//! limit order carries an `expiration_ts` (`--order-ttl-mins`, default 4 h): the order is priced
+//! off the ~15:00 UTC capture geometry at lead ≥ 1, and a good-till-cancelled remainder that
+//! filled the next morning would be exactly the lead-0 trade the evidence says loses. Each run
+//! then RECONCILES its earlier live orders — asks Kalshi for the order and its fills and appends
+//! a `fill` (or `unfilled`) row naming what actually executed, at what average NO price, with
+//! which terminal status — so the ledger holds intended-vs-filled per order, the number the
+//! pilot exists to measure. A remainder still resting once its target day has arrived is
+//! cancelled by a live run before anything else happens (a dry run only says it would). The
+//! loss breaker, the city-exposure cap and the go-live gate read the fill row when one exists
+//! and fall back to the intended fill (conservative: assumes the whole order filled) until it
+//! does. Ledger dedupe is same-mode only, like every other ledger read: a dry row is a paper
+//! decision and must not block the live order it rehearsed. The daily-capture Action is the
+//! canonical driver in BOTH modes — it runs `--live` when the repository variable `PILOT_LIVE`
+//! is `1` and the `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, against
+//! `vars.KALSHI_BASE_URL` (unset ⇒ the demo host), so arming real money is two settings in the
+//! GitHub UI and never a code change.
+//!
 //!   cargo run --release --bin kalshi_pilot            # dry run: print + log intended orders
 //!   cargo run --release --bin kalshi_pilot -- --live  # place real limit orders
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use polymarket_weather_predictor::api::kalshi_trade::{fee_frac, KalshiTradeClient};
+use polymarket_weather_predictor::api::kalshi_trade::{
+    fee_frac, KalshiFill, KalshiOrder, KalshiTradeClient,
+};
 use polymarket_weather_predictor::api::{KalshiHistoryDownloader, WeatherMarketRow};
 use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs,
@@ -96,6 +116,15 @@ const DEFAULT_MAX_WEEKLY_LOSS: f64 = 50.0;
 /// Per-(city, target-day) exposure cap, in multiples of the stake: bucket markets on the same
 /// city-day settle on the SAME daily high, so stacking them is pyramiding one bet.
 const DEFAULT_CITY_EXPOSURE_STAKES: f64 = 2.0;
+/// How long an unfilled live limit order may rest (minutes) before Kalshi expires it. A limit at
+/// the executable bid fills as a taker at once when the book has size; whatever rests is the
+/// market having moved away, and chasing it into the target day is the lead-0 trade the
+/// strategy forbids. 4 h from a ~15:00 UTC run ends before any US city's local day rolls over.
+/// 0 ⇒ good-till-cancelled (not recommended).
+const DEFAULT_ORDER_TTL_MINS: i64 = 240;
+/// Stop asking Kalshi about a live order this many days after its target day: by then its
+/// market has long settled and the answer cannot change what the pilot does next.
+const RECONCILE_GIVE_UP_DAYS: i64 = 14;
 
 /// One ledger line: every decision the pilot makes, tradable or not, dry or live.
 #[derive(Debug, Serialize, Deserialize)]
@@ -178,6 +207,7 @@ struct PilotConfig {
     lambda_floor: f64,
     max_weekly_loss: f64,
     max_city_exposure: f64,
+    order_ttl_mins: i64,
     captures_path: PathBuf,
     ledger_path: PathBuf,
 }
@@ -219,6 +249,9 @@ fn parse_args() -> PilotConfig {
         lambda_floor: fval("--lambda-floor", DEFAULT_LAMBDA_FLOOR),
         max_weekly_loss: fval("--max-weekly-loss", DEFAULT_MAX_WEEKLY_LOSS),
         max_city_exposure: fval("--max-city-exposure", DEFAULT_CITY_EXPOSURE_STAKES * stake),
+        order_ttl_mins: val("--order-ttl-mins")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_ORDER_TTL_MINS),
         captures_path: PathBuf::from(
             val("--captures").unwrap_or_else(|| "data/captures.jsonl".into()),
         ),
@@ -309,6 +342,18 @@ async fn run() -> Result<(), String> {
                 },
                 if cfg.live { "LIVE" } else { "DRY RUN" }
             );
+            if cfg.live && t.is_production() {
+                println!(
+                    "*** REAL MONEY *** stake ${:.2} · max {} orders/run · exposure cap ${:.2} · \
+                     city cap ${:.2} · order TTL {} min · weekly-loss breaker ${:.2}",
+                    cfg.stake,
+                    cfg.max_orders,
+                    cfg.max_exposure,
+                    cfg.max_city_exposure,
+                    cfg.order_ttl_mins,
+                    cfg.max_weekly_loss
+                );
+            }
             let balance = t.balance().await.map_err(|e| e.to_string())?;
             let positions = t.positions().await.map_err(|e| e.to_string())?;
             let resting = t.resting_orders().await.map_err(|e| e.to_string())?;
@@ -321,6 +366,16 @@ async fn run() -> Result<(), String> {
         }
         None => (0.0, Vec::new(), Vec::new()),
     };
+
+    // What became of the live orders placed by earlier runs: fills, expiries, and — in a live
+    // run — the cancel of anything still resting on its target day. Written down before today's
+    // decisions so the breaker's next read and the go-live gate see real fills, not intentions.
+    if let Some(t) = &trader {
+        let reconciled = reconcile_orders(t, &cfg.ledger_path, today, cfg.live).await;
+        if !reconciled.is_empty() {
+            append_ledger(&cfg.ledger_path, &reconciled)?;
+        }
+    }
     // Live orders can never commit more than the funds actually there, whatever --max-exposure
     // says. Dry runs keep the configured cap so the ledger shows what a funded account would do.
     let exposure_cap = if cfg.live {
@@ -329,10 +384,11 @@ async fn run() -> Result<(), String> {
         cfg.max_exposure
     };
 
-    // Dedupe set: anything held, resting, or ever decided "order" in the ledger.
+    // Dedupe set: anything held, resting, or decided "order" by an earlier run IN THIS MODE —
+    // a dry row is a paper decision and must not block the live order it rehearsed.
     let mut committed: HashSet<String> = positions.iter().map(|p| p.ticker.clone()).collect();
     committed.extend(resting.iter().map(|o| o.ticker.clone()));
-    committed.extend(load_ordered_tickers(&cfg.ledger_path));
+    committed.extend(load_ordered_tickers(&cfg.ledger_path, cfg.live));
 
     // Correlated-exposure ledger: dollars already committed per (city, target day) by earlier
     // runs whose markets are still open. Same-mode rows only, like the loss breaker.
@@ -408,14 +464,20 @@ async fn run() -> Result<(), String> {
                 } else {
                     row.contracts = contracts;
                     row.cost = cost;
-                    let cents = (no_price * 100.0).round() as i64;
+                    // Kalshi prices are whole cents in 1..=99; a bid of 0.995 must not round
+                    // into an illegal 100.
+                    let cents = ((no_price * 100.0).round() as i64).clamp(1, 99);
                     // Stable per (ticker, day): a crashed-and-rerun pilot reuses the same id and
                     // Kalshi rejects the duplicate instead of double-filling.
                     let coid = format!("pilot-{}-{}", r.market_id, today);
                     if cfg.live {
                         // Live always has a client: the no-auth path above errors out for --live.
                         let t = trader.as_ref().expect("live run without trade client");
-                        match t.buy_no_limit(&r.market_id, contracts, cents, &coid).await {
+                        let expires = expiration_ts(Utc::now(), cfg.order_ttl_mins);
+                        match t
+                            .buy_no_limit(&r.market_id, contracts, cents, &coid, expires)
+                            .await
+                        {
                             Ok(o) => {
                                 row.order_id = Some(o.order_id);
                                 row.order_status = Some(o.status);
@@ -454,6 +516,18 @@ async fn run() -> Result<(), String> {
     }
 
     append_ledger(&cfg.ledger_path, &ledger)?;
+    if cfg.live && placed > 0 {
+        // A limit at the executable bid is a taker order when the book has size, so most fills
+        // are immediate: give Kalshi a moment, then write down what already executed. Anything
+        // still resting is asked about again next run (or expires under its TTL first).
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Some(t) = &trader {
+            let reconciled = reconcile_orders(t, &cfg.ledger_path, today, cfg.live).await;
+            if !reconciled.is_empty() {
+                append_ledger(&cfg.ledger_path, &reconciled)?;
+            }
+        }
+    }
     println!(
         "\n{} orders {} · ${:.2} committed exposure · full decision log appended to {}",
         placed,
@@ -624,12 +698,7 @@ fn gate_lambda(fit: &ShrinkageFit, best_bid: Option<f64>, venue_fold: f64) -> f6
 /// tradeable universe at once, carrying exactly those unvalidated constants. Vegas priced four
 /// straight days 2–4σ under the realized high (λ −0.84 on its first 24 rows) and took four of the
 /// pilot's next six paper orders.
-fn city_gate(
-    fit: &ShrinkageFit,
-    city: &str,
-    floor: f64,
-    today: NaiveDate,
-) -> Option<&'static str> {
+fn city_gate(fit: &ShrinkageFit, city: &str, floor: f64, today: NaiveDate) -> Option<&'static str> {
     // The rule itself lives in `backtesting::shrinkage` so the dashboard's computed A/B row and
     // this gate cannot drift; only the ledger's decision strings are the pilot's own.
     segment_veto(fit, "kalshi", city, floor, today).map(|v| match v {
@@ -705,44 +774,242 @@ fn stand_down_reason(
     None
 }
 
+/// Unix-seconds expiry for a live order placed at `now`: `ttl_mins` ≤ 0 means good-till-
+/// cancelled (no expiry sent).
+fn expiration_ts(now: DateTime<Utc>, ttl_mins: i64) -> Option<i64> {
+    (ttl_mins > 0).then(|| (now + chrono::Duration::minutes(ttl_mins)).timestamp())
+}
+
+/// Every parseable ledger row, in file order. A missing file is an empty ledger.
+fn load_ledger(path: &PathBuf) -> Vec<LedgerRow> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<LedgerRow>(l).ok())
+        .collect()
+}
+
+/// Whether a row is a reconciliation verdict (`fill` / `unfilled`) rather than a decision.
+fn is_reconciliation(r: &LedgerRow) -> bool {
+    r.decision == "fill" || r.decision == "unfilled"
+}
+
+/// The reconciliation row per live order id, where one has been written.
+fn reconciliation_by_order(rows: &[LedgerRow]) -> HashMap<String, &LedgerRow> {
+    rows.iter()
+        .filter(|r| is_reconciliation(r))
+        .filter_map(|r| r.order_id.as_ref().map(|id| (id.clone(), r)))
+        .collect()
+}
+
+/// What an order row is worth for exposure and PnL: the reconciled fill when Kalshi has told us
+/// (0 contracts for an order that never filled), else the intended fill — conservative in the
+/// direction the breaker wants, since an order was placed because the model liked it.
+fn effective_fill(row: &LedgerRow, fills: &HashMap<String, &LedgerRow>) -> (i64, Option<f64>, f64) {
+    match row.order_id.as_ref().and_then(|id| fills.get(id)) {
+        Some(f) => (f.contracts, f.no_price, f.cost),
+        None => (row.contracts, row.no_price, row.cost),
+    }
+}
+
+/// Live `order` rows Kalshi has not yet been asked about: they carry an `order_id` and no
+/// `fill`/`unfilled` row names it yet. Dry rows never have an order id and never qualify.
+fn pending_reconciliation(rows: &[LedgerRow]) -> Vec<&LedgerRow> {
+    let done: HashSet<&String> = rows
+        .iter()
+        .filter(|r| is_reconciliation(r))
+        .filter_map(|r| r.order_id.as_ref())
+        .collect();
+    rows.iter()
+        .filter(|r| r.decision == "order" && !r.dry_run && r.error.is_none())
+        .filter(|r| r.order_id.as_ref().is_some_and(|id| !done.contains(id)))
+        .collect()
+}
+
+/// Ask Kalshi what became of each unreconciled live order and write the answer down. An order
+/// is final once Kalshi says so (`executed`, or `canceled` — which is also how expiry surfaces)
+/// or once its target day has arrived: a remainder still resting then is exactly the lead-0
+/// fill the strategy must not take, so a LIVE run cancels it first (a dry run only says it
+/// would). Anything still resting inside its TTL is left alone and asked about next run. A
+/// fetch or cancel failure is logged and retried next run rather than guessed at; after
+/// `RECONCILE_GIVE_UP_DAYS` the pilot stops asking and the PnL readers keep their conservative
+/// intended-fill fallback for that order.
+async fn reconcile_orders(
+    t: &KalshiTradeClient,
+    ledger_path: &PathBuf,
+    today: NaiveDate,
+    live: bool,
+) -> Vec<LedgerRow> {
+    let rows = load_ledger(ledger_path);
+    let mut out = Vec::new();
+    for row in pending_reconciliation(&rows) {
+        let Some(order_id) = row.order_id.clone() else {
+            continue;
+        };
+        if (today - row.target_date).num_days() > RECONCILE_GIVE_UP_DAYS {
+            continue;
+        }
+        let mut order = match t.order(&order_id).await {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!(
+                    "warning: could not fetch order {order_id} ({}): {e}",
+                    row.ticker
+                );
+                continue;
+            }
+        };
+        if !order.is_terminal() && row.target_date <= today {
+            if !live {
+                eprintln!(
+                    "warning: {order_id} ({}) is still {} on its target day — a --live run would \
+                     cancel it; leaving it alone in a dry run",
+                    row.ticker, order.status
+                );
+                continue;
+            }
+            match t.cancel_order(&order_id).await {
+                Ok(o) => {
+                    println!(
+                        "cancelled {order_id} ({}): still {} and its target day {} has arrived",
+                        row.ticker, order.status, row.target_date
+                    );
+                    // Re-read rather than trust the cancel echo: the fill counts are what matter.
+                    order = t.order(&order_id).await.unwrap_or(o);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: could not cancel {order_id} ({}): {e} — will retry next run",
+                        row.ticker
+                    );
+                    continue;
+                }
+            }
+        }
+        if !order.is_terminal() {
+            println!(
+                "{order_id} ({}) still {} inside its TTL — asking again next run",
+                row.ticker, order.status
+            );
+            continue;
+        }
+        let fills: Vec<KalshiFill> = match t.fills(&order_id).await {
+            Ok(f) => f.into_iter().filter(|f| f.order_id == order_id).collect(),
+            Err(e) => {
+                eprintln!(
+                    "warning: fills for {order_id} ({}): {e} — using the order's own counts",
+                    row.ticker
+                );
+                Vec::new()
+            }
+        };
+        let rec = reconciliation_row(row, &order, &fills, Utc::now());
+        println!(
+            "{:<28} {} — {} of {} contracts filled @ avg {} (intended {}), status {}",
+            row.ticker,
+            rec.decision,
+            rec.contracts,
+            row.contracts,
+            fmt(rec.no_price),
+            fmt(row.no_price),
+            order.status
+        );
+        out.push(rec);
+    }
+    out
+}
+
+/// The `fill` / `unfilled` row for a terminal live order: contracts and cost from its fills
+/// (each at the price it actually traded), or from the order's own placed − remaining counts at
+/// its limit price when no fill detail came back (a fill never trades worse than the limit, so
+/// that can only overstate cost).
+fn reconciliation_row(
+    order_row: &LedgerRow,
+    order: &KalshiOrder,
+    fills: &[KalshiFill],
+    now: DateTime<Utc>,
+) -> LedgerRow {
+    let (filled, cost) = if fills.is_empty() {
+        let n = order.filled().unwrap_or(0).max(0);
+        let px = order
+            .no_price_cents
+            .map(|c| c as f64 / 100.0)
+            .or(order_row.no_price)
+            .unwrap_or(0.0);
+        (n, n as f64 * px)
+    } else {
+        fills.iter().fold((0i64, 0.0f64), |(n, c), f| {
+            (
+                n + f.count,
+                c + f.count as f64 * f.no_price_cents as f64 / 100.0,
+            )
+        })
+    };
+    let avg = (filled > 0).then(|| cost / filled as f64);
+    LedgerRow {
+        run_at: now,
+        ticker: order_row.ticker.clone(),
+        city: order_row.city.clone(),
+        target_date: order_row.target_date,
+        decision: if filled > 0 { "fill" } else { "unfilled" }.into(),
+        dry_run: false,
+        yes_bid: None,
+        no_price: avg,
+        model_estimate: None,
+        lambda: 0.0,
+        claimed_edge: None,
+        shrunk_edge: None,
+        fee_frac: avg.map(fee_frac),
+        contracts: filled,
+        cost,
+        order_id: order_row.order_id.clone(),
+        order_status: Some(order.status.clone()),
+        error: None,
+    }
+}
+
 /// Realized PnL (dollars) of the pilot's own orders whose markets settled in the trailing 7
 /// days, joined against capture outcomes; returns (pnl, settled-order count). Mode-scoped: live
 /// runs are judged by live orders and dry runs by dry-run orders, so the breaker logic rehearses
 /// during the dry-run phase but paper losses can never trip a funded run (arming live after a
 /// bad paper week is a human call, not this function's).
 ///
-/// Fills are assumed: a resting limit that never filled is counted as if it did. That can only
-/// overstate a loss (the order was placed because the model liked it), so the breaker errs
-/// toward standing down — acceptable for a safety rail, not for PnL reporting.
+/// Live orders count what their `fill` row says filled (an `unfilled` order is no bet and does
+/// not settle); until that row exists, and for every dry row, the intended fill is assumed. That
+/// can only overstate a loss (the order was placed because the model liked it), so the breaker
+/// errs toward standing down — acceptable for a safety rail, not for PnL reporting.
 fn realized_week_pnl(
     ledger_path: &PathBuf,
     captures_path: &PathBuf,
     today: NaiveDate,
     live: bool,
 ) -> (f64, usize) {
-    let Ok(text) = std::fs::read_to_string(ledger_path) else {
+    let rows = load_ledger(ledger_path);
+    if rows.is_empty() {
         return (0.0, 0);
-    };
+    }
     let outcomes = load_outcomes(captures_path);
+    let fills = reconciliation_by_order(&rows);
     let week_ago = today - chrono::Duration::days(7);
     let (mut pnl, mut settled) = (0.0, 0usize);
-    for row in text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<LedgerRow>(l).ok())
-    {
+    for row in &rows {
         if row.decision != "order" || row.error.is_some() || row.dry_run == live {
             continue;
         }
         if row.target_date < week_ago || row.target_date >= today {
             continue; // outside the trailing week, or not yet settled
         }
-        let (Some(no_price), Some(outcome)) = (row.no_price, outcomes.get(&row.ticker).copied())
-        else {
+        let (contracts, no_price, _) = effective_fill(row, &fills);
+        let (Some(no_price), Some(outcome)) = (no_price, outcomes.get(&row.ticker).copied()) else {
             continue;
         };
+        if contracts <= 0 {
+            continue; // never filled: nothing was at risk
+        }
         // BUY NO pays $1/contract when the market resolves NO (outcome 0); fee paid either way.
         let per_contract = (1.0 - outcome) - no_price - fee_frac(no_price);
-        pnl += row.contracts as f64 * per_contract;
+        pnl += contracts as f64 * per_contract;
         settled += 1;
     }
     (pnl, settled)
@@ -767,27 +1034,25 @@ fn load_outcomes(captures_path: &PathBuf) -> HashMap<String, f64> {
 }
 
 /// Dollars committed per (city, target day) by prior runs' orders on still-open markets —
-/// same-mode rows only, mirroring `realized_week_pnl` — so the per-city cap holds across
-/// restarts, not just within one run.
+/// same-mode rows only, mirroring `realized_week_pnl`, and at the reconciled cost where a fill
+/// row exists — so the per-city cap holds across restarts, not just within one run.
 fn open_city_exposure(
     ledger_path: &PathBuf,
     today: NaiveDate,
     live: bool,
 ) -> HashMap<(String, NaiveDate), f64> {
-    let Ok(text) = std::fs::read_to_string(ledger_path) else {
-        return HashMap::new();
-    };
+    let rows = load_ledger(ledger_path);
+    let fills = reconciliation_by_order(&rows);
     let mut out: HashMap<(String, NaiveDate), f64> = HashMap::new();
-    for row in text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<LedgerRow>(l).ok())
-    {
+    for row in &rows {
         if row.decision == "order"
             && row.error.is_none()
             && row.dry_run != live
             && row.target_date >= today
         {
-            *out.entry((row.city, row.target_date)).or_insert(0.0) += row.cost;
+            let (_, _, cost) = effective_fill(row, &fills);
+            *out.entry((row.city.clone(), row.target_date))
+                .or_insert(0.0) += cost;
         }
     }
     out
@@ -803,13 +1068,12 @@ fn position_cost_estimate(positions: &[polymarket_weather_predictor::api::Kalshi
         .sum()
 }
 
-fn load_ordered_tickers(path: &PathBuf) -> HashSet<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return HashSet::new();
-    };
-    text.lines()
-        .filter_map(|l| serde_json::from_str::<LedgerRow>(l).ok())
-        .filter(|r| r.decision == "order" && r.error.is_none())
+/// Tickers an earlier run in the SAME mode decided to order. Dry rows are paper decisions: they
+/// rehearse the live order, they don't stand in for it.
+fn load_ordered_tickers(path: &PathBuf, live: bool) -> HashSet<String> {
+    load_ledger(path)
+        .into_iter()
+        .filter(|r| r.decision == "order" && r.error.is_none() && r.dry_run != live)
         .map(|r| r.ticker)
         .collect()
 }
@@ -1184,7 +1448,11 @@ mod tests {
             fit.observe_seg("kalshi", "Vegas", 0.10, 0.09); // λ 0.9, but one row short
         }
         let floor = 0.2;
-        assert_eq!(city_gate(&fit, "Miami", floor, d("2026-09-06")), None, "healthy city trades");
+        assert_eq!(
+            city_gate(&fit, "Miami", floor, d("2026-09-06")),
+            None,
+            "healthy city trades"
+        );
         assert_eq!(
             city_gate(&fit, "Denver", floor, d("2026-09-06")),
             Some("skip_city_lambda_floor"),
@@ -1239,5 +1507,222 @@ mod tests {
         // And the per-order guard blocks a candidate whose own band is the toxic tail: its
         // segment λ (clamped to 0) sits below the floor.
         assert!(fit.lambda_seg("kalshi", lambda_segment(0.05)) < 0.2);
+    }
+    #[test]
+    fn ordered_tickers_dedupe_is_mode_scoped() {
+        let dir = std::env::temp_dir().join("pilot_test_dedupe_mode");
+        let _ = std::fs::create_dir_all(&dir);
+        let ledger = dir.join("ledger.jsonl");
+        write_jsonl(
+            &ledger,
+            &[
+                order_row("PAPER", "NYC", "2026-09-08", 0.60, 25, true),
+                order_row("REAL", "NYC", "2026-09-08", 0.60, 25, false),
+            ],
+        );
+        // A live run is blocked only by live rows: the paper decision rehearsed the order, it
+        // does not stand in for it. A dry run likewise ignores live rows.
+        let live = load_ordered_tickers(&ledger, true);
+        assert!(live.contains("REAL") && !live.contains("PAPER"));
+        let dry = load_ordered_tickers(&ledger, false);
+        assert!(dry.contains("PAPER") && !dry.contains("REAL"));
+    }
+
+    #[test]
+    fn expiration_is_bounded_by_ttl() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-07T15:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            expiration_ts(now, 240),
+            Some(now.timestamp() + 4 * 3600),
+            "4 h after a 15:00 UTC run is 19:00 UTC — before any US city's local day rolls over"
+        );
+        assert_eq!(expiration_ts(now, 0), None, "0 ⇒ good-till-cancelled");
+        assert_eq!(expiration_ts(now, -5), None);
+    }
+
+    fn kalshi_order(order_id: &str, status: &str, count: i64, remaining: i64) -> KalshiOrder {
+        KalshiOrder {
+            order_id: order_id.into(),
+            ticker: "KXHIGHNY-26SEP08-B89.5".into(),
+            status: status.into(),
+            count: Some(count),
+            remaining_count: Some(remaining),
+            no_price_cents: Some(60),
+        }
+    }
+
+    fn kalshi_fill(order_id: &str, count: i64, no_price_cents: i64) -> KalshiFill {
+        KalshiFill {
+            fill_id: format!("f-{count}-{no_price_cents}"),
+            order_id: order_id.into(),
+            ticker: "KXHIGHNY-26SEP08-B89.5".into(),
+            count,
+            no_price_cents,
+            is_taker: true,
+            created_time: String::new(),
+        }
+    }
+
+    #[test]
+    fn reconciliation_row_records_what_actually_filled() {
+        let mut intended = order_row(
+            "KXHIGHNY-26SEP08-B89.5",
+            "NYC",
+            "2026-09-08",
+            0.60,
+            25,
+            false,
+        );
+        intended.order_id = Some("o1".into());
+        let now = Utc::now();
+
+        // Two fills, one better than the limit: 10 @ 58¢ + 5 @ 60¢ = $8.80 for 15 contracts.
+        let fills = [kalshi_fill("o1", 10, 58), kalshi_fill("o1", 5, 60)];
+        let rec = reconciliation_row(
+            &intended,
+            &kalshi_order("o1", "canceled", 25, 10),
+            &fills,
+            now,
+        );
+        assert_eq!(rec.decision, "fill");
+        assert_eq!(rec.contracts, 15);
+        assert!((rec.cost - 8.80).abs() < 1e-9, "cost {}", rec.cost);
+        assert!((rec.no_price.unwrap() - 8.80 / 15.0).abs() < 1e-9);
+        assert_eq!(rec.order_id.as_deref(), Some("o1"));
+        assert_eq!(rec.order_status.as_deref(), Some("canceled"));
+        assert!(!rec.dry_run);
+        assert_eq!(
+            (rec.city.as_str(), rec.target_date),
+            ("NYC", d("2026-09-08"))
+        );
+        // Fee is re-derived from the average price actually paid.
+        assert!((rec.fee_frac.unwrap() - fee_frac(8.80 / 15.0)).abs() < 1e-12);
+
+        // No fill detail: the order's own placed − remaining at its limit price.
+        let rec = reconciliation_row(&intended, &kalshi_order("o1", "executed", 25, 0), &[], now);
+        assert_eq!((rec.decision.as_str(), rec.contracts), ("fill", 25));
+        assert!((rec.cost - 15.0).abs() < 1e-9);
+        assert!((rec.no_price.unwrap() - 0.60).abs() < 1e-9);
+
+        // Expired untouched: an `unfilled` row with nothing at risk.
+        let rec = reconciliation_row(&intended, &kalshi_order("o1", "canceled", 25, 25), &[], now);
+        assert_eq!((rec.decision.as_str(), rec.contracts), ("unfilled", 0));
+        assert_eq!(rec.cost, 0.0);
+        assert_eq!(rec.no_price, None);
+        assert_eq!(rec.fee_frac, None);
+    }
+
+    #[test]
+    fn pending_reconciliation_skips_reconciled_and_dry_rows() {
+        let mut done = order_row("A", "NYC", "2026-09-08", 0.60, 25, false);
+        done.order_id = Some("o-done".into());
+        let mut open = order_row("B", "NYC", "2026-09-08", 0.60, 25, false);
+        open.order_id = Some("o-open".into());
+        let mut failed = order_row("C", "NYC", "2026-09-08", 0.60, 25, false);
+        failed.order_id = Some("o-err".into());
+        failed.error = Some("rejected".into());
+        let dry = order_row("D", "NYC", "2026-09-08", 0.60, 25, true);
+        let verdict = reconciliation_row(
+            &done,
+            &kalshi_order("o-done", "executed", 25, 0),
+            &[],
+            Utc::now(),
+        );
+        let rows = vec![done, open, failed, dry, verdict];
+        let pending: Vec<&str> = pending_reconciliation(&rows)
+            .iter()
+            .map(|r| r.ticker.as_str())
+            .collect();
+        assert_eq!(
+            pending,
+            vec!["B"],
+            "only the live order with an id and no verdict yet is asked about"
+        );
+        let by_order = reconciliation_by_order(&rows);
+        assert_eq!(by_order["o-done"].decision, "fill");
+        assert!(!by_order.contains_key("o-open"));
+    }
+
+    #[test]
+    fn weekly_pnl_and_city_exposure_prefer_fill_rows_for_live_orders() {
+        let dir = std::env::temp_dir().join("pilot_test_fill_rows");
+        let _ = std::fs::create_dir_all(&dir);
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let today = d("2026-09-09");
+        let now = Utc::now();
+
+        // Intended 25 @ 0.60; actually filled 10 @ 0.58 (won). Resolved NO.
+        let mut partial = order_row("PART", "NYC", "2026-09-08", 0.60, 25, false);
+        partial.order_id = Some("o-part".into());
+        let partial_fill = reconciliation_row(
+            &partial,
+            &kalshi_order("o-part", "canceled", 25, 15),
+            &[kalshi_fill("o-part", 10, 58)],
+            now,
+        );
+        // Intended 25 @ 0.60; expired untouched. Resolved YES — would have LOST had it filled.
+        let mut never = order_row("NEVER", "NYC", "2026-09-08", 0.60, 25, false);
+        never.order_id = Some("o-never".into());
+        let never_fill = reconciliation_row(
+            &never,
+            &kalshi_order("o-never", "canceled", 25, 25),
+            &[],
+            now,
+        );
+        // Not yet reconciled: the intended fill is assumed. Resolved YES (loss).
+        let mut assumed = order_row("ASSUMED", "NYC", "2026-09-08", 0.60, 25, false);
+        assumed.order_id = Some("o-assumed".into());
+        // Still open tomorrow: exposure only. Filled 20 of 25.
+        let mut open = order_row("OPEN", "NYC", "2026-09-10", 0.50, 30, false);
+        open.order_id = Some("o-open".into());
+        let open_fill = reconciliation_row(
+            &open,
+            &kalshi_order("o-open", "canceled", 30, 10),
+            &[kalshi_fill("o-open", 20, 50)],
+            now,
+        );
+        write_jsonl(
+            &ledger,
+            &[
+                partial,
+                partial_fill,
+                never,
+                never_fill,
+                assumed,
+                open,
+                open_fill,
+            ],
+        );
+        let cap_line = |id: &str, outcome: f64| {
+            format!(
+                r#"{{"captured_at":"2026-09-07","target_date":"2026-09-08","market_id":"{id}","entry_price":0.5,"model_estimate":0.4,"outcome":{outcome},"source":"kalshi"}}"#
+            )
+        };
+        std::fs::write(
+            &captures,
+            [
+                cap_line("PART", 0.0),
+                cap_line("NEVER", 1.0),
+                cap_line("ASSUMED", 1.0),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
+        assert_eq!(
+            settled, 2,
+            "PART (filled) and ASSUMED (assumed); NEVER was no bet"
+        );
+        let expect = 10.0 * (0.42 - fee_frac(0.58)) + 25.0 * (-0.60 - fee_frac(0.60));
+        assert!((pnl - expect).abs() < 1e-9, "got {pnl}, want {expect}");
+
+        // Open exposure counts the reconciled $10, not the intended $15.
+        let exp = open_city_exposure(&ledger, today, true);
+        let nyc = exp[&("NYC".to_string(), d("2026-09-10"))];
+        assert!((nyc - 10.0).abs() < 1e-9, "got {nyc}");
     }
 }

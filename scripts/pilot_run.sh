@@ -1,8 +1,14 @@
 #!/bin/bash
-# Daily Kalshi-pilot run, driven by launchd (com.polymarketweather.kalshipilot) at 11:00 local
-# (≈ 15:00 UTC in summer — the capture-geometry hour the sigma tables are fitted at, and when
-# tomorrow's lead-1 markets are open). DRY RUN by default: add --live to the pilot line below only
-# after the dry-run week checks out and the account is funded.
+# Manual/laptop Kalshi-pilot run, driven by launchd (com.polymarketweather.kalshipilot) at 11:00
+# local (≈ 15:00 UTC in summer — the capture-geometry hour the sigma tables are fitted at, and
+# when tomorrow's lead-1 markets are open). DRY RUN by default.
+#
+# The daily-capture GitHub Action is the CANONICAL driver in both modes since 2026-09-07 (dry by
+# default; live when the PILOT_LIVE repository variable is 1 — see the workflow's header). This
+# script exists for a credentialed rehearsal or a one-off manual run: it never pushes, so rows it
+# appends stay on this machine, and a live run here on a morning the Action also ran would place
+# the same orders twice unless Kalshi's own resting-order/position dedupe catches them. Don't run
+# both drivers live.
 #
 # Credentials come from the repo-root .env (gitignored, machine-local). This script never needs
 # secrets of its own.

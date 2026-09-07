@@ -116,6 +116,27 @@ cargo run --release --bin capture_prices    # run daily (cron / schedule)
 It appends to `data/captures.jsonl`, which the dashboard reads to populate the forward-PnL panel and
 the live model-vs-market disagreement signals.
 
+## Kalshi pilot and real money
+
+`kalshi_pilot` is the evidence-backed strategy at pocket-change size (Kalshi only, SELL only via
+BUY NO limit orders, lead ≥ 1, shrunk edge over threshold + fee, flat `--stake`, hard exposure caps,
+automatic circuit breakers). It is a DRY RUN unless `--live` is passed, and even `--live` trades the
+demo host until `KALSHI_BASE_URL` points at production:
+
+```bash
+cargo run --release --bin kalshi_pilot              # dry run: log intended orders + skips
+cargo run --release --bin kalshi_pilot -- --live    # real limit orders on the configured host
+python3 scripts/go_live_gate.py                     # the decision rule, scored on the ledger
+```
+
+Every decision lands in `data/pilot_trades.jsonl`. Live orders are placed with a TTL
+(`--order-ttl-mins`, default 240) and reconciled on the next credentialed run into `fill` /
+`unfilled` rows recording what actually executed at what price; a live run also cancels any of its
+own orders still resting on their target day. The daily-capture GitHub Action is the canonical
+driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1`, the
+`KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
+names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
+
 ## Environment Variables
 
 Optional variables (defaults are provided in `src/config.rs`):
@@ -131,6 +152,9 @@ Optional variables (defaults are provided in `src/config.rs`):
 - `TOMORROW_IO_API_KEY`
 - `INITIAL_CAPITAL`
 - `MIN_BID_ASK_SPREAD`
+- `KALSHI_BASE_URL` (trade host; demo by default), `KALSHI_API_KEY_ID`,
+  `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH` (trade endpoints only; market data is
+  anonymous), `PILOT_DISABLE`
 
 ## Notes
 

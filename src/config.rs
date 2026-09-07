@@ -35,8 +35,14 @@ pub struct MonteCarloParams {
     pub correlation_lookback: usize,
 }
 
+/// An env var, or `default` when it is unset OR set to the empty string. CI passes every
+/// optional variable/secret through as `${{ vars.X }}`, which is `""` when unconfigured, and an
+/// empty `KALSHI_BASE_URL` must mean "the default host", never a request to "/trade-api/v2/…".
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => default.to_string(),
+    }
 }
 
 pub fn database_url() -> String {
@@ -88,10 +94,13 @@ pub fn tomorrow_io_api_key() -> String {
 }
 
 /// Kalshi API host for CREDENTIALED trade endpoints (no path). Defaults to the DEMO/paper
-/// environment so nothing touches real money until you point it at prod.
+/// environment so nothing touches real money until you point it at prod
+/// (`https://api.elections.kalshi.com`). The demo host is the one Kalshi's official SDK lists
+/// (kalshi-python 2.1.4); the older `demo-api.kalshi.co` is kept out because
+/// `KalshiTradeClient::is_production` keys on the substring `demo` either way.
 pub fn kalshi_base_url() -> String {
     dotenv().ok();
-    env_or("KALSHI_BASE_URL", "https://demo-api.kalshi.co")
+    env_or("KALSHI_BASE_URL", "https://demo-api.elections.kalshi.com")
         .trim_end_matches('/')
         .to_string()
 }
