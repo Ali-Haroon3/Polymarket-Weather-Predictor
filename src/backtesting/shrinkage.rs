@@ -38,6 +38,41 @@ pub fn lambda_segment(px: f64) -> &'static str {
     }
 }
 
+/// The λ segment for a market SHAPE and price — the second segment axis (2026-09-07). The 10¢
+/// band above was drawn when the tail was the visible heterogeneity; by September the dominant
+/// axis on the Kalshi SELL side (lead ≥ 1, px ≥ 0.10) was the market's shape. Bucket markets
+/// realized λ +0.06 / +0.03 on the full sample (n=547 / 369 in the two bands below) and
+/// −0.24 / −0.06 over the trailing 30 days, while threshold markets realized +0.22 / +0.98
+/// (n=90 / 143) and +0.74 / +1.00 — and the pilot's own ledger agreed: 20 bucket orders at −19%
+/// ROI, 3 threshold orders at +98%. A 2 °F bucket's probability is hypersensitive to the
+/// half-degree bias errors the seasonal refits chase, where a tail threshold integrates over
+/// them, and prediction-market tails carry the classic longshot overprice. Within each shape the
+/// 35¢ line separates the mid-book, where disagreements realize almost fully, from the 10–35¢
+/// band. Six keys; a thin key answers from the venue fold inside `lambda_seg`, so young data
+/// gates exactly like the venue λ. Non-bucket shapes (`temp_at_least`, `temp_at_most`, legacy
+/// `temperature`) are all thresholds.
+///
+/// Calibration is not profit, and the pilot's gate does NOT read this key (it keeps
+/// `lambda_segment`): a flat-stake, fee-inclusive replay of the pilot's exact rule over all
+/// captures under this key LOST — −26% on 10 trades since 2026-08-09 against +8.8% on 11 for
+/// the band key — because a λ near 1 on mid-book thresholds admits the 13–20% claimed-edge
+/// candidates, and that claimed-edge band realizes nothing (the winner's curse the go-live gate
+/// documents). A coarser first replay had read +12%; its profit was seven small cheap-NO wins at
+/// 18–31¢ bids that this six-key scheme refuses. The dashboard's `--shape-lambda` A/B rows
+/// (frozen 2026-09-07) exist to settle that disagreement forward. Lives here so no bin can drift
+/// on the boundaries if one ever adopts it.
+pub fn shape_segment(market_type: &str, px: f64) -> &'static str {
+    let bucket = market_type == "temp_bucket";
+    match (bucket, px) {
+        (true, p) if p < 0.10 => "bucket·px<0.10",
+        (true, p) if p < 0.35 => "bucket·px0.10–0.35",
+        (true, _) => "bucket·px≥0.35",
+        (false, p) if p < 0.10 => "threshold·px<0.10",
+        (false, p) if p < 0.35 => "threshold·px0.10–0.35",
+        (false, _) => "threshold·px≥0.35",
+    }
+}
+
 /// Trailing window (in days of resolved target dates) for the drift view of λ. The full-sample
 /// slope grows sluggish as history accrues — a two-week anti-signal stretch barely moves it — so
 /// the trailing slope is the early-warning view. Shared by the dashboard's λ diagnostics and the
@@ -388,11 +423,17 @@ mod tests {
         let today = d("2026-08-04");
         // Full-sample λ barely notices: 300 healthy rows against 25 bad ones.
         let full = fit.lambda_seg("kalshi", "LA");
-        assert!(full > floor, "full-sample λ should still look healthy, got {full}");
+        assert!(
+            full > floor,
+            "full-sample λ should still look healthy, got {full}"
+        );
         // The trailing 14-day window ending today is 9 healthy days (45 rows) + 5 bad (25 rows):
         // slope (45·0.005 − 25·0.005)/(70·0.01) = 0.143 < 0.2. Vetoed on the trailing check.
         let trail = fit.trailing_slope("kalshi", "LA", today).unwrap();
-        assert!(trail < floor, "trailing slope should be under the floor, got {trail}");
+        assert!(
+            trail < floor,
+            "trailing slope should be under the floor, got {trail}"
+        );
         assert_eq!(
             segment_veto(&fit, "kalshi", "LA", floor, today),
             Some(SegmentVeto::TrailingBelowFloor)
@@ -424,5 +465,59 @@ mod tests {
         let segs = fit.rows_seg();
         assert_eq!(segs.len(), 2, "untagged entries are skipped");
         assert!(segs.iter().all(|r| r.0 == "kalshi"));
+    }
+    #[test]
+    fn shape_segment_splits_on_shape_then_the_two_price_lines() {
+        assert_eq!(shape_segment("temp_bucket", 0.05), "bucket·px<0.10");
+        assert_eq!(shape_segment("temp_bucket", 0.10), "bucket·px0.10–0.35");
+        assert_eq!(shape_segment("temp_bucket", 0.349), "bucket·px0.10–0.35");
+        assert_eq!(shape_segment("temp_bucket", 0.35), "bucket·px≥0.35");
+        assert_eq!(shape_segment("temp_at_least", 0.05), "threshold·px<0.10");
+        assert_eq!(shape_segment("temp_at_most", 0.20), "threshold·px0.10–0.35");
+        assert_eq!(shape_segment("temperature", 0.60), "threshold·px≥0.35");
+        // The tail line is the band fn's line, so the two axes never disagree about the tail.
+        for px in [0.05, 0.0999, 0.10, 0.5] {
+            assert_eq!(
+                lambda_segment(px) == "px<0.10",
+                shape_segment("temp_bucket", px).ends_with("px<0.10")
+            );
+        }
+        // Six distinct keys, all non-empty (an empty segment would mean "no segment").
+        let keys: std::collections::BTreeSet<&str> = [
+            ("temp_bucket", 0.05),
+            ("temp_bucket", 0.2),
+            ("temp_bucket", 0.5),
+            ("temp_at_least", 0.05),
+            ("temp_at_least", 0.2),
+            ("temp_at_least", 0.5),
+        ]
+        .iter()
+        .map(|(m, p)| shape_segment(m, *p))
+        .collect();
+        assert_eq!(keys.len(), 6);
+        assert!(keys.iter().all(|k| !k.is_empty()));
+    }
+
+    #[test]
+    fn shape_keyed_fit_clamps_buckets_and_trusts_thresholds_independently() {
+        let mut fit = ShrinkageFit::default();
+        for _ in 0..ShrinkageFit::MIN_N {
+            fit.observe_seg("kalshi", shape_segment("temp_bucket", 0.5), 0.10, -0.01);
+            fit.observe_seg("kalshi", shape_segment("temp_at_least", 0.5), 0.10, 0.095);
+        }
+        assert_eq!(
+            fit.lambda_seg("kalshi", shape_segment("temp_bucket", 0.5)),
+            0.0
+        );
+        assert!(
+            (fit.lambda_seg("kalshi", shape_segment("temp_at_least", 0.5)) - 0.95).abs() < 1e-9
+        );
+        // A thin key (no threshold rows in the 10–35¢ band) answers from the venue fold, which
+        // averages the two: the fallback is the old per-venue behaviour, never 1.0.
+        let fold = fit.lambda("kalshi");
+        assert!(fold > 0.0 && fold < 0.95);
+        assert!(
+            (fit.lambda_seg("kalshi", shape_segment("temp_at_least", 0.2)) - fold).abs() < 1e-12
+        );
     }
 }

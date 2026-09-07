@@ -38,7 +38,7 @@ src/stations.rs is a deliberate manual step (repo convention: the tables are the
 Post/k=0 slots are never touched — day-of is obs-anchored and post is (near-)deterministic.
 
 Usage: python3 scripts/refit_station_tables.py [--captures data/captures.jsonl]
-                                              [--since 2026-08-05] [--sigma-floor 0.8]
+                                              [--since 2026-09-07] [--sigma-floor 0.8]
 """
 import argparse
 import collections
@@ -188,7 +188,7 @@ def main():
     ap.add_argument("--captures", default="data/captures.jsonl")
     ap.add_argument(
         "--since",
-        default="2026-08-05",
+        default="2026-09-07",
         help="ignore captures before this date (last blend/table change; keep in step with the "
         "most recent refit landing). Residuals measure drift of the CURRENT tables, so rows "
         "priced under an EARLIER set of constants must be excluded -- pooling the 07-20 refit's "
