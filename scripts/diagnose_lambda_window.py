@@ -35,12 +35,20 @@ def lead(r):
 
 
 def ref_price(r):
+    # Mirrors backtesting::reference_price: mid of a sane book, the quoted side of a one-sided
+    # book, the last trade only when no book was reported (Kalshi's entry_price is a 0.50
+    # placeholder whenever its book is one-sided -- see lambda_diagnostics.ref_price).
     b, a = r.get("best_bid"), r.get("best_ask")
-    if b is not None and a is not None and b > 0.0 and a < 1.0 and b <= a:
-        px = (a + b) / 2.0
+    usable = lambda x: x if (x is not None and 0.0 < x < 1.0) else None
+    reported_book = b is not None or a is not None
+    b, a = usable(b), usable(a)
+    if b is not None and a is not None:
+        px = (a + b) / 2.0 if b <= a else None
+    elif b is not None or a is not None:
+        px = b if b is not None else a
     else:
-        px = r["entry_price"]
-    return px if 0.0 < px < 1.0 else None
+        px = None if reported_book else r["entry_price"]
+    return usable(px)
 
 
 def f2c(f):

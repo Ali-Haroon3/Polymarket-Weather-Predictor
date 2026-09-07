@@ -95,10 +95,27 @@ def lead(r):
 
 
 def ref_price(r):
-    """Mirrors weather_dashboard::ref_price -- book mid when sane, else last trade."""
+    """Mirrors backtesting::reference_price (shared by the dashboard and the pilot since
+    2026-09-07): the mid of a sane two-sided book; the quoted side of a one-sided book; the last
+    trade (entry_price) ONLY when the venue reported no book at all. Kalshi's entry_price is a
+    0.50 placeholder whenever its book is one-sided (the anonymous list nulls last_price), and
+    reading it as a price put 133 phantom rows -- x ~ -0.48, y = -0.50 -- into every lambda
+    fit: the Kalshi px >= 0.10 band read +0.474 with them and -0.006 without."""
     b, a = r.get("best_bid"), r.get("best_ask")
-    px = (a + b) / 2.0 if (b is not None and a is not None and b > 0 and a < 1 and b <= a) else r.get("entry_price")
-    return px if (px is not None and 0.0 < px < 1.0) else None
+    usable = lambda x: x if (x is not None and 0.0 < x < 1.0) else None
+    reported_book = b is not None or a is not None
+    b, a = usable(b), usable(a)
+    if b is not None and a is not None:
+        px = (a + b) / 2.0 if b <= a else None
+    elif b is not None:
+        px = b
+    elif a is not None:
+        px = a
+    elif reported_book:
+        px = None
+    else:
+        px = r.get("entry_price")
+    return usable(px)
 
 
 def slope(obs):

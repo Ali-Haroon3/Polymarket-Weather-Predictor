@@ -86,8 +86,13 @@ struct Snapshot {
     forecast_high: Option<f64>,
     #[serde(default)]
     forecast_sigma: Option<f64>,
-    /// Top of the YES book at capture (entry_price is the last trade). What a BUY/SELL would
-    /// actually fill at — the dashboard evaluates executable edge from these when present.
+    /// Top of the YES book at capture. What a BUY/SELL would actually fill at — the dashboard
+    /// evaluates executable edge from these when present, and a side that is missing here is
+    /// UNTRADABLE, never `entry_price`: on Polymarket `entry_price` is the last trade, but on
+    /// Kalshi (whose anonymous list nulls `last_price`) it is the book mid when both sides exist
+    /// and otherwise the venue parser's 0.50 "no trade / no book" placeholder — see
+    /// `backtesting::reference_price` / `fill_prices` for the rule every consumer shares since
+    /// 2026-09-07, and why.
     #[serde(default)]
     best_bid: Option<f64>,
     #[serde(default)]

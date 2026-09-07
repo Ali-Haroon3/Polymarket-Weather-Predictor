@@ -239,6 +239,22 @@ def reprice(r, cdf):
     return min(max(p, CLIP_LO), CLIP_HI)
 
 
+def ref_price(r):
+    """Mirrors backtesting::reference_price: mid of a sane book, the quoted side of a one-sided
+    book, the last trade only when no book was reported. Kalshi's entry_price is a 0.50
+    placeholder whenever its book is one-sided, so a market Brier read off entry_price scored
+    those 1-cent markets as 50-cent ones (2026-09-07)."""
+    b, a = r.get("best_bid"), r.get("best_ask")
+    usable = lambda x: x if (x is not None and 0.0 < x < 1.0) else None
+    reported_book = b is not None or a is not None
+    b, a = usable(b), usable(a)
+    if b is not None and a is not None:
+        return (a + b) / 2.0 if b <= a else None
+    if b is not None or a is not None:
+        return b if b is not None else a
+    return None if reported_book else usable(r.get("entry_price"))
+
+
 def brier(pairs):
     return sum((p - y) ** 2 for p, y in pairs) / len(pairs) if pairs else float("nan")
 
@@ -359,7 +375,7 @@ def main():
         print(f"\n  {scope}: {len(srows)} market rows")
         p_norm = {id(r): reprice(r, variants[0][1]) for r in srows}
         stored = brier([(r["model_estimate"], r["outcome"]) for r in srows if r.get("model_estimate") is not None])
-        mkt = brier([(r["entry_price"], r["outcome"]) for r in srows])
+        mkt = brier([(ref_price(r), r["outcome"]) for r in srows if ref_price(r) is not None])
         print(f"    stored estimate Brier={stored:.4f}   market Brier={mkt:.4f}")
         for name, cdf in variants:
             pairs = [(reprice(r, cdf), r["outcome"]) for r in srows]

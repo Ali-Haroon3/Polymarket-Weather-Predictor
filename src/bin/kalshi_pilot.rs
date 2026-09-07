@@ -92,7 +92,7 @@ use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs,
 };
 use polymarket_weather_predictor::backtesting::{
-    lambda_segment, market_estimate, segment_veto, SegmentVeto, ShrinkageFit,
+    lambda_segment, market_estimate, reference_price, segment_veto, SegmentVeto, ShrinkageFit,
 };
 use polymarket_weather_predictor::data_pipeline::StationPricer;
 use polymarket_weather_predictor::models::BayesianWeatherModel;
@@ -626,7 +626,7 @@ struct PilotFits {
 }
 
 /// Shrinkage fits for Kalshi from resolved lead ≥ 1 captures — the same fit and hygiene as the
-/// dashboard's full-sample fit (book mid as reference price, lead ≤ 0 excluded). Returns the
+/// dashboard's full-sample fit (the shared `reference_price` rule, lead ≤ 0 excluded). Returns the
 /// whole fit so the caller can read both the venue fold (sizing) and the traded-segment λ (the
 /// floor breaker); a missing file yields an empty fit, whose every lookup is 1.0 (NO shrink).
 fn fit_shrinkage_from_captures(path: &PathBuf) -> PilotFits {
@@ -651,11 +651,11 @@ fn fit_shrinkage_from_captures(path: &PathBuf) -> PilotFits {
         if !c.market_type.starts_with("temp") {
             continue; // λ hygiene: temperature markets only, same as the dashboard's fit
         }
-        let px = match (c.best_bid, c.best_ask) {
-            (Some(b), Some(a)) if b > 0.0 && a < 1.0 && b <= a => (a + b) / 2.0,
-            _ => c.entry_price,
-        };
-        if px > 0.0 && px < 1.0 {
+        // The shared rule (`backtesting::reference_price`): mid of a sane book, the quoted side of a
+        // one-sided book, the last trade only with no book at all. Kalshi's `entry_price` is a 0.50
+        // placeholder whenever its book is one-sided, and reading it as a price put 133 phantom
+        // rows into this fit — the whole of the traded band's +0.47 (clean: −0.01) until 2026-09-07.
+        if let Some(px) = reference_price(c.entry_price, c.best_bid, c.best_ask) {
             // Tagged by price band: the edge gate and the floor breaker read `lambda_seg`; venue-
             // level lookups fold across segments, which tagging never changes (proven by the
             // fold-identity test in shrinkage.rs).
@@ -1411,12 +1411,25 @@ mod tests {
         lines.push(
             r#"{"captured_at":"2026-07-02","target_date":"2026-07-02","market_id":"day0","market_title":"t","market_type":"temp_bucket","threshold":1.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.5,"model_estimate":0.9,"outcome":0.9,"source":"kalshi"}"#.to_string(),
         );
+        // A one-sided book (1¢ ask, no bid) carrying the venue's 0.50 placeholder as its last
+        // trade. Read at the placeholder it would be x = −0.48, y = −0.50 — a near-perfect
+        // realization at 25× the weight of every real row above, dragging λ toward 1. Read at
+        // its ask it is x = 0.01, y = −0.01 in the sub-10¢ band, and the traded band is untouched.
+        lines.push(
+            r#"{"captured_at":"2026-07-01","target_date":"2026-07-02","market_id":"phantom","market_title":"t","market_type":"temp_at_least","threshold":99.0,"threshold_upper":null,"unit":"F","city":"NYC","entry_price":0.5,"model_estimate":0.02,"outcome":0.0,"source":"kalshi","best_bid":null,"best_ask":0.01}"#.to_string(),
+        );
         std::fs::write(&path, lines.join("\n")).unwrap();
         let fits = fit_shrinkage_from_captures(&path);
         let lambda = fits.band.lambda("kalshi");
         assert!(
-            (lambda - 0.5).abs() < 1e-9,
-            "outcome−price = 0.1 over est−price = 0.2 ⇒ λ = 0.5, lead-0 row excluded; got {lambda}"
+            (lambda - 0.5).abs() < 1e-3,
+            "outcome−price = 0.1 over est−price = 0.2 ⇒ λ ≈ 0.5, lead-0 row excluded and the \
+             placeholder row priced at its 1¢ ask; got {lambda}"
+        );
+        assert_eq!(
+            fits.band.n_seg("kalshi", lambda_segment(0.01)),
+            1,
+            "the no-bid row lands in the tail band at its ask, not at 0.50"
         );
         // The rows sit at mid 0.5, so the traded (≥ 10¢) segment carries the same fit — the
         // breaker's lookup must see it, proving observations were tagged, not bare-venue.
@@ -1427,7 +1440,7 @@ mod tests {
         );
         // The SAME rows are keyed by city in the second fit — same count, same venue fold, so the
         // two views can never disagree about how much evidence a run is standing on.
-        assert_eq!(fits.city.n_seg("kalshi", "NYC"), ShrinkageFit::MIN_N);
+        assert_eq!(fits.city.n_seg("kalshi", "NYC"), ShrinkageFit::MIN_N + 1);
         assert!((fits.city.lambda("kalshi") - lambda).abs() < 1e-12);
         // Missing file → an empty fit: every lookup is 1.0 (no shrink), never a crash.
         let empty = fit_shrinkage_from_captures(&dir.join("nope.jsonl"));
