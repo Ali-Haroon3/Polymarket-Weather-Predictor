@@ -10,8 +10,8 @@ use chrono::{Duration, NaiveDate};
 
 use polymarket_weather_predictor::backtesting::{
     evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
-    kelly_fraction_of_capital, lambda_segment, segment_veto, MarketEvaluation, RealMarketLoader,
-    ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
+    kelly_fraction_of_capital, lambda_segment, segment_veto, shape_segment, MarketEvaluation,
+    RealMarketLoader, ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
 };
 use polymarket_weather_predictor::cities;
 use polymarket_weather_predictor::config;
@@ -103,6 +103,7 @@ fn run() -> Result<(), String> {
         sell_only: args.sell_only,
         shrink_edge: args.shrink_edge,
         segment_lambda: args.segment_lambda,
+        shape_lambda: args.shape_lambda,
         min_forecast_distance: args.min_forecast_distance,
         max_pm_spread: None,
         city_lambda_floor: None,
@@ -349,6 +350,18 @@ struct StrategyParams {
     /// AXIS was chosen by inspecting the same sample, so this earns forward evidence in the A/B
     /// table before becoming a default, like every candidate before it.
     segment_lambda: bool,
+    /// Condition the walk-forward λ on (venue, market SHAPE × price band) — `shape_segment` —
+    /// instead of venue alone (only meaningful with `shrink_edge`; takes precedence over
+    /// `segment_lambda`). Frozen 2026-09-07: on the Kalshi SELL side at px ≥ 0.10, bucket
+    /// markets had realized λ ≈ 0 (+0.06 / +0.03 full-sample, negative over the trailing 30
+    /// days) while threshold markets realized +0.98 in the mid-book, and the pilot's ledger said
+    /// the same in dollars (20 bucket orders −19% ROI, 3 threshold orders +98%). The band fit
+    /// averaged the two. But calibration is not profit: a flat-stake, fee-inclusive replay of the
+    /// pilot's exact rule over all captures under this key is −26% on 10 trades since 08-09
+    /// against +8.8% on 11 under the band key, because a λ near 1 admits the mid-sized claimed
+    /// edges that realize nothing (the winner's curse). So the Kalshi pilot's gate was NOT
+    /// switched to it; these rows exist to settle that disagreement forward.
+    shape_lambda: bool,
     /// Skip `temp_bucket` markets whose own center sits within this many °C of the model's point
     /// forecast for that day. 0.0 = no filter.
     ///
@@ -401,6 +414,13 @@ enum Shrink<'a> {
         fit: &'a ShrinkageFit,
         venue: &'a str,
     },
+    /// Per-(venue, shape × price band) λ — `shape_segment` — looked up with each side's own
+    /// fill price and the market's own shape.
+    Shape {
+        fit: &'a ShrinkageFit,
+        venue: &'a str,
+        market_type: &'a str,
+    },
 }
 
 impl Shrink<'_> {
@@ -410,6 +430,11 @@ impl Shrink<'_> {
             Shrink::Off => 1.0,
             Shrink::Venue(l) => *l,
             Shrink::Seg { fit, venue } => fit.lambda_seg(venue, lambda_segment(px)),
+            Shrink::Shape {
+                fit,
+                venue,
+                market_type,
+            } => fit.lambda_seg(venue, shape_segment(market_type, px)),
         }
     }
 }
@@ -429,6 +454,8 @@ struct ShrinkObs {
     date: NaiveDate,
     venue: String,
     segment: &'static str,
+    /// The (shape × price band) key — the third segment axis, for `shape_lambda`.
+    shape: &'static str,
     /// Canonical city key — the second segment axis, for `city_lambda_floor`.
     city: String,
     /// Claimed edge: model estimate − reference price.
@@ -453,6 +480,7 @@ fn shrink_obs_of(c: &Capture) -> Option<ShrinkObs> {
         date: c.target_date,
         venue: c.source.clone(),
         segment: lambda_segment(px),
+        shape: shape_segment(&c.market_type, px),
         city: c.city.clone(),
         x: est - px,
         y: outcome - px,
@@ -460,8 +488,16 @@ fn shrink_obs_of(c: &Capture) -> Option<ShrinkObs> {
 }
 
 /// One λ observation queued inside `run_strategy` until the walk moves past its date:
-/// (venue, price-band segment, city, target date, claimed edge, realized edge).
-type PendingObs = (String, &'static str, String, NaiveDate, f64, f64);
+/// (venue, price-band segment, shape segment, city, target date, claimed edge, realized edge).
+type PendingObs = (
+    String,
+    &'static str,
+    &'static str,
+    String,
+    NaiveDate,
+    f64,
+    f64,
+);
 
 /// The resolved lead ≥ 1 observations the shrinkage fit runs on, sorted by target date. Shared by
 /// the full-sample fit, the trailing-window slope, and the λ-drift series so every λ view is
@@ -481,6 +517,16 @@ fn fit_shrinkage(captures: &[Capture]) -> ShrinkageFit {
     let mut fit = ShrinkageFit::default();
     for o in shrinkage_obs(captures) {
         fit.observe_seg(&o.venue, o.segment, o.x, o.y);
+    }
+    fit
+}
+
+/// The same observations keyed by (shape × price band) — the fit `shape_lambda` reads for the
+/// open book and the λ-by-shape diagnostics table. Causal for the open book like `fit_shrinkage`.
+fn fit_shape_shrinkage(captures: &[Capture]) -> ShrinkageFit {
+    let mut fit = ShrinkageFit::default();
+    for o in shrinkage_obs(captures) {
+        fit.observe_seg(&o.venue, o.shape, o.x, o.y);
     }
     fit
 }
@@ -720,8 +766,10 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
     settled.sort_by(|a, b| a.target_date.cmp(&b.target_date).then(a.city.cmp(&b.city)));
 
     let mut fit = ShrinkageFit::default();
-    // The same observations keyed by city, for `city_lambda_floor`. Fed from the same queue below,
-    // so it inherits the identical walk-forward and same-day-resolution hygiene.
+    // The same observations keyed by (shape × band), for `shape_lambda`, and by city, for
+    // `city_lambda_floor`. Fed from the same queue below, so both inherit the identical
+    // walk-forward and same-day-resolution hygiene.
+    let mut shape_fit = ShrinkageFit::default();
     let mut city_fit = ShrinkageFit::default();
     // Current date's rows, not yet observable.
     let mut pending: Vec<PendingObs> = Vec::new();
@@ -733,8 +781,9 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         // Same-day markets resolve together: fold a date's rows into the fit only once the walk
         // moves past it, so no trade sees its own (or a same-day) outcome.
         if fit_date != Some(c.target_date) {
-            for (venue, seg, city, date, x, y) in pending.drain(..) {
+            for (venue, seg, shape, city, date, x, y) in pending.drain(..) {
                 fit.observe_seg(&venue, seg, x, y);
+                shape_fit.observe_seg(&venue, shape, x, y);
                 city_fit.observe_seg_dated(&venue, &city, date, x, y);
             }
             fit_date = Some(c.target_date);
@@ -742,7 +791,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
         if let Some(o) = shrink_obs_of(c) {
-            pending.push((o.venue, o.segment, o.city, o.date, o.x, o.y));
+            pending.push((o.venue, o.segment, o.shape, o.city, o.date, o.x, o.y));
         }
         // Gate before decide(), but AFTER the row is queued into the λ fit: filtered rows are
         // still evidence about how real the model's claimed edges are, whether or not this
@@ -754,13 +803,18 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         {
             continue;
         }
-        let shrink = match (p.shrink_edge, p.segment_lambda) {
-            (false, _) => Shrink::Off,
-            (true, false) => Shrink::Venue(fit.lambda(&c.source)),
-            (true, true) => Shrink::Seg {
+        let shrink = match (p.shrink_edge, p.shape_lambda, p.segment_lambda) {
+            (false, _, _) => Shrink::Off,
+            (true, true, _) => Shrink::Shape {
+                fit: &shape_fit,
+                venue: &c.source,
+                market_type: &c.market_type,
+            },
+            (true, false, true) => Shrink::Seg {
                 fit: &fit,
                 venue: &c.source,
             },
+            (true, false, false) => Shrink::Venue(fit.lambda(&c.source)),
         };
         let Some((side, frac, px, edge)) = decide(
             est,
@@ -1121,7 +1175,9 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ));
         }
         if sp.shrink_edge {
-            if sp.segment_lambda {
+            if sp.shape_lambda {
+                f.push("shape λ (walk-forward, venue × shape × price band)".to_string());
+            } else if sp.segment_lambda {
                 f.push("segment λ (walk-forward, venue × price band)".to_string());
             } else {
                 f.push("shrunk edge (walk-forward λ)".to_string());
@@ -1210,6 +1266,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             sell_only: false,
             shrink_edge: false,
             segment_lambda: false,
+            shape_lambda: false,
             max_pm_spread: None,
             city_lambda_floor: None,
             venue: None,
@@ -1440,6 +1497,46 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // FROZEN 2026-09-07: λ keyed by market SHAPE × price band (`shape_segment`) instead
+            // of the 10¢ band alone. On the Kalshi SELL side at px ≥ 0.10, bucket markets had
+            // realized λ +0.06 / +0.03 (full sample, n=547 / 369) and −0.24 / −0.06 over the
+            // trailing 30 days, threshold markets +0.22 / +0.98 (n=90 / 143) and +0.74 / +1.00;
+            // the pilot's ledger agreed (20 bucket orders −19% ROI, 3 threshold orders +98%).
+            // But calibration is not profit, and the bins disagree: all-time the key lifts the
+            // default (+35.6% · 436 vs +32.1% · 516) and drags the pilot-shaped kalshi row
+            // (+37.9% · 99 vs +41.3% · 103; since 08-09, +38.5% · 61 vs +42.5% · 68), and a
+            // flat-stake, fee-inclusive replay of the pilot's exact rule over all captures is
+            // −26% on 10 trades since 08-09 under this key against +8.8% on 11 under the band
+            // key — a λ near 1 on mid-book thresholds admits the 13–20% claimed-edge candidates,
+            // and that band realizes nothing. So the pilot's gate was NOT switched. Two rows: the
+            // first stacks the key on the default and reads against the default's same-window
+            // column; the second is the pilot's shape under the key and reads against
+            // `Pilot shape · kalshi only` above (whose forward window starts six days earlier).
+            (
+                "Default + λ by shape × band (walk-forward)",
+                "2026-09-07",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    shape_lambda: true,
+                    ..base
+                },
+            ),
+            (
+                "Pilot shape · kalshi · λ by shape × band (SELL + edge ≥ 10% + city λ 0.2)",
+                "2026-09-07",
+                StrategyParams {
+                    trade_day_of: false,
+                    shrink_edge: true,
+                    edge_threshold: 0.10,
+                    sell_only: true,
+                    city_lambda_floor: Some(0.2),
+                    venue: Some("kalshi"),
+                    shape_lambda: true,
+                    ..base
+                },
+            ),
         ];
         // The default's trade list, replayed once: every candidate's forward window is scored
         // against the default on the IDENTICAL window, so the comparison can't be moved by which
@@ -1555,6 +1652,26 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">Bands are split at 10¢ (<code>lambda_segment</code>): sub-10¢ books realize NEGATIVE λ on both sides while ≥ 10¢ is healthy, so the venue fit above blends anti-signal and signal. The segment-λ A/B row (<code>--segment-lambda</code>) trades these values instead of the venue λ; a clamped 0.00 segment never clears the edge threshold — an adaptive price floor.</p>");
             }
 
+            // Per-(venue, shape × price band) λ: the axis the band fit averages away — and what
+            // the shape-λ A/B rows and the Kalshi pilot's edge gate trade on since 2026-09-07.
+            let shape_fit = fit_shape_shrinkage(captures);
+            let shape_rows = shape_fit.rows_seg();
+            if !shape_rows.is_empty() {
+                s.push_str("<h3 class=\"sub-h\">λ by (venue, market shape × price band)</h3>");
+                s.push_str("<table><thead><tr><th>Venue</th><th>Shape · band</th><th>Raw slope</th><th>Rows</th><th>Shape-λ trading value</th></tr></thead><tbody>");
+                for (venue, seg, slope, n) in &shape_rows {
+                    s.push_str(&format!(
+                        "<tr><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td></tr>",
+                        esc(venue),
+                        esc(seg),
+                        slope,
+                        n,
+                        shape_fit.lambda_seg(venue, seg),
+                    ));
+                }
+                s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">Keys are market shape (2°F bucket vs open-ended threshold) × price band split at 10¢ and 35¢ (<code>shape_segment</code>, 2026-09-07). Buckets had realized ≈ 0 of their claimed edge on the Kalshi SELL side while mid-book thresholds realized nearly all of it; the band table above averages the two. The shape-λ A/B rows (<code>--shape-lambda</code>) trade these values — the Kalshi pilot's gate does not, because a fee-inclusive flat-stake replay of its rule under this key lost while the band key gained (see the rows' notes); a clamped 0.00 key never clears the edge threshold.</p>");
+            }
+
             // λ drift over time: is the model's realized edge decaying, and would the pilot's
             // λ floor see it in time?
             let series = lambda_series(&obs);
@@ -1637,6 +1754,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     // When shrinking, open positions use the full-sample λ — causal here, since every observed
     // resolution predates any open market's outcome.
     let open_fit = sp.shrink_edge.then(|| fit_shrinkage(captures));
+    let open_shape_fit = (sp.shrink_edge && sp.shape_lambda).then(|| fit_shape_shrinkage(captures));
     let open_city_fit = fit_city_shrinkage(captures);
     // "As of" for the open book's trailing check: the latest resolved target date, i.e. the last
     // day the fit could have learned anything from — the same anchor the λ diagnostics table uses.
@@ -1655,13 +1773,18 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         })
         .filter_map(|c| {
             let est = c.model_estimate?;
-            let shrink = match &open_fit {
-                None => Shrink::Off,
-                Some(f) if sp.segment_lambda => Shrink::Seg {
+            let shrink = match (&open_fit, &open_shape_fit) {
+                (None, _) => Shrink::Off,
+                (Some(_), Some(f)) => Shrink::Shape {
+                    fit: f,
+                    venue: &c.source,
+                    market_type: &c.market_type,
+                },
+                (Some(f), None) if sp.segment_lambda => Shrink::Seg {
                     fit: f,
                     venue: &c.source,
                 },
-                Some(f) => Shrink::Venue(f.lambda(&c.source)),
+                (Some(f), None) => Shrink::Venue(f.lambda(&c.source)),
             };
             let (side, frac, px, edge) = decide(
                 est,
@@ -2105,6 +2228,7 @@ struct Args {
     sell_only: bool,
     shrink_edge: bool,
     segment_lambda: bool,
+    shape_lambda: bool,
     min_forecast_distance: f64,
 }
 
@@ -2197,6 +2321,9 @@ impl Args {
             shrink_edge: !flags.iter().any(|f| f == "--raw-edge"),
             // Candidate, off by default: condition λ on (venue, price band) — see StrategyParams.
             segment_lambda: flags.iter().any(|f| f == "--segment-lambda"),
+            // Candidate, off by default: condition λ on (venue, shape × price band). A/B rows
+            // only — the Kalshi pilot's gate does not read it. See StrategyParams.
+            shape_lambda: flags.iter().any(|f| f == "--shape-lambda"),
             // Candidate, off by default: drop buckets sitting within N °C of the model's own point
             // forecast, where the over-wide σ manufactures edge — see StrategyParams.
             min_forecast_distance: map
@@ -2213,7 +2340,7 @@ fn usage() -> String {
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.10] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
      [--max-edge 0.30] [--min-price 0.0] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
-     [--raw-edge] [--segment-lambda] [--min-forecast-distance 0.0]"
+     [--raw-edge] [--segment-lambda] [--shape-lambda] [--min-forecast-distance 0.0]"
         .to_string()
 }
 
@@ -2265,6 +2392,7 @@ mod tests {
             sell_only: false,
             shrink_edge: false,
             segment_lambda: false,
+            shape_lambda: false,
             min_forecast_distance: 0.0,
             max_pm_spread: None,
             city_lambda_floor: None,
@@ -2509,6 +2637,55 @@ mod tests {
             .is_none(),
             "SELL side is gated by the bid's own band"
         );
+    }
+
+    #[test]
+    fn decide_shape_lambda_trades_thresholds_and_refuses_buckets_at_the_same_price() {
+        let sp = params();
+        let mut fit = ShrinkageFit::default();
+        for _ in 0..ShrinkageFit::MIN_N {
+            // Mid-book thresholds realize 90% of their claims; mid-book buckets none.
+            fit.observe_seg("kalshi", shape_segment("temp_at_least", 0.5), 0.10, 0.09);
+            fit.observe_seg("kalshi", shape_segment("temp_bucket", 0.5), 0.10, -0.01);
+        }
+        let shrink = |mt: &'static str| Shrink::Shape {
+            fit: &fit,
+            venue: "kalshi",
+            market_type: mt,
+        };
+        // Identical disagreement at an identical 40¢ bid: the threshold SELL trades at λ 0.9...
+        let (side, _, px, edge) = decide(
+            0.20,
+            0.40,
+            Some(0.40),
+            Some(0.42),
+            "temp_at_least",
+            1,
+            &shrink("temp_at_least"),
+            &sp,
+        )
+        .unwrap();
+        assert_eq!((side, px), ("SELL", 0.40));
+        assert!((edge - 0.9 * 0.20).abs() < 1e-9, "edge = shape λ × raw");
+        // ...and the bucket SELL is refused outright, its key clamped to 0.
+        assert!(
+            decide(
+                0.20,
+                0.40,
+                Some(0.40),
+                Some(0.42),
+                "temp_bucket",
+                1,
+                &shrink("temp_bucket"),
+                &sp
+            )
+            .is_none(),
+            "an anti-signal shape key never clears the threshold"
+        );
+        // A thin key (thresholds in the 10–35¢ band) falls back to the venue fold, not to 1.0.
+        let fold = fit.lambda("kalshi");
+        assert!(fold > 0.0 && fold < 0.9);
+        assert!((shrink("temp_at_least").at(0.20) - fold).abs() < 1e-12);
     }
 
     #[test]
