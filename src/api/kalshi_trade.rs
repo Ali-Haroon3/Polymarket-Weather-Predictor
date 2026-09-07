@@ -87,6 +87,52 @@ pub struct KalshiPosition {
     pub position: i64,
 }
 
+/// Which contract a limit BUY takes. The pilot's SELL signal is a NO purchase (max loss = NO
+/// price paid); its BUY signal is a YES purchase (max loss = YES price paid). Never a sell order
+/// on either side — nothing is ever shorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderSide {
+    Yes,
+    No,
+}
+
+impl OrderSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OrderSide::Yes => "yes",
+            OrderSide::No => "no",
+        }
+    }
+}
+
+/// The `CreateOrderRequest` body for a limit BUY on one side: the price field is the side's own
+/// (`yes_price` / `no_price`, cents), per kalshi-python 2.1.4's model.
+pub fn limit_order_body(
+    side: OrderSide,
+    ticker: &str,
+    count: i64,
+    price_cents: i64,
+    client_order_id: &str,
+    expiration_ts: Option<i64>,
+) -> Value {
+    let mut body = json!({
+        "action": "buy",
+        "side": side.as_str(),
+        "type": "limit",
+        "ticker": ticker,
+        "count": count,
+        "client_order_id": client_order_id,
+    });
+    body[match side {
+        OrderSide::Yes => "yes_price",
+        OrderSide::No => "no_price",
+    }] = json!(price_cents);
+    if let Some(ts) = expiration_ts {
+        body["expiration_ts"] = json!(ts);
+    }
+    body
+}
+
 pub struct KalshiTradeClient {
     base_url: String,
     client: reqwest::Client,
@@ -170,18 +216,57 @@ impl KalshiTradeClient {
         client_order_id: &str,
         expiration_ts: Option<i64>,
     ) -> Result<KalshiOrder, KalshiTradeError> {
-        let mut body = json!({
-            "action": "buy",
-            "side": "no",
-            "type": "limit",
-            "ticker": ticker,
-            "count": count,
-            "no_price": no_price_cents,
-            "client_order_id": client_order_id,
-        });
-        if let Some(ts) = expiration_ts {
-            body["expiration_ts"] = json!(ts);
-        }
+        self.buy_limit(
+            OrderSide::No,
+            ticker,
+            count,
+            no_price_cents,
+            client_order_id,
+            expiration_ts,
+        )
+        .await
+    }
+
+    /// Place a limit BUY of `count` YES contracts at `yes_price_cents` (1..=99) — the other half
+    /// of the market-shape strategy (2026-09-07), which buys the under-priced favorite cell as
+    /// readily as it sells the over-priced tail. Same idempotency and TTL contract as
+    /// `buy_no_limit`; max loss is the YES price paid.
+    pub async fn buy_yes_limit(
+        &self,
+        ticker: &str,
+        count: i64,
+        yes_price_cents: i64,
+        client_order_id: &str,
+        expiration_ts: Option<i64>,
+    ) -> Result<KalshiOrder, KalshiTradeError> {
+        self.buy_limit(
+            OrderSide::Yes,
+            ticker,
+            count,
+            yes_price_cents,
+            client_order_id,
+            expiration_ts,
+        )
+        .await
+    }
+
+    async fn buy_limit(
+        &self,
+        side: OrderSide,
+        ticker: &str,
+        count: i64,
+        price_cents: i64,
+        client_order_id: &str,
+        expiration_ts: Option<i64>,
+    ) -> Result<KalshiOrder, KalshiTradeError> {
+        let body = limit_order_body(
+            side,
+            ticker,
+            count,
+            price_cents,
+            client_order_id,
+            expiration_ts,
+        );
         let v = self
             .send(
                 "create order",
@@ -318,7 +403,15 @@ fn parse_order(o: &Value) -> Option<KalshiOrder> {
         no_price_cents: ["no_price", "no_price_dollars"]
             .iter()
             .find_map(|k| o.get(*k).and_then(value_as_f64))
-            .map(to_cents),
+            .map(to_cents)
+            .or_else(|| {
+                // A YES-side order states only its yes price; the NO complement keeps every
+                // reconciliation reader on the one convention (`KalshiFill` is NO-normalised).
+                ["yes_price", "yes_price_dollars"]
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(value_as_f64))
+                    .map(|x| 100 - to_cents(x))
+            }),
     })
 }
 
@@ -429,6 +522,32 @@ mod tests {
         let p = parse_order(&o).unwrap();
         assert_eq!(p.filled(), Some(0));
         assert!(!p.is_terminal());
+    }
+
+    #[test]
+    fn limit_order_body_names_the_sides_own_price_field() {
+        let no = limit_order_body(
+            OrderSide::No,
+            "KX-T",
+            10,
+            66,
+            "pilot-KX-T-2026-09-08",
+            Some(1),
+        );
+        assert_eq!(no["side"], "no");
+        assert_eq!(no["no_price"], 66);
+        assert!(no.get("yes_price").is_none());
+        assert_eq!(no["expiration_ts"], 1);
+        let yes = limit_order_body(OrderSide::Yes, "KX-T", 10, 41, "id", None);
+        assert_eq!(yes["side"], "yes");
+        assert_eq!(yes["yes_price"], 41);
+        assert!(yes.get("no_price").is_none());
+        assert!(yes.get("expiration_ts").is_none());
+        assert_eq!(yes["action"], "buy");
+        assert_eq!(yes["type"], "limit");
+        // A YES order echoed back with only its yes price parses to the NO complement.
+        let o = serde_json::json!({"order_id":"o","ticker":"KX-T","status":"resting","count":10,"remaining_count":10,"yes_price":41});
+        assert_eq!(parse_order(&o).unwrap().no_price_cents, Some(59));
     }
 
     #[test]

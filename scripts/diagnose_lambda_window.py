@@ -48,6 +48,8 @@ def ref_price(r):
         px = b if b is not None else a
     else:
         px = None if reported_book else r["entry_price"]
+        if px is not None and abs(px - 0.5) < 1e-9:
+            px = None  # the venues' never-traded default, not a price
     return usable(px)
 
 

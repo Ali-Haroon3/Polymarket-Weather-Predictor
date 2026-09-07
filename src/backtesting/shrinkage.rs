@@ -89,6 +89,14 @@ pub fn shape_segment(market_type: &str, px: f64) -> &'static str {
 /// Those rows alone made the Kalshi px ≥ 0.10 λ read +0.474 (n=1801); without them it is −0.006
 /// (n=1668), and the venue fold goes +0.380 → −0.019. The dashboard's `decide()` was worse off
 /// still: it "sold" those markets at 0.50 (see `fill_prices`).
+///
+/// The no-book case has the same trap one layer down: Polymarket's API also answers exactly
+/// 0.50 for a market nobody has traded, and the first three days of captures (06-29..07-01,
+/// before book capture existed) hold 21 such rows among 241 no-book rows whose real last trades
+/// cluster at 0–4¢ — a spike, not a price. 17 of the 18 resolved ones resolved NO against a mean
+/// estimate of 0.09, and they alone carried the Polymarket ≥ 10¢ λ from +0.085 to +0.249. So a
+/// no-book row whose last trade is EXACTLY 0.50 is treated as untraded on every venue; a genuine
+/// last trade at 50.0¢ with no book at all is rare enough to be worth losing for it.
 pub fn reference_price(
     entry_price: f64,
     best_bid: Option<f64>,
@@ -102,9 +110,15 @@ pub fn reference_price(
         (Some(b), None) => b,
         (None, Some(a)) => a,
         (None, None) if reported_book => return None, // a reported book with nothing on it
-        (None, None) => entry_price,
+        (None, None) => last_trade(entry_price)?,
     };
     usable(px)
+}
+
+/// A no-book row's last trade, or `None` when it is the venues' shared 0.50 "never traded"
+/// default rather than a price (see `reference_price`).
+fn last_trade(entry_price: f64) -> Option<f64> {
+    ((entry_price - 0.5).abs() > 1e-9).then_some(entry_price)
 }
 
 /// The EXECUTABLE prices a strategy replay may fill at: `(buy_px, sell_px)` — a BUY fills at the
@@ -124,7 +138,7 @@ pub fn fill_prices(
     let fallback = if best_bid.is_some() || best_ask.is_some() {
         None
     } else {
-        usable(entry_price)
+        last_trade(entry_price).and_then(usable)
     };
     (
         best_ask.and_then(usable).or(fallback),
@@ -368,6 +382,13 @@ mod tests {
         // No book at all (legacy rows): the last trade is all there is.
         assert!((reference_price(0.31, None, None).unwrap() - 0.31).abs() < 1e-12);
         assert_eq!(reference_price(0.0, None, None), None, "0/1 is not a price");
+        // ...unless it is exactly the 0.50 never-traded default both venues answer with.
+        assert_eq!(
+            reference_price(0.5, None, None),
+            None,
+            "0.50 with no book is a placeholder"
+        );
+        assert!((reference_price(0.51, None, None).unwrap() - 0.51).abs() < 1e-12);
         // A reported book with nothing usable on it never falls through to the last trade —
         // a 0-cent bid and a 100-cent ask are empty sides.
         assert_eq!(reference_price(0.5, Some(0.0), Some(1.0)), None);
@@ -387,9 +408,11 @@ mod tests {
         assert_eq!(fill_prices(0.5, None, Some(0.01)), (Some(0.01), None));
         // Bid-only: SELL at the bid, nothing to buy.
         assert_eq!(fill_prices(0.5, Some(0.99), None), (None, Some(0.99)));
-        // No book at all: the last trade fills both sides (legacy rows).
+        // No book at all: the last trade fills both sides (legacy rows)...
         assert_eq!(fill_prices(0.31, None, None), (Some(0.31), Some(0.31)));
         assert_eq!(fill_prices(0.0, None, None), (None, None));
+        // ...except the 0.50 never-traded default, which is not a price on either venue.
+        assert_eq!(fill_prices(0.5, None, None), (None, None));
         // Empty sides reported as 0 / 1 are not fills either.
         assert_eq!(fill_prices(0.5, Some(0.0), Some(1.0)), (None, None));
     }

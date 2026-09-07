@@ -83,8 +83,11 @@ jobs:
 
       - name: Kalshi pilot
         if: steps.guard.outputs.already != 'true'
-        # Runs after capture (fresh λ fit and outcomes); tolerates failure so a pilot hiccup can't
-        # block the dashboard. Dry by default: every intended order and skip is appended to
+        # Runs after capture (fresh fits and outcomes); tolerates failure so a pilot hiccup can't
+        # block the dashboard. Since 2026-09-07 the pilot's default strategy is MARKET SHAPE
+        # (backtesting::market_shape: the Kalshi ladder's own implied distribution, re-shaped by a
+        # walk-forward bias and sharpening, traded on both sides) — no forecast is fetched, so
+        # this step is fast. Dry by default: every intended order and skip is appended to
         # data/pilot_trades.jsonl — the go-live gate's evidence. With PILOT_LIVE=1 the SAME code
         # path places real limit orders (TTL-bounded, see the pilot's docs), reconciles earlier
         # ones into `fill`/`unfilled` rows, and the commit step below carries the ledger home.

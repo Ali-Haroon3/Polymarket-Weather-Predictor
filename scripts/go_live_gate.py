@@ -35,8 +35,21 @@ on its intended fill until then; paper rows are scored as intended, as before. T
 paper and live — it is one rule producing one sample — and the readout splits them so the
 paper-vs-real comparison (fill ratio, price improvement vs the intended limit) is visible.
 
+STRATEGIES (2026-09-07). The same day the phantom-fill defect took the weather model's edge to
+zero, the pilot switched to the MARKET-SHAPE strategy (backtesting::market_shape): the Kalshi
+ladder's own implied distribution, bias-shifted and sharpened by walk-forward (b, k), traded on
+BOTH sides — BUY NO against an over-priced tail, BUY YES on an under-priced favourite. Each
+ledger row carries its `strategy` (rows without the field are the legacy `model-shrunk` ones)
+and its `side` / `price` (the contract bought and the price paid per contract; legacy rows are
+NO-side at `no_price`). A gate is a rule about ONE strategy's sample, so this script scores one
+strategy at a time (`--strategy`, default market-shape) and never pools the 23 model-strategy
+orders into the new sample. Criterion 3 for market-shape is the module's own structure: (b, k)
+fitted only on ladders resolved before the trading day, at least MIN_LADDERS of them, plus the
+trailing-30-day replay breaker the pilot runs before touching the trade API.
+
 Usage: python3 scripts/go_live_gate.py [--ledger data/pilot_trades.jsonl]
                                        [--captures data/captures.jsonl] [--json]
+                                       [--strategy market-shape|model-shrunk]
 """
 import argparse
 import collections
@@ -45,7 +58,27 @@ import math
 
 MIN_SETTLED = 100
 MAX_CITY_LOSS_SHARE = 1.0 / 3.0
-STRUCTURAL_SINCE = "2026-09-06"
+STRUCTURAL = {
+    "model-shrunk": "segment_veto::TrailingBelowFloor in place since 2026-09-06",
+    "market-shape": (
+        "market_shape: walk-forward (b, k) over >= MIN_LADDERS resolved ladders + "
+        "trailing-30-day replay breaker, in place since 2026-09-07"
+    ),
+}
+DEFAULT_STRATEGY = "market-shape"
+
+
+def strategy_of(row):
+    return row.get("strategy") or "model-shrunk"
+
+
+def side_of(row):
+    return row.get("side") or "no"
+
+
+def paid_price(row):
+    """Price paid per contract on the row's own side (legacy rows: the NO price)."""
+    return row["price"] if row.get("price") is not None else row.get("no_price")
 
 
 def kalshi_fee(contracts, price):
@@ -68,11 +101,14 @@ def reconciliations(ledger):
     }
 
 
-def settle(ledger, captures):
-    """Join every 'order' ledger row to its resolved capture. Returns (settled, open, unfilled).
+def settle(ledger, captures, strategy=DEFAULT_STRATEGY):
+    """Join every 'order' ledger row of `strategy` to its resolved capture. Returns
+    (settled, open, unfilled).
 
     Live orders are taken at what actually filled once their reconciliation row exists; an
-    order that never filled is returned separately (no bet, so neither settled nor open).
+    order that never filled is returned separately (no bet, so neither settled nor open). A
+    NO-side order wins when the market resolves NO, a YES-side order when it resolves YES; the
+    fee is charged on the price paid either way (Kalshi's formula is symmetric in P).
     """
     outcome = {}
     for r in captures:
@@ -81,39 +117,42 @@ def settle(ledger, captures):
     fills = reconciliations(ledger)
     settled, still_open, unfilled = [], [], []
     for o in ledger:
-        if o.get("decision") != "order" or o.get("error"):
+        if o.get("decision") != "order" or o.get("error") or strategy_of(o) != strategy:
             continue
         live = not o.get("dry_run", True)
-        n, cost, price = o["contracts"], o["cost"], o["no_price"]
+        side = side_of(o)
+        n, cost, price = o["contracts"], o["cost"], paid_price(o)
         fill = fills.get(o.get("order_id")) if live else None
         if fill is not None:
             if fill["contracts"] <= 0:
                 unfilled.append(o)
                 continue
-            n, cost, price = fill["contracts"], fill["cost"], fill["no_price"]
+            n, cost, price = fill["contracts"], fill["cost"], paid_price(fill)
         key = (o["ticker"], o["target_date"])
         if key not in outcome:
             still_open.append(o)
             continue
         fee = kalshi_fee(n, price)
-        # The pilot buys NO: a YES outcome of 0 pays $1/contract.
-        gross = (n - cost) if outcome[key] == 0 else -cost
+        won = outcome[key] == (1 if side == "yes" else 0)
+        # A winning contract pays $1; the cost is what was paid for it.
+        gross = (n - cost) if won else -cost
         settled.append(
             {
                 "run_at": o["run_at"][:10],
                 "ticker": o["ticker"],
                 "city": o["city"],
+                "side": side,
                 "mode": "live" if live else "paper",
                 "reconciled": fill is not None,
                 "intended_contracts": o["contracts"],
-                "intended_price": o["no_price"],
+                "intended_price": paid_price(o),
                 "contracts": n,
                 "price": price,
                 "cost": cost,
                 "fee": fee,
                 "gross": gross,
                 "net": gross - fee,
-                "won": outcome[key] == 0,
+                "won": won,
             }
         )
     return settled, still_open, unfilled
@@ -149,7 +188,7 @@ def live_readout(settled, unfilled):
     }
 
 
-def evaluate(settled):
+def evaluate(settled, strategy=DEFAULT_STRATEGY):
     n = len(settled)
     staked = sum(t["cost"] for t in settled)
     net = sum(t["net"] for t in settled)
@@ -188,9 +227,9 @@ def evaluate(settled):
                     else "no losses yet"
                 ),
             },
-            "3_trailing_gate_structural": {
-                "pass": True,
-                "detail": f"segment_veto::TrailingBelowFloor in place since {STRUCTURAL_SINCE}",
+            "3_structural": {
+                "pass": strategy in STRUCTURAL,
+                "detail": STRUCTURAL.get(strategy, f"no structural check known for {strategy}"),
             },
         },
     }
@@ -201,10 +240,19 @@ def main():
     ap.add_argument("--ledger", default="data/pilot_trades.jsonl")
     ap.add_argument("--captures", default="data/captures.jsonl")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--strategy",
+        default=DEFAULT_STRATEGY,
+        choices=sorted(STRUCTURAL),
+        help="which strategy's orders to score (one gate, one sample)",
+    )
     a = ap.parse_args()
 
-    settled, still_open, unfilled = settle(load_jsonl(a.ledger), load_jsonl(a.captures))
-    r = evaluate(settled)
+    settled, still_open, unfilled = settle(
+        load_jsonl(a.ledger), load_jsonl(a.captures), a.strategy
+    )
+    r = evaluate(settled, a.strategy)
+    r["strategy"] = a.strategy
     r["open"] = len(still_open)
     r["go_live"] = all(c["pass"] for c in r["criteria"].values())
     r["live"] = live_readout(settled, unfilled)
@@ -215,7 +263,7 @@ def main():
 
     paper = r["settled"] - r["live"]["live_settled"]
     print(
-        f"GO-LIVE GATE — {r['settled']} settled orders ({paper} paper, "
+        f"GO-LIVE GATE [{a.strategy}] — {r['settled']} settled orders ({paper} paper, "
         f"{r['live']['live_settled']} live), {r['open']} open"
     )
     print(

@@ -8,9 +8,12 @@ use std::path::PathBuf;
 
 use chrono::{Duration, NaiveDate};
 
+use polymarket_weather_predictor::api::kalshi_trade::fee_frac;
+use polymarket_weather_predictor::backtesting::market_shape::{HIST_CAP, MIN_LADDERS};
 use polymarket_weather_predictor::backtesting::{
-    evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius, fill_prices,
-    kelly_fraction_of_capital, lambda_segment, reference_price, segment_veto, shape_segment,
+    build_ladders, evaluate_markets, evaluate_markets_with_forecast, fahrenheit_to_celsius,
+    fill_prices, fit_shape, kelly_fraction_of_capital, lambda_segment, reference_price,
+    segment_veto, shape_history, shape_segment, walk_forward_estimates, Ladder, LadderInput,
     MarketEvaluation, RealMarketLoader, ShrinkageFit, TRAIL_MIN_N, TRAIL_WINDOW_DAYS,
 };
 use polymarket_weather_predictor::cities;
@@ -108,6 +111,8 @@ fn run() -> Result<(), String> {
         max_pm_spread: None,
         city_lambda_floor: None,
         venue: None,
+        market_shape: args.market_shape,
+        kalshi_fees: args.kalshi_fees,
     };
     let html = render_dashboard(&evals, &captures, &sp);
 
@@ -401,6 +406,17 @@ struct StrategyParams {
     /// the universe's actual anti-signal cities went unnamed. Computed walk-forward from the same
     /// per-date fit as the shrunk edge, so it cannot be tuned on the trades it grades.
     city_lambda_floor: Option<f64>,
+    /// Trade on the MARKET-SHAPE estimate (`backtesting::market_shape`, 2026-09-07) instead of
+    /// the weather model's: each Kalshi city-day ladder's own implied Normal, bias-shifted and
+    /// sharpened by (b, k) fitted walk-forward on ladders that had resolved before the capture
+    /// day. The weather model is not consulted. Kalshi-only by data — Polymarket captures hold
+    /// one to three markets per city-day, never a ladder — so rows of other venues and
+    /// incomplete ladders are not traded. Evidence and hygiene on the module.
+    market_shape: bool,
+    /// Charge Kalshi's fee (`0.07·P·(1−P)` per contract, `api::kalshi_trade::fee_frac`) on
+    /// Kalshi rows, in the edge gate AND the booked PnL. Off on the legacy rows, which never
+    /// modelled fees; on for the market-shape rows, whose evidence was fee-inclusive.
+    kalshi_fees: bool,
 }
 
 /// How `decide` shrinks each side's claimed edge.
@@ -630,6 +646,7 @@ struct Trade {
 /// executable price, predicted edge); `None` when nothing is tradable, the edge net of spread is
 /// too thin, or Kelly says don't bet. Shared by settled PnL and the open-book preview so both
 /// size positions identically.
+#[cfg_attr(not(test), allow(dead_code))] // the fee-free form the tests exercise directly
 fn decide(
     est: f64,
     entry_price: f64,
@@ -640,17 +657,45 @@ fn decide(
     shrink: &Shrink,
     p: &StrategyParams,
 ) -> Option<(&'static str, f64, f64, f64)> {
+    decide_with_fee(
+        est,
+        entry_price,
+        best_bid,
+        best_ask,
+        market_type,
+        lead,
+        shrink,
+        p,
+        &|_| 0.0,
+    )
+}
+
+/// `decide` with a per-contract fee at the executable price subtracted from each side's edge
+/// before the threshold (`fee_frac` on Kalshi rows when `kalshi_fees` is set; zero otherwise).
+/// The returned edge is net of that fee, so Kelly sizes on what the trade is actually worth.
+#[allow(clippy::too_many_arguments)]
+fn decide_with_fee(
+    est: f64,
+    entry_price: f64,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+    market_type: &str,
+    lead: i64,
+    shrink: &Shrink,
+    p: &StrategyParams,
+    fee: &dyn Fn(f64) -> f64,
+) -> Option<(&'static str, f64, f64, f64)> {
     if lead == 0 && !p.trade_day_of {
         return None; // day-of: the market's intraday information set beats ours (see StrategyParams)
     }
     let (buy_px, sell_px) = fill_prices(entry_price, best_bid, best_ask);
 
-    // Shrunk edge per side at its own executable price; take the better one.
+    // Shrunk edge per side at its own executable price, net of the fee there; take the better one.
     let edge_buy = buy_px
-        .map(|px| shrink.at(px) * (est - px))
+        .map(|px| shrink.at(px) * (est - px) - fee(px))
         .unwrap_or(f64::NEG_INFINITY);
     let edge_sell = sell_px
-        .map(|px| shrink.at(px) * (px - est))
+        .map(|px| shrink.at(px) * (px - est) - fee(px))
         .unwrap_or(f64::NEG_INFINITY);
     let (side, edge, px) = if edge_buy >= edge_sell {
         ("BUY", edge_buy, buy_px?)
@@ -759,9 +804,14 @@ fn passes_venue(c: &Capture, p: &StrategyParams) -> bool {
 /// on a λ fitted only from captures whose target date resolved strictly earlier, so the shrunk-edge
 /// A/B row is out-of-sample by construction rather than a coefficient fitted on the trades it grades.
 fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
+    // The market-shape estimate per (market, capture day), each under the (b, k) its capture
+    // day could have fitted — walk-forward inside the module, keyed like the rows below.
+    let shape_est = p
+        .market_shape
+        .then(|| walk_forward_estimates(&build_ladders(ladder_inputs(captures)), "kalshi"));
     let mut settled: Vec<&Capture> = captures
         .iter()
-        .filter(|c| c.outcome.is_some() && c.model_estimate.is_some())
+        .filter(|c| c.outcome.is_some() && (c.model_estimate.is_some() || p.market_shape))
         .collect();
     settled.sort_by(|a, b| a.target_date.cmp(&b.target_date).then(a.city.cmp(&b.city)));
 
@@ -788,11 +838,23 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             }
             fit_date = Some(c.target_date);
         }
-        let est = c.model_estimate.unwrap();
         let outcome = c.outcome.unwrap();
         if let Some(o) = shrink_obs_of(c) {
             pending.push((o.venue, o.segment, o.shape, o.city, o.date, o.x, o.y));
         }
+        // The estimate this config trades on: the weather model's, or the market-shape one for
+        // rows whose ladder was complete and whose capture day had enough history — every other
+        // row is simply not tradeable under market shape.
+        let est = match &shape_est {
+            Some(map) => {
+                let Some(id) = &c.market_id else { continue };
+                match map.get(&(id.clone(), c.captured_at)) {
+                    Some(q) => *q,
+                    None => continue,
+                }
+            }
+            None => c.model_estimate.unwrap(),
+        };
         // Gate before decide(), but AFTER the row is queued into the λ fit: filtered rows are
         // still evidence about how real the model's claimed edges are, whether or not this
         // config trades them.
@@ -816,7 +878,9 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             },
             (true, false, false) => Shrink::Venue(fit.lambda(&c.source)),
         };
-        let Some((side, frac, px, edge)) = decide(
+        let charge = p.kalshi_fees && c.source == "kalshi";
+        let fee = |px: f64| if charge { fee_frac(px) } else { 0.0 };
+        let Some((side, frac, px, edge)) = decide_with_fee(
             est,
             c.entry_price,
             c.best_bid,
@@ -825,6 +889,7 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
             c.lead(),
             &shrink,
             p,
+            &fee,
         ) else {
             continue;
         };
@@ -832,10 +897,11 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         if stake < 1.0 {
             continue;
         }
+        // `stake` is contracts at $1 face; the fee is per contract at the price traded.
         let pnl = if side == "BUY" {
-            stake * (outcome - px)
+            stake * (outcome - px - fee(px))
         } else {
-            stake * (px - outcome)
+            stake * (px - outcome - fee(px))
         };
         equity += pnl;
         trades.push(Trade {
@@ -860,6 +926,33 @@ fn run_strategy(captures: &[Capture], p: &StrategyParams) -> Vec<Trade> {
         });
     }
     trades
+}
+
+/// The market-shape fit a run today would trade on — (b, k) over the resolved Kalshi ladders as
+/// of the day after the latest capture — so the number a human reads here is the number the
+/// pilot acts on next morning (both call `fit_shape` over `shape_history`).
+fn market_shape_readout(captures: &[Capture]) -> String {
+    let ladders: Vec<Ladder> = build_ladders(ladder_inputs(captures));
+    let Some(latest) = captures.iter().map(|c| c.captured_at).max() else {
+        return String::new();
+    };
+    let as_of = latest + Duration::days(1);
+    let hist = shape_history(&ladders, "kalshi", as_of);
+    let complete = ladders
+        .iter()
+        .filter(|l| l.venue == "kalshi" && l.is_complete())
+        .count();
+    match fit_shape(&hist) {
+        Some(p) => format!(
+            "<p class=\"muted\" style=\"font-size:11px\"><b>Market shape as of {as_of}:</b> the Kalshi ladder is re-priced at Normal(μ {:+.1} °C, σ × {:.2}) — b, k fitted by cell Brier over the {} most recent resolved complete ladders (cap {}; {} complete Kalshi ladders captured in all). b &gt; 0 says the market runs cold against the NWS CLI settlement; k &lt; 1 says its tails are over-priced. This is exactly the fit the pilot trades tomorrow.</p>",
+            p.bias_c, p.sigma_scale, hist.len(), HIST_CAP, complete
+        ),
+        None => format!(
+            "<p class=\"muted\" style=\"font-size:11px\"><b>Market shape as of {as_of}:</b> {} resolved complete Kalshi ladders, under the {} the fit needs — the market-shape rows and the pilot stand down until there are enough.</p>",
+            hist.len(),
+            MIN_LADDERS
+        ),
+    }
 }
 
 /// Rolled-up performance over a slice of trades.
@@ -953,6 +1046,36 @@ struct Capture {
     /// predating the station pricer, hence `Option` — see `forecast_distance_c`.
     #[serde(default)]
     forecast_high: Option<f64>,
+    /// Venue market id — the key `walk_forward_estimates` hands back a market-shape estimate
+    /// under. Absent on the very oldest rows.
+    #[serde(default)]
+    market_id: Option<String>,
+}
+
+/// Every capture as ladder input — the shared `reference_price` for the mid, the raw book for
+/// the executable sides. Rows without a market id cannot be keyed and are dropped.
+fn ladder_inputs(captures: &[Capture]) -> Vec<LadderInput> {
+    captures
+        .iter()
+        .filter_map(|c| {
+            let usable = |x: f64| (x > 0.0 && x < 1.0).then_some(x);
+            Some(LadderInput {
+                venue: c.source.clone(),
+                city: c.city.clone(),
+                target: c.target_date,
+                captured: c.captured_at,
+                market_id: c.market_id.clone()?,
+                market_type: c.market_type.clone(),
+                threshold: c.threshold,
+                threshold_upper: c.threshold_upper,
+                unit: c.unit.clone(),
+                price: reference_price(c.entry_price, c.best_bid, c.best_ask),
+                bid: c.best_bid.and_then(usable),
+                ask: c.best_ask.and_then(usable),
+                outcome: c.outcome,
+            })
+        })
+        .collect()
 }
 
 fn default_source() -> String {
@@ -1174,6 +1297,12 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 sp.min_forecast_distance
             ));
         }
+        if sp.market_shape {
+            f.push("market-shape estimate (Kalshi ladders, walk-forward b·k)".to_string());
+        }
+        if sp.kalshi_fees {
+            f.push("Kalshi fees charged".to_string());
+        }
         if sp.shrink_edge {
             if sp.shape_lambda {
                 f.push("shape λ (walk-forward, venue × shape × price band)".to_string());
@@ -1270,6 +1399,8 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             max_pm_spread: None,
             city_lambda_floor: None,
             venue: None,
+            market_shape: false,
+            kalshi_fees: false,
             // Pinned to the pre-08-17 default: frozen rows must replay the same rule forever,
             // not drift with the CLI default they were frozen under.
             edge_threshold: 0.05,
@@ -1537,6 +1668,61 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                     ..base
                 },
             ),
+            // MARKET SHAPE, frozen 2026-09-07 — the first rows in this table that do not trade
+            // the weather model at all (`backtesting::market_shape`): each Kalshi city-day
+            // ladder's own implied Normal, bias-shifted and sharpened by (b, k) fitted
+            // walk-forward, traded at executable prices NET OF KALSHI FEES (the only rows here
+            // that charge them). Discovered the day the phantom-fill defect was found, on the
+            // clean captures: 899 trades at +10.7% ROI, t = 4.1 clustered by date, every month
+            // positive, both sides significant — see the module docs. Three rows: both sides at
+            // the module's default 3% threshold (what the pilot trades from 09-08), the SELL-only
+            // (BUY NO) half of it, and the 6% threshold that traded quality for breadth in the
+            // sweep. Read them against each other and against the default's same-window column —
+            // and note the default is fee-free while these are not, so any lead these show is
+            // understated.
+            (
+                "Market shape · kalshi · both sides · edge ≥ 3% after fees · px ≥ 0.10",
+                "2026-09-07",
+                StrategyParams {
+                    market_shape: true,
+                    kalshi_fees: true,
+                    trade_day_of: false,
+                    shrink_edge: false,
+                    edge_threshold: 0.03,
+                    min_price: 0.10,
+                    venue: Some("kalshi"),
+                    ..base
+                },
+            ),
+            (
+                "Market shape · kalshi · SELL only (BUY NO) · edge ≥ 3% after fees · px ≥ 0.10",
+                "2026-09-07",
+                StrategyParams {
+                    market_shape: true,
+                    kalshi_fees: true,
+                    trade_day_of: false,
+                    shrink_edge: false,
+                    edge_threshold: 0.03,
+                    min_price: 0.10,
+                    sell_only: true,
+                    venue: Some("kalshi"),
+                    ..base
+                },
+            ),
+            (
+                "Market shape · kalshi · both sides · edge ≥ 6% after fees · px ≥ 0.10",
+                "2026-09-07",
+                StrategyParams {
+                    market_shape: true,
+                    kalshi_fees: true,
+                    trade_day_of: false,
+                    shrink_edge: false,
+                    edge_threshold: 0.06,
+                    min_price: 0.10,
+                    venue: Some("kalshi"),
+                    ..base
+                },
+            ),
         ];
         // The default's trade list, replayed once: every candidate's forward window is scored
         // against the default on the IDENTICAL window, so the comparison can't be moved by which
@@ -1593,6 +1779,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ));
         }
         s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">The first five columns are ALL-TIME (every settled capture since late June) and therefore diluted by history — a config doing badly lately keeps a good headline for a while. The last three are the promotion-decision view: each row's record on trades whose target date is strictly AFTER the date the row was frozen into the tracker (so its rule cannot have been tuned on them), beside the default replayed on the identical window. A candidate earns promotion by leading its own forward column, not the all-time one; all-time leads are in-sample for any rule chosen by inspecting this same sample. The shrunk-edge rows are additionally walk-forward in λ (each date trades on a λ fitted only from earlier resolutions).</p>");
+        s.push_str(&market_shape_readout(captures));
 
         // Edge-shrinkage diagnostics: how much of its claimed edge does the model actually realize,
         // per venue? Fitted on resolved lead ≥ 1 captures only (lead ≤ 0 prices embed the outcome).
@@ -1756,6 +1943,9 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     let open_fit = sp.shrink_edge.then(|| fit_shrinkage(captures));
     let open_shape_fit = (sp.shrink_edge && sp.shape_lambda).then(|| fit_shape_shrinkage(captures));
     let open_city_fit = fit_city_shrinkage(captures);
+    let open_shape_est = sp
+        .market_shape
+        .then(|| walk_forward_estimates(&build_ladders(ladder_inputs(captures)), "kalshi"));
     // "As of" for the open book's trailing check: the latest resolved target date, i.e. the last
     // day the fit could have learned anything from — the same anchor the λ diagnostics table uses.
     let open_as_of = shrinkage_obs(captures)
@@ -1772,7 +1962,10 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 && passes_venue(c, sp)
         })
         .filter_map(|c| {
-            let est = c.model_estimate?;
+            let est = match &open_shape_est {
+                Some(map) => *map.get(&(c.market_id.clone()?, c.captured_at))?,
+                None => c.model_estimate?,
+            };
             let shrink = match (&open_fit, &open_shape_fit) {
                 (None, _) => Shrink::Off,
                 (Some(_), Some(f)) => Shrink::Shape {
@@ -1786,7 +1979,9 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 },
                 (Some(f), None) => Shrink::Venue(f.lambda(&c.source)),
             };
-            let (side, frac, px, edge) = decide(
+            let charge = sp.kalshi_fees && c.source == "kalshi";
+            let fee = |px: f64| if charge { fee_frac(px) } else { 0.0 };
+            let (side, frac, px, edge) = decide_with_fee(
                 est,
                 c.entry_price,
                 c.best_bid,
@@ -1795,6 +1990,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 c.lead(),
                 &shrink,
                 sp,
+                &fee,
             )?;
             Some((c, side, stake_dollars(frac, sp.bankroll, sp), px, edge))
         })
@@ -2230,6 +2426,8 @@ struct Args {
     segment_lambda: bool,
     shape_lambda: bool,
     min_forecast_distance: f64,
+    market_shape: bool,
+    kalshi_fees: bool,
 }
 
 impl Args {
@@ -2247,6 +2445,9 @@ impl Args {
                 || k == "--shrink-edge"
                 || k == "--raw-edge"
                 || k == "--segment-lambda"
+                || k == "--shape-lambda"
+                || k == "--market-shape"
+                || k == "--kalshi-fees"
             {
                 flags.push(k);
                 i += 1;
@@ -2330,6 +2531,11 @@ impl Args {
                 .get("--min-forecast-distance")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0),
+            // Trade the market-shape estimate instead of the weather model (Kalshi ladders,
+            // walk-forward b·k) — the 2026-09-07 A/B rows; see StrategyParams / market_shape.
+            market_shape: flags.iter().any(|f| f == "--market-shape"),
+            // Charge Kalshi's per-contract fee in the gate and the PnL on Kalshi rows.
+            kalshi_fees: flags.iter().any(|f| f == "--kalshi-fees"),
         })
     }
 }
@@ -2340,7 +2546,8 @@ fn usage() -> String {
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.10] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
      [--max-edge 0.30] [--min-price 0.0] [--no-sell-buckets] [--trade-day-of] [--sell-only] \
-     [--raw-edge] [--segment-lambda] [--shape-lambda] [--min-forecast-distance 0.0]"
+     [--raw-edge] [--segment-lambda] [--shape-lambda] [--min-forecast-distance 0.0] \
+     [--market-shape] [--kalshi-fees]"
         .to_string()
 }
 
@@ -2365,6 +2572,7 @@ mod tests {
             best_bid: None,
             best_ask: None,
             forecast_high: None,
+            market_id: None,
         }
     }
 
@@ -2397,6 +2605,8 @@ mod tests {
             max_pm_spread: None,
             city_lambda_floor: None,
             venue: None,
+            market_shape: false,
+            kalshi_fees: false,
         }
     }
 
@@ -2405,7 +2615,7 @@ mod tests {
         let sp = params();
         let caps = vec![
             cap("2026-06-10", "Denver", 0.40, Some(0.60), Some(1.0)), // BUY, clears
-            cap("2026-06-12", "Denver", 0.50, Some(0.20), Some(0.0)), // SELL, clears
+            cap("2026-06-12", "Denver", 0.49, Some(0.20), Some(0.0)), // SELL, clears
         ];
         let trades = run_strategy(&caps, &sp);
         assert_eq!(trades.len(), 2);
@@ -2422,8 +2632,8 @@ mod tests {
         let sp = params();
         let caps = vec![
             cap("2026-06-10", "Denver", 0.40, Some(0.60), Some(1.0)), // BUY, wins
-            cap("2026-06-11", "Denver", 0.50, Some(0.20), Some(0.0)), // SELL, wins
-            cap("2026-06-12", "Denver", 0.50, Some(0.52), Some(1.0)), // thin edge → skipped
+            cap("2026-06-11", "Denver", 0.49, Some(0.20), Some(0.0)), // SELL, wins
+            cap("2026-06-12", "Denver", 0.49, Some(0.52), Some(1.0)), // thin edge → skipped
             cap("2026-06-13", "Denver", 0.40, Some(0.60), None),      // unresolved → not settled
         ];
         let trades = run_strategy(&caps, &sp);
@@ -2452,9 +2662,9 @@ mod tests {
         let sp = params();
         let mt = "temp_bucket";
         assert!(decide_nb(0.60, 0.40, mt, 1, &sp).is_some_and(|(side, _, _, _)| side == "BUY"));
-        assert!(decide_nb(0.20, 0.50, mt, 1, &sp).is_some_and(|(side, _, _, _)| side == "SELL"));
+        assert!(decide_nb(0.20, 0.49, mt, 1, &sp).is_some_and(|(side, _, _, _)| side == "SELL"));
         assert!(
-            decide_nb(0.52, 0.50, mt, 1, &sp).is_none(),
+            decide_nb(0.52, 0.49, mt, 1, &sp).is_none(),
             "edge below threshold"
         );
         assert!(
@@ -2500,9 +2710,11 @@ mod tests {
         );
         // Bid-only book with the same placeholder: no BUY at 0.50 either.
         assert!(decide(0.98, 0.50, Some(0.99), None, mt, 1, &Shrink::Off, &sp).is_none());
-        // With no book at all the last trade still fills (legacy rows).
-        assert!(decide(0.02, 0.50, None, None, mt, 1, &Shrink::Off, &sp)
-            .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.50).abs() < 1e-9));
+        // With no book at all a real last trade still fills (legacy rows) — but 0.50 exactly
+        // is both venues' never-traded default, not a price.
+        assert!(decide(0.02, 0.48, None, None, mt, 1, &Shrink::Off, &sp)
+            .is_some_and(|(s, _, px, _)| s == "SELL" && (px - 0.48).abs() < 1e-9));
+        assert!(decide(0.02, 0.50, None, None, mt, 1, &Shrink::Off, &sp).is_none());
     }
 
     #[test]
@@ -2534,11 +2746,11 @@ mod tests {
             ..params()
         };
         assert!(
-            decide_nb(0.20, 0.50, "temp_bucket", 1, &capped).is_some(),
+            decide_nb(0.20, 0.49, "temp_bucket", 1, &capped).is_some(),
             "0.30 edge is within cap"
         );
         assert!(
-            decide_nb(0.05, 0.50, "temp_bucket", 1, &capped).is_none(),
+            decide_nb(0.05, 0.49, "temp_bucket", 1, &capped).is_none(),
             "0.45 edge exceeds cap"
         );
 
@@ -2548,11 +2760,11 @@ mod tests {
             ..params()
         };
         assert!(
-            decide_nb(0.20, 0.50, "temp_bucket", 1, &nsb).is_none(),
+            decide_nb(0.20, 0.49, "temp_bucket", 1, &nsb).is_none(),
             "bucket SELL suppressed"
         );
         assert!(
-            decide_nb(0.20, 0.50, "temp_at_most", 1, &nsb).is_some(),
+            decide_nb(0.20, 0.49, "temp_at_most", 1, &nsb).is_some(),
             "non-bucket SELL allowed"
         );
         assert!(
@@ -2572,7 +2784,7 @@ mod tests {
             "BUY suppressed under --sell-only"
         );
         assert!(
-            decide_nb(0.20, 0.50, "temp_bucket", 1, &so).is_some_and(|(s, _, _, _)| s == "SELL"),
+            decide_nb(0.20, 0.49, "temp_bucket", 1, &so).is_some_and(|(s, _, _, _)| s == "SELL"),
             "SELL still trades"
         );
     }
@@ -2711,25 +2923,26 @@ mod tests {
     fn decide_shrinks_edge_before_threshold_and_kelly() {
         let sp = params();
         let mt = "temp_bucket";
-        // Raw edge 0.10 clears the 5% threshold...
-        let (_, raw_frac, _, raw_edge) = decide_nb(0.60, 0.50, mt, 1, &sp).unwrap();
-        assert!((raw_edge - 0.10).abs() < 1e-9);
-        // ...but at λ = 0.4 the shrunk edge is 4% → below threshold, no trade.
-        assert!(decide(0.60, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).is_none());
+        // Raw edge 0.11 clears the 5% threshold... (0.49, not 0.50: a bookless 0.50 is the
+        // venues' never-traded placeholder, not a price)
+        let (_, raw_frac, _, raw_edge) = decide_nb(0.60, 0.49, mt, 1, &sp).unwrap();
+        assert!((raw_edge - 0.11).abs() < 1e-9);
+        // ...but at λ = 0.4 the shrunk edge is 4.4% → below threshold, no trade.
+        assert!(decide(0.60, 0.49, None, None, mt, 1, &Shrink::Venue(0.4), &sp).is_none());
         // A larger raw edge survives shrinking, with both edge and Kelly stake scaled down.
         let (side, frac, px, edge) =
-            decide(0.80, 0.50, None, None, mt, 1, &Shrink::Venue(0.4), &sp).unwrap();
+            decide(0.80, 0.49, None, None, mt, 1, &Shrink::Venue(0.4), &sp).unwrap();
         assert_eq!(side, "BUY");
-        assert!((px - 0.50).abs() < 1e-9);
-        assert!((edge - 0.12).abs() < 1e-9, "edge = 0.4 × 0.30");
+        assert!((px - 0.49).abs() < 1e-9);
+        assert!((edge - 0.124).abs() < 1e-9, "edge = 0.4 × 0.31");
         let (_, unshrunk_frac, _, _) =
-            decide(0.80, 0.50, None, None, mt, 1, &Shrink::Off, &sp).unwrap();
+            decide(0.80, 0.49, None, None, mt, 1, &Shrink::Off, &sp).unwrap();
         assert!(
             frac < unshrunk_frac && frac > 0.0,
             "Kelly sizes on the shrunk belief"
         );
         // λ = 0 (anti-signal) kills everything.
-        assert!(decide(0.99, 0.50, None, None, mt, 1, &Shrink::Venue(0.0), &sp).is_none());
+        assert!(decide(0.99, 0.49, None, None, mt, 1, &Shrink::Venue(0.0), &sp).is_none());
         let _ = raw_frac;
     }
 
@@ -2837,7 +3050,7 @@ mod tests {
         };
         let caps = vec![
             cap("2026-06-10", "Denver", 0.40, Some(0.60), Some(1.0)),
-            cap("2026-06-11", "Denver", 0.50, Some(0.20), Some(0.0)),
+            cap("2026-06-11", "Denver", 0.49, Some(0.20), Some(0.0)),
         ];
         let a = run_strategy(&caps, &sp);
         let b = run_strategy(&caps, &shrunk);
@@ -2852,7 +3065,7 @@ mod tests {
     fn cap_with_forecast(date: &str, forecast_c: Option<f64>) -> Capture {
         Capture {
             forecast_high: forecast_c,
-            ..cap(date, "Denver", 0.50, Some(0.20), Some(0.0))
+            ..cap(date, "Denver", 0.49, Some(0.20), Some(0.0))
         }
     }
 
@@ -2873,7 +3086,7 @@ mod tests {
             threshold_upper: None,
             unit: Some("C".into()),
             forecast_high: Some(31.0),
-            ..cap("2026-06-10", "Denver", 0.50, Some(0.20), Some(0.0))
+            ..cap("2026-06-10", "Denver", 0.49, Some(0.20), Some(0.0))
         };
         assert!((forecast_distance_c(&celsius).unwrap() - 2.0).abs() < 1e-9);
     }
@@ -2884,7 +3097,7 @@ mod tests {
         let at_least = Capture {
             market_type: "temp_at_least".into(),
             forecast_high: Some(28.0),
-            ..cap("2026-06-10", "Denver", 0.50, Some(0.20), Some(0.0))
+            ..cap("2026-06-10", "Denver", 0.49, Some(0.20), Some(0.0))
         };
         assert!(forecast_distance_c(&at_least).is_none());
         // Captures predating the station pricer carry no forecast.
@@ -2922,7 +3135,7 @@ mod tests {
             Capture {
                 market_type: "temp_at_least".into(),
                 forecast_high: Some(32.4), // would be "near" if the axis applied to thresholds
-                ..cap("2026-06-11", "Denver", 0.50, Some(0.20), Some(0.0))
+                ..cap("2026-06-11", "Denver", 0.49, Some(0.20), Some(0.0))
             },
         ];
         assert_eq!(run_strategy(&caps, &filtered).len(), 2);
