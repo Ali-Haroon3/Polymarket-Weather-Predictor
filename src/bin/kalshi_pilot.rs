@@ -20,7 +20,11 @@
 //! of the TRADED segment falls below `--lambda-floor` (realized edge too thin to be worth
 //! trading) or when its own settled orders lost more than `--max-weekly-loss` dollars over the
 //! trailing 7 days. Both are mode-scoped rehearsals: dry runs are gated by dry-run ledger rows,
-//! live runs by live ones. Correlated exposure is capped per (city, target day) via
+//! live runs by live ones — and since 2026-09-09 the loss breaker is STRATEGY-scoped too (only
+//! the running strategy's own settled orders count), because on 09-08 the freshly-launched
+//! market-shape pilot read $−45.62 of its $50 limit from the retired model strategy's three LA
+//! losses — a rail that can stand a strategy down for trades it never made measures nothing.
+//! Correlated exposure is capped per (city, target day) via
 //! `--max-city-exposure` — N bucket markets on one city-day are one weather bet, not N
 //! independent bets.
 //!
@@ -89,7 +93,7 @@
 //! favourite — at executable prices net of the fee, floored at 10¢ on either side. Every ledger
 //! row now carries `strategy`, `side` and `price` (paid per contract on that side); rows without
 //! them are the legacy NO-side model rows. The breakers under market shape are the weekly-loss
-//! breaker as before and, in place of the λ floor, `shape_stand_down_reason`: no (b, k) until
+//! breaker (over market-shape rows only) and, in place of the λ floor, `shape_stand_down_reason`: no (b, k) until
 //! `MIN_LADDERS` resolved ladders exist, and stand down when the trailing `--trailing-days`
 //! walk-forward replay of the strategy over the captures realizes under `--min-trailing-roi` on
 //! at least `TRAILING_MIN_TRADES` trades — "has the edge stopped realizing lately", the same
@@ -421,12 +425,18 @@ async fn run() -> Result<(), String> {
 
     // Circuit breakers — evaluated BEFORE the trade API is touched, so a tripped breaker can
     // never be defeated by an auth failure path or a partial run.
-    let (week_pnl, week_settled) =
-        realized_week_pnl(&cfg.ledger_path, &cfg.captures_path, today, cfg.live);
+    let (week_pnl, week_settled) = realized_week_pnl(
+        &cfg.ledger_path,
+        &cfg.captures_path,
+        today,
+        cfg.live,
+        cfg.strategy,
+    );
     if week_settled > 0 {
         println!(
-            "Trailing-7-day realized PnL: ${week_pnl:+.2} over {week_settled} settled {} orders",
+            "Trailing-7-day realized PnL: ${week_pnl:+.2} over {week_settled} settled {} {} orders",
             if cfg.live { "live" } else { "dry-run" },
+            cfg.strategy.as_str(),
         );
     }
     let reason = match &shape {
@@ -1045,7 +1055,7 @@ fn live_ladder_probs(
 
 /// Why a market-shape run must not trade, if any breaker tripped: no fit yet (under
 /// `MIN_LADDERS` resolved ladders), the trailing replay under its floor on enough trades, or
-/// the weekly-loss breaker shared with the model strategy. Resuming is a human decision.
+/// the weekly-loss breaker over its own settled orders. Resuming is a human decision.
 fn shape_stand_down_reason(
     run: &ShapeRun,
     min_trailing_roi: f64,
@@ -1445,7 +1455,9 @@ fn reconciliation_row(
 /// days, joined against capture outcomes; returns (pnl, settled-order count). Mode-scoped: live
 /// runs are judged by live orders and dry runs by dry-run orders, so the breaker logic rehearses
 /// during the dry-run phase but paper losses can never trip a funded run (arming live after a
-/// bad paper week is a human call, not this function's).
+/// bad paper week is a human call, not this function's). Strategy-scoped since 2026-09-09: only
+/// rows the running `strategy` wrote count, so a retired strategy's losses cannot stand down the
+/// one actually trading (legacy rows without the field are model-shrunk).
 ///
 /// Live orders count what their `fill` row says filled (an `unfilled` order is no bet and does
 /// not settle); until that row exists, and for every dry row, the intended fill is assumed. That
@@ -1456,6 +1468,7 @@ fn realized_week_pnl(
     captures_path: &PathBuf,
     today: NaiveDate,
     live: bool,
+    strategy: Strategy,
 ) -> (f64, usize) {
     let rows = load_ledger(ledger_path);
     if rows.is_empty() {
@@ -1468,6 +1481,9 @@ fn realized_week_pnl(
     for row in &rows {
         if row.decision != "order" || row.error.is_some() || row.dry_run == live {
             continue;
+        }
+        if row.strategy != strategy.as_str() {
+            continue; // another strategy's bet: its losses are its own breaker's business
         }
         if row.target_date < week_ago || row.target_date >= today {
             continue; // outside the trailing week, or not yet settled
@@ -1512,8 +1528,10 @@ fn load_outcomes(captures_path: &PathBuf) -> HashMap<String, f64> {
 }
 
 /// Dollars committed per (city, target day) by prior runs' orders on still-open markets —
-/// same-mode rows only, mirroring `realized_week_pnl`, and at the reconciled cost where a fill
-/// row exists — so the per-city cap holds across restarts, not just within one run.
+/// same-mode rows only, like `realized_week_pnl`, but of EVERY strategy (unlike it): dollars on
+/// one city-day settle on one daily high whichever rule placed them, so the cap is a portfolio
+/// limit, not a per-strategy one. At the reconciled cost where a fill row exists, so the cap
+/// holds across restarts, not just within one run.
 fn open_city_exposure(
     ledger_path: &PathBuf,
     today: NaiveDate,
@@ -1861,7 +1879,8 @@ mod tests {
         )
         .unwrap();
 
-        let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
+        let (pnl, settled) =
+            realized_week_pnl(&ledger, &captures, today, true, Strategy::ModelShrunk);
         assert_eq!(
             settled, 2,
             "only WIN and LOSE are live, in-window, and resolved"
@@ -1873,8 +1892,66 @@ mod tests {
 
         // Dry mode sees only the dry row (which resolved NO via WIN? no — DRY has no outcome
         // under its own ticker), so nothing settles.
-        let (_, dry_settled) = realized_week_pnl(&ledger, &captures, today, false);
+        let (_, dry_settled) =
+            realized_week_pnl(&ledger, &captures, today, false, Strategy::ModelShrunk);
         assert_eq!(dry_settled, 0, "DRY ticker has no capture outcome");
+    }
+
+    #[test]
+    fn weekly_pnl_is_scoped_to_the_running_strategy() {
+        // 09-08 in miniature: the retired model strategy's LA losses sit inside the window
+        // while the market-shape pilot has one settled win. Each strategy's breaker must see
+        // only its own rows — the model's losses were $4.38 from standing the new pilot down.
+        let dir = std::env::temp_dir().join("pilot_test_weekly_pnl_strategy");
+        let _ = std::fs::create_dir_all(&dir);
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let today = d("2026-09-09");
+        let model_loss = order_row("LAX-LOSE", "LA", "2026-09-03", 0.48, 31, true);
+        let mut shape_win = order_row("PHX-WIN", "Phoenix", "2026-09-08", 0.60, 10, true);
+        shape_win.strategy = "market-shape".into();
+        let legacy = LedgerRow {
+            strategy: legacy_strategy(),
+            ..order_row("OLD-LOSE", "Vegas", "2026-09-05", 0.50, 10, true)
+        };
+        write_jsonl(&ledger, &[model_loss, shape_win, legacy]);
+        let cap_line = |id: &str, outcome: f64| {
+            format!(
+                r#"{{"captured_at":"2026-09-02","target_date":"2026-09-03","market_id":"{id}","entry_price":0.4,"model_estimate":0.4,"outcome":{outcome},"source":"kalshi"}}"#
+            )
+        };
+        std::fs::write(
+            &captures,
+            [
+                cap_line("LAX-LOSE", 1.0),
+                cap_line("PHX-WIN", 0.0),
+                cap_line("OLD-LOSE", 1.0),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let (shape_pnl, shape_n) =
+            realized_week_pnl(&ledger, &captures, today, false, Strategy::MarketShape);
+        assert_eq!(shape_n, 1, "market shape sees only its own settled order");
+        let expect = 10.0 * (0.40 - fee_frac(0.60));
+        assert!(
+            (shape_pnl - expect).abs() < 1e-9,
+            "got {shape_pnl}, want {expect}"
+        );
+
+        let (model_pnl, model_n) =
+            realized_week_pnl(&ledger, &captures, today, false, Strategy::ModelShrunk);
+        assert_eq!(
+            model_n, 2,
+            "the model strategy owns its loss and the legacy row"
+        );
+        let expect = 31.0 * (-0.48 - fee_frac(0.48)) + 10.0 * (-0.50 - fee_frac(0.50));
+        assert!(
+            (model_pnl - expect).abs() < 1e-9,
+            "got {model_pnl}, want {expect}"
+        );
+        assert!(model_pnl < 0.0 && shape_pnl > 0.0);
     }
 
     #[test]
@@ -2233,7 +2310,8 @@ mod tests {
         )
         .unwrap();
 
-        let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
+        let (pnl, settled) =
+            realized_week_pnl(&ledger, &captures, today, true, Strategy::ModelShrunk);
         assert_eq!(
             settled, 2,
             "PART (filled) and ASSUMED (assumed); NEVER was no bet"
@@ -2426,7 +2504,7 @@ mod tests {
             ..ok_copy(&ok)
         };
         assert_eq!(shape_stand_down_reason(&thin, -0.10, 0.0, 0, 50.0), None);
-        // The weekly-loss breaker is shared.
+        // The weekly-loss breaker still applies under market shape (over its own rows).
         assert!(shape_stand_down_reason(&ok, -0.10, -60.0, 3, 50.0)
             .unwrap()
             .contains("weekly loss"));
@@ -2454,7 +2532,8 @@ mod tests {
         yes.no_price = None;
         yes.cost = 4.5;
         yes.strategy = "market-shape".into();
-        let no = order_row("N", "NYC", "2026-09-08", 0.60, 10, false);
+        let mut no = order_row("N", "NYC", "2026-09-08", 0.60, 10, false);
+        no.strategy = "market-shape".into();
         write_jsonl(&ledger, &[yes, no]);
         let cap_line = |id: &str, outcome: f64| {
             format!(
@@ -2466,7 +2545,8 @@ mod tests {
             [cap_line("Y", 1.0), cap_line("N", 1.0)].join("\n"),
         )
         .unwrap();
-        let (pnl, settled) = realized_week_pnl(&ledger, &captures, today, true);
+        let (pnl, settled) =
+            realized_week_pnl(&ledger, &captures, today, true, Strategy::MarketShape);
         assert_eq!(settled, 2);
         // Y resolved YES: the YES order wins 10×(0.55 − fee); the NO order loses 10×(0.60 + fee).
         let expect = 10.0 * (0.55 - fee_frac(0.45)) + 10.0 * (-0.60 - fee_frac(0.60));
