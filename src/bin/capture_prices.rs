@@ -16,7 +16,7 @@ use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::{
-    KalshiHistoryDownloader, PolymarketHistoryDownloader, WeatherMarketRow,
+    KalshiHistoryDownloader, PolymarketHistoryDownloader, SettlementMetadata, WeatherMarketRow,
 };
 use polymarket_weather_predictor::backtesting::spread_sigma::{
     fit_spread_sigma_scale, spread_obs, SpreadObs, SPREAD_SIGMA_MIN_N,
@@ -78,6 +78,10 @@ struct Snapshot {
     /// Venue ("polymarket" / "kalshi"). Defaulted for snapshots captured before multi-venue support.
     #[serde(default = "default_source")]
     source: String,
+    /// Rules observed at entry, preserved through later outcome-filling rewrites. Absence on a
+    /// legacy capture stays absent; today's rules must not be backfilled onto a historical price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settlement_metadata: Option<SettlementMetadata>,
     /// Live daily-high forecast (°C) used to price this market and the σ (°C) applied. Stored because
     /// the live forecast is ephemeral — it can't be recovered after the fact — and it's the raw input
     /// needed to recalibrate bucket pricing against realized highs as settled captures accrue.
@@ -457,6 +461,7 @@ fn process(
                 model_estimate: est.get(r.market_id.as_str()).copied(),
                 outcome: outcomes.get(&r.market_id).copied(),
                 source: r.source.clone(),
+                settlement_metadata: r.settlement_metadata.clone(),
                 forecast_high: fs.map(|(mu, _)| mu),
                 forecast_sigma: fs.map(|(_, sigma)| sigma),
                 best_bid: r.best_bid,
@@ -731,6 +736,11 @@ mod tests {
             "forecast_high":31.2,"forecast_sigma":1.1,"best_bid":0.28,"best_ask":0.33,
             "forecast_high_graphcast":null}"#;
         let s: Snapshot = serde_json::from_str(line).expect("old rows must keep parsing");
+        assert!(s.settlement_metadata.is_none());
+        assert!(serde_json::to_value(&s)
+            .unwrap()
+            .get("settlement_metadata")
+            .is_none());
         assert_eq!(s.volume, None);
         assert_eq!(s.open_interest, None);
         assert_eq!(s.pm25_max, None);
@@ -746,6 +756,10 @@ mod tests {
 
         // And the new fields survive a write→read cycle (outcome-filling rewrites every row).
         let mut s2 = s;
+        s2.settlement_metadata = SettlementMetadata::from_rules(
+            Some("According to The Weather Company."),
+            Some("Final source may publish corrections.\n"),
+        );
         s2.volume = Some(1234.5);
         s2.us_aqi_max = Some(158.0);
         s2.forecast_high_aigfs = Some(33.1);
@@ -763,6 +777,7 @@ mod tests {
         );
         s2.sigma_source = Some("ensemble".to_string());
         let round: Snapshot = serde_json::from_str(&serde_json::to_string(&s2).unwrap()).unwrap();
+        assert_eq!(round.settlement_metadata, s2.settlement_metadata);
         assert_eq!(round.volume, Some(1234.5));
         assert_eq!(round.us_aqi_max, Some(158.0));
         assert_eq!(round.forecast_high_aigfs, Some(33.1));
@@ -777,6 +792,70 @@ mod tests {
         // byte-stable or every committed row churns every day.
         let json = serde_json::to_string(&s2).unwrap();
         assert!(json.find("ecmwf_ifs025").unwrap() < json.find("gfs_seamless").unwrap());
+    }
+
+    #[test]
+    fn outcome_rewrite_preserves_entry_rules_without_backfilling_legacy_rows() {
+        let base = serde_json::json!({
+            "captured_at":"2026-07-01", "target_date":"2026-07-02", "market_id":"legacy",
+            "market_title":"NYC", "market_type":"temp_at_least", "threshold":81.0,
+            "threshold_upper":null, "unit":"F", "city":"NYC", "entry_price":0.3,
+            "model_estimate":null, "outcome":null, "source":"kalshi"
+        });
+        let legacy: Snapshot = serde_json::from_value(base).unwrap();
+        let mut captured = legacy.clone();
+        captured.market_id = "captured".into();
+        captured.settlement_metadata = SettlementMetadata::from_rules(
+            Some("According to the National Weather Service."),
+            Some("Rules observed at entry.\n"),
+        );
+        let entry_metadata = captured.settlement_metadata.clone();
+        let active = ["legacy", "captured"]
+            .into_iter()
+            .map(|id| {
+                serde_json::from_value::<WeatherMarketRow>(serde_json::json!({
+                    "target_date":"2026-07-02", "market_id":id, "market_title":"NYC",
+                    "market_type":"temp_at_least", "threshold":81.0, "threshold_upper":null,
+                    "unit":"F", "city":"NYC", "price":0.3, "outcome":null, "source":"kalshi",
+                    "settlement_metadata":SettlementMetadata::from_rules(
+                        Some("According to The Weather Company."), Some("Changed after entry.")
+                    )
+                }))
+                .unwrap()
+            })
+            .collect();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "capture-settlement-rules-{}-{unique}",
+            std::process::id()
+        ));
+        let path = dir.join("captures.jsonl");
+        write_snapshots(&path, &[legacy, captured]).unwrap();
+        process(
+            active,
+            [("legacy".into(), 0.0), ("captured".into(), 1.0)]
+                .into_iter()
+                .collect(),
+            NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
+            90,
+            &dir.join("cache"),
+            &path,
+        )
+        .unwrap();
+        let rows = load_snapshots(&path);
+        assert_eq!(rows.len(), 2, "existing markets do not trigger new fetches");
+        assert_eq!(rows[0].outcome, Some(0.0));
+        assert_eq!(rows[1].outcome, Some(1.0));
+        assert!(rows[0].settlement_metadata.is_none());
+        assert_eq!(rows[1].settlement_metadata, entry_metadata);
+        let first_line = std::fs::read_to_string(&path).unwrap();
+        let legacy_json: serde_json::Value =
+            serde_json::from_str(first_line.lines().next().unwrap()).unwrap();
+        assert!(legacy_json.get("settlement_metadata").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -795,6 +874,7 @@ mod tests {
             model_estimate: Some(0.25),
             outcome: Some(1.0),
             source: "kalshi".into(),
+            settlement_metadata: None,
             forecast_high: Some(31.2),
             forecast_sigma: Some(1.1),
             best_bid: Some(0.28),

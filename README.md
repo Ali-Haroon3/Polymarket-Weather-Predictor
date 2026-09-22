@@ -192,6 +192,13 @@ lost after fees: joint −14.13%, parent-selected NO −1.19%, bias only −9.82
 All failed the frozen criteria. Only 30 June events had usable quotes, and intervals still
 span loss and gain; this rejects promotion without proving negative expected returns.
 
+The [current contract-source audit](reports/2026-09-22-current-weather-audit.md) found that
+all 90 observed September 22 daily contracts name The Weather Company. Older NWS-based
+calibration descriptions are not proof of the current contractual source or identical
+measurement rules. New captures retain optional raw rules, an observed-source tag and a
+rules hash; legacy metadata stays missing. Venue-reported outcome labels remain unchanged.
+The same audit found no profitable full-ladder taker basket in one current 15-city snapshot.
+
 ## Environment Variables
 
 Optional variables (defaults are provided in `src/config.rs`):

@@ -24,6 +24,7 @@ use sha2::Sha256;
 
 use super::polymarket_history::{
     infer_market_type_and_threshold, is_weather_like_market, json_str, value_as_f64,
+    SettlementMetadata,
 };
 use super::WeatherMarketRow;
 use crate::config;
@@ -533,6 +534,10 @@ fn parse_kalshi_market(m: &Value) -> Option<WeatherMarketRow> {
         price: kalshi_price(m),
         outcome: kalshi_outcome(m),
         source: "kalshi".to_string(),
+        settlement_metadata: SettlementMetadata::from_rules(
+            m.get("rules_primary").and_then(Value::as_str),
+            m.get("rules_secondary").and_then(Value::as_str),
+        ),
         best_bid: kalshi_cents(m, "yes_bid"),
         best_ask: kalshi_cents(m, "yes_ask"),
         volume: m.get("volume").and_then(value_as_f64),
@@ -647,16 +652,67 @@ fn ticker_date(ticker: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::SettlementSource;
+
+    #[test]
+    fn settlement_metadata_comes_from_raw_rules_not_city_or_ticker() {
+        let mut market = serde_json::json!({
+            "ticker": "KXHIGHNY-26SEP22-T70", "strike_type": "greater",
+            "floor_strike": 70, "result": "yes",
+        });
+        let missing = parse_kalshi_market(&market).unwrap();
+        assert!(missing.settlement_metadata.is_none());
+        assert_eq!(missing.outcome, Some(1.0));
+        for (primary, source) in [
+            (
+                "If the high is above 70 according to The Weather Company, then Yes.\n",
+                SettlementSource::Twc,
+            ),
+            (
+                "If the high is above 70 according to the National Weather Service, then Yes.",
+                SettlementSource::Nws,
+            ),
+            (
+                "According to The Weather Company and National Weather Service.",
+                SettlementSource::Conflicting,
+            ),
+            ("Provider not specified.", SettlementSource::Unknown),
+        ] {
+            let secondary = "  Final source may publish corrections.\n";
+            market["rules_primary"] = primary.into();
+            market["rules_secondary"] = secondary.into();
+            let row = parse_kalshi_market(&market).unwrap();
+            let metadata = row.settlement_metadata.unwrap();
+            assert_eq!(metadata.source, source);
+            assert_eq!(metadata.rules_primary.as_deref(), Some(primary));
+            assert_eq!(metadata.rules_secondary.as_deref(), Some(secondary));
+            assert_eq!(row.outcome, Some(1.0), "labels remain venue results");
+        }
+        market["rules_primary"] = serde_json::Value::Null;
+        market["rules_secondary"] = "According to The Weather Company.".into();
+        assert_eq!(
+            parse_kalshi_market(&market)
+                .unwrap()
+                .settlement_metadata
+                .unwrap()
+                .source,
+            SettlementSource::Unknown,
+            "secondary guidance cannot assign the primary source"
+        );
+    }
 
     #[test]
     fn titleless_market_under_known_series_parses_from_ticker_and_strikes() {
         // The 08-18 regression: open markets listed since ~08-14 carry no parseable title, so
         // the parse must survive on ticker prefix (city) + structured strikes (shape) alone.
-        let row = parse_kalshi_market(&serde_json::from_str::<Value>(
-            r#"{"ticker":"KXHIGHNY-26AUG19-B87.5","strike_type":"between",
+        let row = parse_kalshi_market(
+            &serde_json::from_str::<Value>(
+                r#"{"ticker":"KXHIGHNY-26AUG19-B87.5","strike_type":"between",
                 "floor_strike":87,"cap_strike":88,"status":"active","result":"",
                 "yes_bid":22,"yes_ask":27,"close_time":"2026-08-20T04:59:00Z"}"#,
-        ).unwrap())
+            )
+            .unwrap(),
+        )
         .expect("should parse without a title");
         assert_eq!(row.city, "NYC");
         assert_eq!(row.market_type, "temp_bucket");
@@ -668,10 +724,13 @@ mod tests {
         );
         assert_eq!(row.market_title, "KXHIGHNY-26AUG19-B87.5");
         // An unknown series without a title still fails the weather gate.
-        assert!(parse_kalshi_market(&serde_json::from_str::<Value>(
-            r#"{"ticker":"KXFED-26AUG19-T3","strike_type":"greater","floor_strike":3,
+        assert!(parse_kalshi_market(
+            &serde_json::from_str::<Value>(
+                r#"{"ticker":"KXFED-26AUG19-T3","strike_type":"greater","floor_strike":3,
                 "status":"active","result":""}"#,
-        ).unwrap())
+            )
+            .unwrap()
+        )
         .is_none());
     }
 

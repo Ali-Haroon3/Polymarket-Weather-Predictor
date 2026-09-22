@@ -32,6 +32,15 @@ after fees. None passed any profitability criterion; intervals span zero, so thi
 proof of negative expected return. Preserve the original inconclusive result and label
 the extension a reanalysis, not an untouched holdout. Do not add months, move the quote time,
 lower the history minimum, or mine profitable side/city slices to rescue this experiment.
+The separate `reports/2026-09-22-current-weather-audit.md` confirms all 90 current daily
+contracts across 15 cities name The Weather Company; NYC Aug13 rules name NWS, while Aug14/15
+name TWC. This does not prove a universal cutover or changed underlying measurements, and
+does not explain losses by itself. Older direct-NWS source assertions below are historical
+calibration assumptions. Kalshi outcomes still come from venue YES/NO results. Future captures
+retain optional raw contract rules, conservative source tag and exact-text hash; legacy
+metadata remains unknown. No automatic source filter or pricing change is introduced.
+The current full-ladder taker snapshot found no net-positive basket at $15/$150 after fees;
+eleven sides were missing a quote, and the result is not a claim about all possible alpha.
 
 ## Commands
 
