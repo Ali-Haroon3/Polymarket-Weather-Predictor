@@ -10,6 +10,11 @@ has disappeared in the recent sample. Several plausible changes make a retrospec
 but none has a settlement-day confidence interval clearly above zero under the inherited
 pilot selection policy. They remain research candidates, not promoted trading rules.
 
+![Current pilot cumulative paper P&L after modeled fees](2026-09-21-pilot-pnl.png)
+
+The September 15 peak subsequently disappeared. The side curves are attribution within the
+existing selected orders, not independently selected strategies or account returns.
+
 ## Independent check of the NO candidate
 
 | Capture-time policy | Through September 7 | After September 7 |
