@@ -173,6 +173,25 @@ The [completed archive test](reports/2026-09-22-archive-validation.md) recovered
 no entry had the 60 earlier settled ladders needed for training. All four policies remain
 unevaluated on that sample. Compressed inputs are included for offline reproduction.
 
+A [bounded training extension](reports/2026-09-22-archive-training-extension-preregistration.md)
+adds March–April history while keeping the original May–June input and all four policies fixed.
+It is a reanalysis of the already processed June sample, not a new untouched holdout. The
+extension stops at April 30 regardless of results and cannot authorize live trading:
+
+```bash
+python3 scripts/kalshi_archive_warmup.py --download \
+  --preregistration-commit f534598c21615f5cb97b61933f8927844a9217a0
+python3 scripts/archive_alpha_validation.py \
+  --captures data/raw/kalshi_archive_may_june_2026/captures.jsonl \
+  --warmup data/raw/kalshi_archive_warmup_mar_apr_2026/captures.jsonl
+```
+
+The [completed extension](reports/2026-09-22-archive-training-extension.md) recovered 154
+training events and supplied 182–208 causal ladders at every June entry. All four policies
+lost after fees: joint −14.13%, parent-selected NO −1.19%, bias only −9.82%, scale only −7.93%.
+All failed the frozen criteria. Only 30 June events had usable quotes, and intervals still
+span loss and gain; this rejects promotion without proving negative expected returns.
+
 ## Environment Variables
 
 Optional variables (defaults are provided in `src/config.rs`):

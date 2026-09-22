@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-09-21)
+## Latest audited state (2026-09-22; canonical captures through 2026-09-21)
 
 See `reports/2026-09-21-alpha-audit.md` and reproduce with `scripts/pilot_alpha_audit.py --replay`.
 The market-shape ledger has 60 settled PAPER orders, −$1.31 net (−0.15%); no live orders are recorded.
@@ -24,6 +24,14 @@ coverage: 61/885 events recovered, only 29–55 causal training ladders at each 
 policies were NOT EVALUATED, not zero-return strategies. Do not interpret their empty-sample
 bootstrap/stress defaults as performance evidence. The account exposure cap now also reserves
 resting commitments, including orders outside the pilot ledger.
+The preregistered March–April training extension is complete in
+`reports/2026-09-22-archive-training-extension.md`: 154 additional events supplied 182–208
+causal training ladders on all 27 June entry days. On the unchanged sparse June sample,
+joint / parent-selected NO / bias-only / scale-only returned −14.13% / −1.19% / −9.82% / −7.93%
+after fees. None passed any profitability criterion; intervals span zero, so this is not
+proof of negative expected return. Preserve the original inconclusive result and label
+the extension a reanalysis, not an untouched holdout. Do not add months, move the quote time,
+lower the history minimum, or mine profitable side/city slices to rescue this experiment.
 
 ## Commands
 
