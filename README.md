@@ -199,6 +199,10 @@ calibration descriptions are not proof of the current contractual source or iden
 measurement rules. New captures retain optional raw rules, an observed-source tag and a
 rules hash; legacy metadata stays missing. Venue-reported outcome labels remain unchanged.
 The same audit found no profitable full-ladder taker basket in one current 15-city snapshot.
+A separate [next-day quote screen](reports/2026-09-22-next-day-basket-audit.md) covers all
+15 September 23 ladders: 23 quoted basket sides and 46 budget comparisons, with no positive
+result after fees. The ordinary basket payoff is conditional on binary settlement; contract
+rules retain a last-fair-price exception when settlement data is unavailable.
 
 ## Environment Variables
 
