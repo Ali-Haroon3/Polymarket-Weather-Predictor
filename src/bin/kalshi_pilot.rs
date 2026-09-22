@@ -11,7 +11,8 @@
 //!
 //! Safety: DRY RUN unless `--live` is passed; the trade host defaults to Kalshi's DEMO
 //! environment until `KALSHI_BASE_URL` points at production; `PILOT_DISABLE=1` is a kill switch;
-//! total exposure and orders-per-run are hard-capped; and the ledger (`data/pilot_trades.jsonl`)
+//! total exposure (held positions plus resting commitments) and orders-per-run are hard-capped;
+//! and the ledger (`data/pilot_trades.jsonl`)
 //! plus resting orders plus held positions all dedupe re-runs, so restarting the pilot can't
 //! double-order a market. Every decision (including skips) is appended to the ledger.
 //!
@@ -567,6 +568,10 @@ async fn run() -> Result<(), String> {
     } else {
         cfg.max_exposure
     };
+    // Account-wide commitments include orders placed outside this pilot's ledger. A resting
+    // order on another ticker can still fill, so ticker dedupe alone cannot enforce the cap.
+    // Validate all quantities before collecting today's new order candidates.
+    let mut exposure = position_cost_estimate(&positions) + resting_cost_estimate(&resting)?;
 
     // Dedupe set: anything held, resting, or decided "order" by an earlier run IN THIS MODE —
     // a dry row is a paper decision and must not block the live order it rehearsed.
@@ -596,7 +601,6 @@ async fn run() -> Result<(), String> {
     };
     let mut ledger: Vec<LedgerRow> = Vec::new();
     let mut placed = 0usize;
-    let mut exposure = position_cost_estimate(&positions);
 
     // Deterministic scan order (venue fetch order varies): by target date then ticker.
     let mut sorted: Vec<&WeatherMarketRow> = markets.iter().collect();
@@ -1628,6 +1632,37 @@ fn position_cost_estimate(positions: &[polymarket_weather_predictor::api::Kalshi
         .sum()
 }
 
+/// Worst-case dollars committed by resting orders, at $1 per remaining contract. The original
+/// count is a conservative upper bound when the API omits the remainder; it may double count
+/// a partial fill already held, but never makes unknown exposure disappear.
+fn resting_cost_estimate(orders: &[KalshiOrder]) -> Result<f64, String> {
+    let mut contracts = 0i64;
+    for order in orders {
+        if order.count.is_some_and(|count| count < 0)
+            || order.remaining_count.is_some_and(|remaining| remaining < 0)
+            || order
+                .count
+                .zip(order.remaining_count)
+                .is_some_and(|(count, remaining)| remaining > count)
+        {
+            return Err(format!(
+                "resting order {} has invalid quantities; no new orders",
+                order.order_id
+            ));
+        }
+        let remaining = order.remaining_count.or(order.count).ok_or_else(|| {
+            format!(
+                "resting order {} has unknown exposure; no new orders",
+                order.order_id
+            )
+        })?;
+        contracts = contracts
+            .checked_add(remaining)
+            .ok_or("resting order exposure overflow; no new orders")?;
+    }
+    Ok(contracts as f64)
+}
+
 /// Tickers an earlier run in the SAME mode decided to order. Dry rows are paper decisions: they
 /// rehearse the live order, they don't stand in for it.
 fn load_ordered_tickers(path: &PathBuf, live: bool) -> HashSet<String> {
@@ -2259,6 +2294,64 @@ mod tests {
             is_taker: true,
             created_time: String::new(),
         }
+    }
+
+    fn resting_order(count: Option<i64>, remaining_count: Option<i64>) -> KalshiOrder {
+        KalshiOrder {
+            order_id: "external-order".into(),
+            ticker: "EXTERNAL-TICKER".into(),
+            status: "resting".into(),
+            count,
+            remaining_count,
+            fill_count: None,
+            no_price_cents: Some(75),
+        }
+    }
+
+    #[test]
+    fn resting_commitments_consume_the_account_exposure_cap() {
+        let positions = vec![polymarket_weather_predictor::api::KalshiPosition {
+            ticker: "HELD-TICKER".into(),
+            position: -40,
+        }];
+        let resting = vec![resting_order(Some(200), Some(110))];
+        let exposure =
+            position_cost_estimate(&positions) + resting_cost_estimate(&resting).unwrap();
+        assert_eq!(exposure, 150.0);
+        let ample_balance: f64 = 1000.0;
+        assert!(
+            exposure + 15.0 > 150.0_f64.min(ample_balance),
+            "external resting orders must prevent another $15 commitment at the cap"
+        );
+    }
+
+    #[test]
+    fn resting_exposure_uses_initial_count_only_when_remainder_is_missing() {
+        let orders = vec![
+            resting_order(Some(25), None),
+            resting_order(Some(100), Some(0)),
+            resting_order(None, Some(10)),
+        ];
+        assert_eq!(resting_cost_estimate(&orders).unwrap(), 35.0);
+        assert_eq!(resting_cost_estimate(&[]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn resting_exposure_fails_closed_on_unknown_negative_or_overflowing_counts() {
+        for order in [
+            resting_order(None, None),
+            resting_order(Some(-1), None),
+            resting_order(Some(10), Some(-1)),
+            resting_order(Some(-1), Some(0)),
+            resting_order(Some(10), Some(11)),
+        ] {
+            assert!(resting_cost_estimate(&[order]).is_err());
+        }
+        assert!(resting_cost_estimate(&[
+            resting_order(Some(i64::MAX), None),
+            resting_order(None, Some(1)),
+        ])
+        .is_err());
     }
 
     #[test]

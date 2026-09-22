@@ -14,6 +14,10 @@ pilot selection policy. They remain research candidates, not promoted trading ru
 
 The September 15 peak subsequently disappeared. The side curves are attribution within the
 existing selected orders, not independently selected strategies or account returns.
+Aggregating by target date, paper profit peaked at $78.34 and then fell $79.65 to −$1.31.
+The 41 YES orders' recorded probabilities implied +$195.84 expected net after modeled fees,
+versus −$59.31 realized on paper. That expectation is a model claim, not independent evidence
+of edge; the observed drawdown shows why positive predicted returns cannot establish admission.
 
 ## Independent check of the NO candidate
 
@@ -138,6 +142,13 @@ Python validates the verdict against its original order; a later zero-fill row c
 overwrite a realized loss. Legacy fallback verdicts lack the verification marker and are
 re-queried. Unknown legacy orders older than the 14-day recent-order window require explicit
 historical/manual reconciliation; they remain blocked rather than being silently discarded.
+
+An additional account-exposure defect omitted resting orders from the total cap: ticker
+deduplication prevented repeating the same market but allowed new commitments elsewhere while
+earlier orders could still fill. The cap now reserves a conservative $1 per remaining resting
+contract, including orders outside the pilot ledger. Missing remainder falls back to initial
+quantity; unknown or inconsistent quantities block new orders. This can conservatively double
+count partial fills already held, which reduces capacity rather than concealing commitments.
 
 No funded accounts were accessed and no orders were placed. Live fees remain modeled rather
 than reconciled from actual exchange fee fields, a limitation already recorded in the first

@@ -124,7 +124,9 @@ It is a DRY RUN unless `--live` is passed. Every live run, including demo, must 
 fee-inclusive go-live gate before placing new orders. `python3` is required for live admission;
 the scorer is embedded in the Rust binary at build time. Missing/invalid evidence or an
 unavailable scorer blocks new orders. Earlier live orders are reconciled before admission and
-breaker checks so standing down does not suppress expiry management. The trade host remains
+breaker checks so standing down does not suppress expiry management. Total exposure includes
+held positions and resting commitments, including orders outside the pilot ledger; unknown
+resting quantities block new orders. The trade host remains
 demo until `KALSHI_BASE_URL` points at production:
 
 ```bash
@@ -151,6 +153,22 @@ See [the reproducible loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
 from these results. Python accounting tests run with
 `python3 -m unittest discover -s tests -p 'test_*.py'`.
+
+The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
+May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
+training availability. It evaluates four fixed policies without changing the pilot:
+
+```bash
+python3 scripts/kalshi_archive_capture.py --download --workers 12 \
+  --preregistration-commit e7c78f46121e4bfa9915c91c2165fba9377de118
+python3 scripts/archive_alpha_validation.py \
+  --captures data/raw/kalshi_archive_may_june_2026/captures.jsonl
+```
+
+Public responses are cached and hashed under ignored `data/raw/`; canonical captures remain
+separate. Missing exact candles reject the whole event. Archive candles are sparse, so missing
+minutes do not establish missing orderbooks. Coverage must be read alongside any performance
+result, and historical quote replays are not execution evidence.
 
 ## Environment Variables
 
