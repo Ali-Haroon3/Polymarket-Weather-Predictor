@@ -2,13 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-09-22; canonical captures through 2026-09-21)
+## Latest audited state (2026-09-22; canonical captures through 2026-09-22)
 
-See `reports/2026-09-21-alpha-audit.md` and reproduce with `scripts/pilot_alpha_audit.py --replay`.
-The market-shape ledger has 60 settled PAPER orders, −$1.31 net (−0.15%); no live orders are recorded.
-BUY NO within the selected top five is +$58 on 19, but a NO-only replacement replay is −$9.55 on 57.
-Do not promote the side filter from this exploratory subset. A rank-first, NO-only-without-replacement
-shadow attribution is frozen after the 09-21 capture; its future sample is reported separately.
+See `reports/2026-09-22-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 65 settled PAPER orders, −$42.75 net (−4.45%); no live orders are recorded.
+Five September20 entries resolved today for −$41.44. Historical selected NO is +$63.12 on 21;
+YES is −$105.87 on 44. Do not promote this exploratory side split. The September21 replacement
+replay lost $9.55 on 57; its dated result remains in `reports/2026-09-21-alpha-audit.md`.
+A rank-first, NO-only-without-replacement shadow is frozen after the September21 capture.
+It still has zero prospective selections/settlements: September22 placed one Boston YES paper
+intent for September23. Older NO orders resolving today must not enter the shadow sample.
 The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
 Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
@@ -41,6 +44,8 @@ retain optional raw contract rules, conservative source tag and exact-text hash;
 metadata remains unknown. No automatic source filter or pricing change is introduced.
 The current full-ladder taker snapshot found no net-positive basket at $15/$150 after fees;
 eleven sides were missing a quote, and the result is not a claim about all possible alpha.
+Upstream capture commit20e0a9f is merged. Its scheduled run used main before these draft-PR
+changes, so new source metadata and enforced live admission are not implied to be deployed.
 
 ## Commands
 
