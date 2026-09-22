@@ -566,9 +566,15 @@ fn parse_order(o: &Value) -> Option<KalshiOrder> {
 }
 
 fn parse_fill(f: &Value) -> Option<KalshiFill> {
-    let side = nonempty_string(f, &["outcome_side", "side"]).unwrap_or("no");
-    if !matches!(side, "yes" | "no") {
-        return None;
+    let mut side = None;
+    for key in ["outcome_side", "side"] {
+        if let Some(value) = f.get(key).filter(|value| !value.is_null()) {
+            let parsed = value.as_str()?;
+            if !matches!(parsed, "yes" | "no") || side.is_some_and(|old| old != parsed) {
+                return None;
+            }
+            side = Some(parsed);
+        }
     }
     let count = integer_field(f, &["count_fp", "count"], false)??;
     if count <= 0 {
@@ -590,10 +596,13 @@ fn parse_fill(f: &Value) -> Option<KalshiFill> {
 }
 
 /// Explicit side prices take precedence over the legacy own-side `price` field.
-fn fill_no_price_cents(f: &Value, side: &str) -> Option<i64> {
+fn fill_no_price_cents(f: &Value, side: Option<&str>) -> Option<i64> {
     if let Some(c) = no_price(f)? {
         return Some(c);
     }
+    // A legacy `price` is paid on the fill's own side. Without that side its NO equivalent
+    // is unknowable; defaulting to NO could turn an 80-cent YES fill into a 20-cent one.
+    let side = side?;
     let c = price_field(f, &[("price", false)])??;
     Some(if side == "yes" { 100 - c } else { c })
 }
@@ -746,6 +755,36 @@ mod tests {
             parse_order(&json!({"order_id":"o", "ticker":"T", "no_price_dollars":"1.0000"}))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn ambiguous_legacy_fill_prices_require_a_consistent_explicit_side() {
+        let mut fill = json!({"fill_id":"f", "order_id":"o", "ticker":"T", "count":10, "price":80});
+        assert!(
+            parse_fill(&fill).is_none(),
+            "own-side price without side is ambiguous"
+        );
+        fill["side"] = json!("yes");
+        assert_eq!(parse_fill(&fill).unwrap().no_price_cents, 20);
+        fill["outcome_side"] = json!("no");
+        assert!(
+            parse_fill(&fill).is_none(),
+            "conflicting side aliases cannot be normalized"
+        );
+        fill["no_price_dollars"] = json!("0.2000");
+        assert!(
+            parse_fill(&fill).is_none(),
+            "named prices cannot excuse conflicting sides"
+        );
+        fill.as_object_mut().unwrap().remove("side");
+        fill.as_object_mut().unwrap().remove("outcome_side");
+        assert_eq!(
+            parse_fill(&fill).unwrap().no_price_cents,
+            20,
+            "named NO price is unambiguous without side"
+        );
+        fill["side"] = json!("");
+        assert!(parse_fill(&fill).is_none());
     }
 
     #[test]
