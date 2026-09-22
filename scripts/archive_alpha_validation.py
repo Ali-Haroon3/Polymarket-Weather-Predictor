@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Evaluate the four policies frozen in the 2026-09-22 archive preregistration.
 
-Offline historical validation, not prospective results or evidence of fills. Only
-the independently downloaded May 1--June 28 archive is accepted. Never initialize
-this test from canonical June--September captures. Run after the preregistration
-and this implementation have been committed, and after retrieval is authorized.
+Offline historical validation, not prospective results or evidence of fills. The
+default audit accepts only the independently downloaded May 1--June 28 archive.
+An optional, separately supplied March--April warmup extends training only, with
+the original June input held byte-for-byte fixed. Never initialize this test from
+canonical June--September captures. Run after preregistration and implementation
+have been committed, and after retrieval is authorized.
 """
 
 import argparse
@@ -22,6 +24,9 @@ import pilot_alpha_audit as pilot
 
 UTC = dt.timezone.utc
 FIRST_TARGET = dt.date(2026, 5, 1)
+WARMUP_FIRST_TARGET = dt.date(2026, 3, 1)
+WARMUP_LAST_TARGET = dt.date(2026, 4, 30)
+FROZEN_BASE_CAPTURE_SHA256 = "094dafd21aee0c78f6e0912a6caca5dcc8f5b86020855a1ac56d35b23224fe26"
 LAST_TARGET = dt.date(2026, 6, 28)
 FIRST_ENTRY = dt.date(2026, 6, 1)
 LAST_ENTRY = dt.date(2026, 6, 27)
@@ -69,8 +74,10 @@ def iso_time(value):
     return parsed.timestamp()
 
 
-def prepare_ladders(rows):
+def prepare_ladders(rows, first_target=FIRST_TARGET):
     """Validate normalized archive data, excluding the disclosed probe before all use."""
+    if first_target not in (FIRST_TARGET, WARMUP_FIRST_TARGET):
+        raise ValueError("training may start only at the original or frozen warmup boundary")
     grouped = collections.defaultdict(list)
     seen = set()
     excluded_rows = 0
@@ -80,7 +87,7 @@ def prepare_ladders(rows):
             excluded_rows += 1
             continue
         target = dt.date.fromisoformat(target_string)
-        if city not in CITY_SERIES or not FIRST_TARGET <= target <= LAST_TARGET:
+        if city not in CITY_SERIES or not first_target <= target <= LAST_TARGET:
             raise ValueError("row is outside the fixed archive universe or dates")
         expected_entry = entry_time(target)
         if (unix_time(row["entry_ts"]) != expected_entry or
@@ -315,8 +322,9 @@ def policy_report(selected, outcomes):
     return result
 
 
-def audit_rows(rows):
-    ladders, excluded_rows = prepare_ladders(rows)
+def audit_rows(rows, first_target=FIRST_TARGET):
+    """Audit rows after the file-level warmup/date/hash checks in ``audit``."""
+    ladders, excluded_rows = prepare_ladders(rows, first_target=first_target)
     complete = [ladder for ladder in ladders if shape.complete(ladder)]
     candidates = {name: [] for name, _, _ in FAMILIES}
     fits = {}
@@ -333,7 +341,7 @@ def audit_rows(rows):
     selected = select_policies(candidates)
     outcomes = {(row["market_id"], row["target_date"]): row.get("outcome")
                 for row in rows if (row["city"], row["target_date"]) not in EXCLUDED}
-    expected = {(city, str(day)) for city in CITY_SERIES for day in dates(FIRST_TARGET, LAST_TARGET)}
+    expected = {(city, str(day)) for city in CITY_SERIES for day in dates(first_target, LAST_TARGET)}
     holdout = {(city, str(day)) for city in CITY_SERIES
                for day in dates(FIRST_ENTRY + dt.timedelta(days=1), LAST_TARGET)} - EXCLUDED
     available = {(ladder["city"], ladder["target"]) for ladder in ladders}
@@ -365,23 +373,55 @@ def audit_rows(rows):
     )
 
 
-def audit(path):
+def audit(path, warmup_path=None):
     scripts = Path(__file__).resolve().parent
     hashes = {name: hashlib.sha256((scripts / name).read_bytes()).hexdigest()
               for name in FROZEN_SHARED_SHA256}
     if hashes != FROZEN_SHARED_SHA256:
         raise ValueError("shared research code differs from the preregistered hashes")
-    result = audit_rows(gate.load_jsonl(path))
-    result["capture_sha256"] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    capture_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    rows = gate.load_jsonl(path)
+    warmup = None
+    if warmup_path is not None:
+        if capture_hash != FROZEN_BASE_CAPTURE_SHA256:
+            raise ValueError("training extension requires the unchanged original May--June archive hash")
+        warmup = gate.load_jsonl(warmup_path)
+        if any(not WARMUP_FIRST_TARGET <= dt.date.fromisoformat(row["target_date"])
+               <= WARMUP_LAST_TARGET for row in warmup):
+            raise ValueError("warmup targets must be within March 1--April 30, 2026 only")
+        # All original validation and duplicate checks apply to the combined rows.
+        result = audit_rows(warmup + rows, first_target=WARMUP_FIRST_TARGET)
+    else:
+        result = audit_rows(rows)
+    result["capture_sha256"] = capture_hash
     result["shared_code_sha256"] = hashes
+    if warmup is not None:
+        result["evaluation_mode"] = "frozen_training_extension"
+        result["base_specification"] = result["specification"]
+        result["specification"] = "reports/2026-09-22-archive-training-extension-preregistration.md"
+        result["interpretation"] = (
+            "Frozen training extension using the same already-inspected June holdout; "
+            "not a new untouched holdout or prospective experiment. Only March--April "
+            "training data are added. Selection, causal availability, minimum history, "
+            "fit grids, four policies, fees, stress, bootstrap and criteria are unchanged. "
+            + result["interpretation"])
+        result["warmup_capture_sha256"] = hashlib.sha256(Path(warmup_path).read_bytes()).hexdigest()
+        result["training_extension"] = dict(
+            first_target=str(WARMUP_FIRST_TARGET), last_target=str(WARMUP_LAST_TARGET),
+            rows=len(warmup), expected_event_ladders=len(CITY_SERIES) * len(
+                dates(WARMUP_FIRST_TARGET, WARMUP_LAST_TARGET)),
+            normalized_event_ladders=len({(row["city"], row["target_date"]) for row in warmup}),
+            unchanged_holdout_first_target="2026-06-02", unchanged_holdout_last_target="2026-06-28",
+        )
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--captures", required=True, help="normalized independent archive JSONL")
+    parser.add_argument("--warmup", help="separate preregistered March--April training JSONL")
     args = parser.parse_args()
-    print(json.dumps(audit(args.captures), indent=2, allow_nan=False))
+    print(json.dumps(audit(args.captures, args.warmup), indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

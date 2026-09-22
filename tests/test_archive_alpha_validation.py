@@ -2,8 +2,12 @@
 
 import copy
 import datetime as dt
+import hashlib
+import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -205,6 +209,97 @@ class ArchiveIntegrityTests(unittest.TestCase):
         rows = event_rows(target="2026-09-09")
         with self.assertRaisesRegex(ValueError, "outside"):
             archive.prepare_ladders(rows)
+
+
+class ArchiveWarmupTests(unittest.TestCase):
+    def write_rows(self, directory, name, rows):
+        path = Path(directory) / name
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        return path
+
+    def test_warmup_requires_unchanged_base_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.write_rows(directory, "base.jsonl", event_rows(target="2026-06-02"))
+            warmup = self.write_rows(directory, "warmup.jsonl", event_rows(target="2026-03-01"))
+            with self.assertRaisesRegex(ValueError, "unchanged original"):
+                archive.audit(base, warmup)
+
+    def test_warmup_dates_cannot_change_the_evaluation_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.write_rows(directory, "base.jsonl", event_rows(target="2026-06-02"))
+            frozen_hash = hashlib.sha256(base.read_bytes()).hexdigest()
+            for target in ("2026-02-28", "2026-05-01", "2026-06-15"):
+                warmup = self.write_rows(directory, "warmup.jsonl", event_rows(target=target))
+                with patch.object(archive, "FROZEN_BASE_CAPTURE_SHA256", frozen_hash):
+                    with self.assertRaisesRegex(ValueError, "March 1--April 30"):
+                        archive.audit(base, warmup)
+
+    def test_warmup_supplies_history_but_never_selected_or_scored_orders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base_rows = event_rows(target="2026-06-02")
+            warmup_rows = event_rows(target="2026-03-01") + event_rows(target="2026-04-30")
+            base = self.write_rows(directory, "base.jsonl", base_rows)
+            warmup = self.write_rows(directory, "warmup.jsonl", warmup_rows)
+            frozen_hash = hashlib.sha256(base.read_bytes()).hexdigest()
+            candidate_targets, histories = [], []
+
+            def fitted(history, **flags):
+                histories.extend(ladder["target"] for ladder in history)
+                return (0, 1)
+
+            def decisions(ladders, params):
+                candidate_targets.extend(ladder["target"] for ladder in ladders)
+                # Force a decision on each supplied current ladder, independently of its fit.
+                return [dict(run_at=ladder["cap"], target_date=ladder["target"],
+                             city=ladder["city"], ticker=ladder["cells"][0]["mid"],
+                             side="no", price=0.3, edge=0.2) for ladder in ladders]
+
+            with patch.object(archive, "FROZEN_BASE_CAPTURE_SHA256", frozen_hash), \
+                    patch.object(archive.shape, "fit_shape", side_effect=fitted), \
+                    patch.object(archive, "candidates_for", side_effect=decisions):
+                result = archive.audit(base, warmup)
+            self.assertEqual(set(candidate_targets), {"2026-06-02"})
+            self.assertIn("2026-03-01", histories)
+            self.assertIn("2026-04-30", histories)
+            self.assertEqual(result["fit_paths"]["2026-06-01"]["history_ladders"], 2)
+            self.assertEqual(result["rule_coverage"]["expected_holdout_ladders"], 404)
+            self.assertEqual(result["rule_coverage"]["requested_event_ladders"], 1800)
+            self.assertEqual(len(result["fit_paths"]), 27)
+            self.assertTrue(all(policy["selected"] == 1 for policy in result["policies"].values()))
+            self.assertEqual(result["capture_sha256"], frozen_hash)
+            self.assertEqual(result["warmup_capture_sha256"], hashlib.sha256(warmup.read_bytes()).hexdigest())
+            self.assertEqual(result["evaluation_mode"], "frozen_training_extension")
+            self.assertIn("already-inspected June", result["interpretation"])
+
+    def test_default_rejects_earlier_rows_and_arbitrary_training_boundaries(self):
+        with self.assertRaisesRegex(ValueError, "outside"):
+            archive.audit_rows(event_rows(target="2026-04-30"))
+        with self.assertRaisesRegex(ValueError, "training may start"):
+            archive.prepare_ladders([], first_target=dt.date(2026, 2, 1))
+
+    def test_warmup_duplicates_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.write_rows(directory, "base.jsonl", event_rows(target="2026-06-02"))
+            rows = event_rows(target="2026-04-30")
+            warmup = self.write_rows(directory, "warmup.jsonl", rows + [rows[0]])
+            frozen_hash = hashlib.sha256(base.read_bytes()).hexdigest()
+            with patch.object(archive, "FROZEN_BASE_CAPTURE_SHA256", frozen_hash):
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    archive.audit(base, warmup)
+
+    def test_default_cli_reproduces_original_archive_report_bytes(self):
+        root = Path(__file__).resolve().parents[1]
+        captures = root / "data/raw/kalshi_archive_may_june_2026/captures.jsonl"
+        expected = root / "reports/2026-09-22-archive-validation.json"
+        if not captures.exists():
+            self.skipTest("original local archive is not included in the source repository")
+        self.assertEqual(hashlib.sha256(captures.read_bytes()).hexdigest(),
+                         archive.FROZEN_BASE_CAPTURE_SHA256)
+        output = subprocess.check_output([
+            sys.executable, str(root / "scripts/archive_alpha_validation.py"),
+            "--captures", str(captures),
+        ], cwd=root)
+        self.assertEqual(output, expected.read_bytes())
 
 
 if __name__ == "__main__":
