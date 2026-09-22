@@ -32,8 +32,10 @@ class GateTests(unittest.TestCase):
 
     def test_reconciled_partial_fills_and_zero_fills(self):
         filled, empty = order("F", True), order("E", True)
-        rec = dict(filled, decision="fill", contracts=4, cost=2.20, price=0.55)
-        zero = dict(empty, decision="unfilled", contracts=0, cost=0.0, price=None)
+        rec = dict(filled, decision="fill", contracts=4, cost=2.20, price=0.55,
+                   reconciliation_verified=True, order_status="canceled")
+        zero = dict(empty, decision="unfilled", contracts=0, cost=0.0, price=None,
+                    reconciliation_verified=True, order_status="canceled")
         settled, _, unfilled = gate.settle([filled, empty, rec, zero], [outcome("F"), outcome("E")])
         self.assertEqual(len(settled), 1)
         self.assertAlmostEqual(settled[0]["gross"], 1.8)
@@ -75,6 +77,30 @@ class GateTests(unittest.TestCase):
         orders.append(dict(order("OLD", live=True), strategy="model-shrunk"))
         r = gate.report(orders, outcomes)
         self.assertFalse(r["go_live"])
+        self.assertEqual(r["unverified_live_orders"], 1)
+
+    def test_conflicting_or_fabricated_reconciliation_never_erases_losses(self):
+        o = order("LIVE", live=True)
+        fill = dict(o, decision="fill", order_status="executed", reconciliation_verified=True)
+        zero = dict(o, decision="unfilled", contracts=0, cost=0, price=None,
+                    order_status="canceled", reconciliation_verified=True)
+        for invalid in (
+            dict(zero, contracts=-1), dict(zero, dry_run=True),
+            dict(zero, error="network failure"), dict(zero, order_status="executed"),
+            dict(fill, contracts=11), dict(fill, ticker="OTHER"),
+            dict(fill, strategy="model-shrunk"), dict(fill, side="yes"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                gate.settle([o, invalid], [outcome("LIVE", 1)])
+        with self.assertRaises(ValueError):
+            gate.settle([o, fill, zero], [outcome("LIVE", 1)])
+        with self.assertRaises(ValueError):
+            gate.settle([fill], [outcome("LIVE", 1)])
+        # A historical fallback row has no reliable execution evidence and must be re-queried.
+        old = dict(zero)
+        old.pop("reconciliation_verified")
+        r = gate.report([o, old], [outcome("LIVE", 1)])
+        self.assertEqual(r["settled"], 0)
         self.assertEqual(r["unverified_live_orders"], 1)
 
     def test_enforce_exit_status_and_machine_readout(self):

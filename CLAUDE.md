@@ -13,6 +13,12 @@ The Rust pilot now embeds `go_live_gate.py` and enforces it before every live ru
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
 Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
 below of advisory-only admission and intended-fill P&L reporting are superseded by this change.
+The follow-up `reports/2026-09-21-alpha-validation.md` finds no decisive forward alpha: the
+old warm bias has disappeared, and separately refitted bias/scale variants have wide profit
+intervals. Current fixed-point API counts and complete fill evidence are now required for
+verified reconciliation; legacy assumed-fill verdicts no longer establish execution evidence.
+Independent archive testing is preregistered in `reports/2026-09-22-archive-preregistration.md`;
+its data must stay separate from canonical captures and cannot authorize live promotion.
 
 ## Commands
 

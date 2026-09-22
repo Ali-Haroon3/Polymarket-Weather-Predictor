@@ -198,6 +198,10 @@ struct LedgerRow {
     /// The market-shape probability the cell was judged at (market-shape rows only).
     #[serde(default)]
     shape_estimate: Option<f64>,
+    /// True only after a terminal order's authoritative count matches complete actual fills.
+    /// Older reconciliation rows used an intended-fill fallback and must be checked again.
+    #[serde(default)]
+    reconciliation_verified: bool,
 }
 
 fn legacy_strategy() -> String {
@@ -1297,7 +1301,10 @@ fn load_ledger(path: &PathBuf) -> Vec<LedgerRow> {
 
 /// Whether a row is a reconciliation verdict (`fill` / `unfilled`) rather than a decision.
 fn is_reconciliation(r: &LedgerRow) -> bool {
-    r.decision == "fill" || r.decision == "unfilled"
+    (r.decision == "fill" || r.decision == "unfilled")
+        && r.reconciliation_verified
+        && !r.dry_run
+        && r.error.is_none()
 }
 
 /// The reconciliation row per live order id, where one has been written.
@@ -1338,8 +1345,8 @@ fn pending_reconciliation(rows: &[LedgerRow]) -> Vec<&LedgerRow> {
 /// fill the strategy must not take, so a LIVE run cancels it first (a dry run only says it
 /// would). Anything still resting inside its TTL is left alone and asked about next run. A
 /// fetch or cancel failure is logged and retried next run rather than guessed at; after
-/// `RECONCILE_GIVE_UP_DAYS` the pilot stops asking and the PnL readers keep their conservative
-/// intended-fill fallback for that order.
+/// `RECONCILE_GIVE_UP_DAYS` the pilot stops asking this recent-orders endpoint. Such an order
+/// remains unverified and blocks live admission until historical execution evidence is recovered.
 async fn reconcile_orders(
     t: &KalshiTradeClient,
     ledger_path: &PathBuf,
@@ -1400,16 +1407,22 @@ async fn reconcile_orders(
             continue;
         }
         let fills: Vec<KalshiFill> = match t.fills(&order_id).await {
-            Ok(f) => f.into_iter().filter(|f| f.order_id == order_id).collect(),
+            Ok(f) => f,
             Err(e) => {
                 eprintln!(
-                    "warning: fills for {order_id} ({}): {e} — using the order's own counts",
+                    "warning: fills for {order_id} ({}): {e} — leaving reconciliation pending",
                     row.ticker
                 );
-                Vec::new()
+                continue;
             }
         };
-        let rec = reconciliation_row(row, &order, &fills, Utc::now());
+        let rec = match reconciliation_row(row, &order, &fills, Utc::now()) {
+            Ok(rec) => rec,
+            Err(e) => {
+                eprintln!("warning: {order_id}: {e} — leaving reconciliation pending");
+                continue;
+            }
+        };
         println!(
             "{:<28} {} — {} of {} contracts filled @ avg {} (intended {}), status {}",
             row.ticker,
@@ -1426,37 +1439,55 @@ async fn reconcile_orders(
 }
 
 /// The `fill` / `unfilled` row for a terminal live order: contracts and cost from its fills
-/// (each at the price it actually traded), or from the order's own placed − remaining counts at
-/// its limit price when no fill detail came back (a fill never trades worse than the limit, so
-/// that can only overstate cost).
+/// (each at the price it actually traded). Missing counts, incomplete fills or mismatched
+/// identities are errors, never an inferred zero fill or an assumed limit-price execution.
 fn reconciliation_row(
     order_row: &LedgerRow,
     order: &KalshiOrder,
     fills: &[KalshiFill],
     now: DateTime<Utc>,
-) -> LedgerRow {
-    let (filled, cost) = if fills.is_empty() {
-        let n = order.filled().unwrap_or(0).max(0);
-        let px = order
-            .no_price_cents
-            .map(|c| c as f64 / 100.0)
-            .or(order_row.no_price)
-            .unwrap_or(0.0);
-        (n, n as f64 * px)
-    } else {
-        fills.iter().fold((0i64, 0.0f64), |(n, c), f| {
-            (
-                n + f.count,
-                c + f.count as f64 * f.no_price_cents as f64 / 100.0,
-            )
-        })
-    };
+) -> Result<LedgerRow, String> {
+    if !order.is_terminal()
+        || order_row.order_id.as_deref() != Some(order.order_id.as_str())
+        || order.ticker != order_row.ticker
+    {
+        return Err("terminal order identity does not match the recorded intent".into());
+    }
+    let expected = order
+        .filled()
+        .ok_or("terminal order omitted a reliable filled count")?;
+    if expected < 0
+        || expected > order_row.contracts
+        || (expected == 0 && order.status == "executed")
+    {
+        return Err("terminal order has an inconsistent filled count".into());
+    }
+    let mut ids = HashSet::new();
+    let (mut filled, mut cost) = (0i64, 0.0);
+    for f in fills {
+        if f.order_id != order.order_id
+            || f.ticker != order_row.ticker
+            || f.fill_id.is_empty()
+            || !ids.insert(&f.fill_id)
+            || f.count <= 0
+            || !(1..=99).contains(&f.no_price_cents)
+        {
+            return Err("invalid, duplicate or mismatched fill".into());
+        }
+        filled = filled.checked_add(f.count).ok_or("fill count overflow")?;
+        cost += f.count as f64 * f.no_price_cents as f64 / 100.0;
+    }
+    if filled != expected {
+        return Err(format!(
+            "order reports {expected} fills but fill details account for {filled}"
+        ));
+    }
     // Fills are NO-normalised; a YES order paid the complement per contract.
     let avg_no = (filled > 0).then(|| cost / filled as f64);
     let yes_side = order_row.side == "yes";
     let paid = avg_no.map(|a| if yes_side { 1.0 - a } else { a });
     let cost = paid.map_or(0.0, |p| filled as f64 * p);
-    LedgerRow {
+    Ok(LedgerRow {
         run_at: now,
         ticker: order_row.ticker.clone(),
         city: order_row.city.clone(),
@@ -1480,7 +1511,8 @@ fn reconciliation_row(
         price: paid,
         yes_ask: None,
         shape_estimate: None,
-    }
+        reconciliation_verified: true,
+    })
 }
 
 /// Realized PnL (dollars) of the pilot's own orders whose markets settled in the trailing 7
@@ -1492,9 +1524,9 @@ fn reconciliation_row(
 /// one actually trading (legacy rows without the field are model-shrunk).
 ///
 /// Live orders count what their `fill` row says filled (an `unfilled` order is no bet and does
-/// not settle); until that row exists, and for every dry row, the intended fill is assumed. That
-/// can only overstate a loss (the order was placed because the model liked it), so the breaker
-/// errs toward standing down — acceptable for a safety rail, not for PnL reporting.
+/// not settle); until that row exists, and for every dry row, this legacy risk estimate assumes
+/// the intended fill. It is not realized execution evidence and can overstate either gains or
+/// losses. Live admission blocks on any unverified order before this breaker is evaluated.
 fn realized_week_pnl(
     ledger_path: &PathBuf,
     captures_path: &PathBuf,
@@ -1689,6 +1721,7 @@ fn ledger_row(
         price,
         yes_ask: r.best_ask,
         shape_estimate: shape_est,
+        reconciliation_verified: false,
     }
 }
 
@@ -1831,6 +1864,7 @@ mod tests {
             price: None,
             yes_ask: None,
             shape_estimate: None,
+            reconciliation_verified: false,
         }
     }
 
@@ -2203,22 +2237,23 @@ mod tests {
         assert_eq!(expiration_ts(now, -5), None);
     }
 
-    fn kalshi_order(order_id: &str, status: &str, count: i64, remaining: i64) -> KalshiOrder {
+    fn kalshi_order(intent: &LedgerRow, status: &str, count: i64, remaining: i64) -> KalshiOrder {
         KalshiOrder {
-            order_id: order_id.into(),
-            ticker: "KXHIGHNY-26SEP08-B89.5".into(),
+            order_id: intent.order_id.clone().unwrap(),
+            ticker: intent.ticker.clone(),
             status: status.into(),
             count: Some(count),
             remaining_count: Some(remaining),
+            fill_count: Some(count - remaining),
             no_price_cents: Some(60),
         }
     }
 
-    fn kalshi_fill(order_id: &str, count: i64, no_price_cents: i64) -> KalshiFill {
+    fn kalshi_fill(intent: &LedgerRow, count: i64, no_price_cents: i64) -> KalshiFill {
         KalshiFill {
             fill_id: format!("f-{count}-{no_price_cents}"),
-            order_id: order_id.into(),
-            ticker: "KXHIGHNY-26SEP08-B89.5".into(),
+            order_id: intent.order_id.clone().unwrap(),
+            ticker: intent.ticker.clone(),
             count,
             no_price_cents,
             is_taker: true,
@@ -2240,13 +2275,17 @@ mod tests {
         let now = Utc::now();
 
         // Two fills, one better than the limit: 10 @ 58¢ + 5 @ 60¢ = $8.80 for 15 contracts.
-        let fills = [kalshi_fill("o1", 10, 58), kalshi_fill("o1", 5, 60)];
+        let fills = [
+            kalshi_fill(&intended, 10, 58),
+            kalshi_fill(&intended, 5, 60),
+        ];
         let rec = reconciliation_row(
             &intended,
-            &kalshi_order("o1", "canceled", 25, 10),
+            &kalshi_order(&intended, "canceled", 25, 10),
             &fills,
             now,
-        );
+        )
+        .unwrap();
         assert_eq!(rec.decision, "fill");
         assert_eq!(rec.contracts, 15);
         assert!((rec.cost - 8.80).abs() < 1e-9, "cost {}", rec.cost);
@@ -2261,18 +2300,50 @@ mod tests {
         // Fee is re-derived from the average price actually paid.
         assert!((rec.fee_frac.unwrap() - fee_frac(8.80 / 15.0)).abs() < 1e-12);
 
-        // No fill detail: the order's own placed − remaining at its limit price.
-        let rec = reconciliation_row(&intended, &kalshi_order("o1", "executed", 25, 0), &[], now);
-        assert_eq!((rec.decision.as_str(), rec.contracts), ("fill", 25));
-        assert!((rec.cost - 15.0).abs() < 1e-9);
-        assert!((rec.no_price.unwrap() - 0.60).abs() < 1e-9);
+        // Missing execution details must remain pending, never use an assumed fill price.
+        assert!(reconciliation_row(
+            &intended,
+            &kalshi_order(&intended, "executed", 25, 0),
+            &[],
+            now
+        )
+        .is_err());
 
         // Expired untouched: an `unfilled` row with nothing at risk.
-        let rec = reconciliation_row(&intended, &kalshi_order("o1", "canceled", 25, 25), &[], now);
+        let rec = reconciliation_row(
+            &intended,
+            &kalshi_order(&intended, "canceled", 25, 25),
+            &[],
+            now,
+        )
+        .unwrap();
         assert_eq!((rec.decision.as_str(), rec.contracts), ("unfilled", 0));
         assert_eq!(rec.cost, 0.0);
         assert_eq!(rec.no_price, None);
         assert_eq!(rec.fee_frac, None);
+    }
+
+    #[test]
+    fn incomplete_or_conflicting_execution_evidence_stays_pending() {
+        let mut intent = order_row("T", "NYC", "2026-09-08", 0.6, 10, false);
+        intent.order_id = Some("o".into());
+        let now = Utc::now();
+        let mut order = kalshi_order(&intent, "canceled", 10, 10);
+        order.fill_count = None;
+        order.count = None;
+        order.remaining_count = None;
+        assert!(reconciliation_row(&intent, &order, &[], now).is_err());
+        order = kalshi_order(&intent, "executed", 10, 0);
+        let five = kalshi_fill(&intent, 5, 60);
+        assert!(reconciliation_row(&intent, &order, std::slice::from_ref(&five), now).is_err());
+        assert!(reconciliation_row(&intent, &order, &[five.clone(), five], now).is_err());
+        let mut wrong = kalshi_fill(&intent, 10, 60);
+        wrong.ticker = "OTHER".into();
+        assert!(reconciliation_row(&intent, &order, &[wrong], now).is_err());
+        let mut old_verdict =
+            reconciliation_row(&intent, &order, &[kalshi_fill(&intent, 10, 60)], now).unwrap();
+        old_verdict.reconciliation_verified = false;
+        assert_eq!(pending_reconciliation(&[intent, old_verdict]).len(), 1);
     }
 
     #[test]
@@ -2287,10 +2358,11 @@ mod tests {
         let dry = order_row("D", "NYC", "2026-09-08", 0.60, 25, true);
         let verdict = reconciliation_row(
             &done,
-            &kalshi_order("o-done", "executed", 25, 0),
-            &[],
+            &kalshi_order(&done, "executed", 25, 0),
+            &[kalshi_fill(&done, 25, 60)],
             Utc::now(),
-        );
+        )
+        .unwrap();
         let rows = vec![done, open, failed, dry, verdict];
         let pending: Vec<&str> = pending_reconciliation(&rows)
             .iter()
@@ -2320,19 +2392,17 @@ mod tests {
         partial.order_id = Some("o-part".into());
         let partial_fill = reconciliation_row(
             &partial,
-            &kalshi_order("o-part", "canceled", 25, 15),
-            &[kalshi_fill("o-part", 10, 58)],
+            &kalshi_order(&partial, "canceled", 25, 15),
+            &[kalshi_fill(&partial, 10, 58)],
             now,
-        );
+        )
+        .unwrap();
         // Intended 25 @ 0.60; expired untouched. Resolved YES — would have LOST had it filled.
         let mut never = order_row("NEVER", "NYC", "2026-09-08", 0.60, 25, false);
         never.order_id = Some("o-never".into());
-        let never_fill = reconciliation_row(
-            &never,
-            &kalshi_order("o-never", "canceled", 25, 25),
-            &[],
-            now,
-        );
+        let never_fill =
+            reconciliation_row(&never, &kalshi_order(&never, "canceled", 25, 25), &[], now)
+                .unwrap();
         // Not yet reconciled: the intended fill is assumed. Resolved YES (loss).
         let mut assumed = order_row("ASSUMED", "NYC", "2026-09-08", 0.60, 25, false);
         assumed.order_id = Some("o-assumed".into());
@@ -2341,10 +2411,11 @@ mod tests {
         open.order_id = Some("o-open".into());
         let open_fill = reconciliation_row(
             &open,
-            &kalshi_order("o-open", "canceled", 30, 10),
-            &[kalshi_fill("o-open", 20, 50)],
+            &kalshi_order(&open, "canceled", 30, 10),
+            &[kalshi_fill(&open, 20, 50)],
             now,
-        );
+        )
+        .unwrap();
         write_jsonl(
             &ledger,
             &[
@@ -2625,6 +2696,7 @@ mod tests {
             status: "executed".into(),
             count: Some(10),
             remaining_count: Some(0),
+            fill_count: Some(10),
             no_price_cents: Some(55),
         };
         let fill = KalshiFill {
@@ -2636,7 +2708,7 @@ mod tests {
             is_taker: true,
             created_time: String::new(),
         };
-        let rec = reconciliation_row(&order, &ko, &[fill], Utc::now());
+        let rec = reconciliation_row(&order, &ko, &[fill], Utc::now()).unwrap();
         assert_eq!(rec.side, "yes");
         assert!(
             (rec.price.unwrap() - 0.44).abs() < 1e-9,

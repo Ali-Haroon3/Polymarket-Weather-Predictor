@@ -147,7 +147,8 @@ names the production host. `PILOT_DISABLE=1` is the kill switch in either driver
 As of captures through 2026-09-21 the default has 60 settled **paper** orders, −$1.31 after
 modeled fees, and has not passed admission. BUY NO within the existing selected orders is a
 research lead; replacing omitted YES orders with extra NO bets loses in the forward replay.
-See [the reproducible loss audit](reports/2026-09-21-alpha-audit.md). No trading rule is promoted
+See [the reproducible loss audit](reports/2026-09-21-alpha-audit.md) and
+[independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
 from these results. Python accounting tests run with
 `python3 -m unittest discover -s tests -p 'test_*.py'`.
 

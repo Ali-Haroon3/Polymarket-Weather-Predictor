@@ -52,6 +52,10 @@ scorer and invokes it on every --live run after reconciliation and before new or
 original three research thresholds are unchanged. An additional execution-integrity check
 requires every prior live order (across strategies) to have a fill/expiry verdict. Unverified
 intentions never count as settled profits; zero fills count in the fill-rate denominator.
+Reconciliation rows must carry `reconciliation_verified: true`, written only after the
+terminal order's filled count matches complete actual fills. Older fallback verdicts are
+ignored and re-queried by the pilot. Conflicting verdicts and incompatible order identities
+are errors rather than last-row-wins overrides of realized losses.
 
 Usage: python3 scripts/go_live_gate.py [--ledger data/pilot_trades.jsonl]
                                        [--captures data/captures.jsonl] [--json] [--enforce]
@@ -100,12 +104,50 @@ def load_jsonl(path):
 
 
 def reconciliations(ledger):
-    """The `fill` / `unfilled` verdict per live order id (the pilot writes at most one)."""
-    return {
-        r["order_id"]: r
-        for r in ledger
-        if r.get("decision") in ("fill", "unfilled") and r.get("order_id")
-    }
+    """Only complete, compatible execution verdicts; never last-row-wins accounting.
+
+    Legacy verdicts lacked a verification marker and could infer zero fills from missing
+    API counts. Ignore them so the pilot asks the exchange again before admitting new risk.
+    """
+    orders = {}
+    for o in ledger:
+        if o.get("decision") != "order" or o.get("dry_run", True) or o.get("error"):
+            continue
+        oid = o.get("order_id")
+        if oid:
+            if oid in orders:
+                raise ValueError(f"duplicate live order: {oid}")
+            orders[oid] = o
+    out = {}
+    for r in ledger:
+        if r.get("decision") not in ("fill", "unfilled"):
+            continue
+        if r.get("reconciliation_verified") is not True:
+            continue
+        oid = r.get("order_id")
+        o = orders.get(oid)
+        if not o or oid in out:
+            raise ValueError(f"orphan or duplicate reconciliation: {oid}")
+        if (r.get("dry_run") is not False or r.get("error") or
+                r.get("order_status") not in ("executed", "canceled", "cancelled") or
+                any(r.get(k) != o.get(k) for k in ("ticker", "city", "target_date")) or
+                strategy_of(r) != strategy_of(o) or side_of(r) != side_of(o)):
+            raise ValueError(f"incompatible reconciliation: {oid}")
+        n, cost, price = r.get("contracts"), r.get("cost"), paid_price(r)
+        if (type(n) is not int or not 0 <= n <= o["contracts"] or
+                not isinstance(cost, (int, float)) or not math.isfinite(cost)):
+            raise ValueError(f"invalid reconciled quantity or cost: {oid}")
+        if n == 0:
+            valid = (r["decision"] == "unfilled" and cost == 0 and price is None
+                     and r["order_status"] != "executed")
+        else:
+            valid = (r["decision"] == "fill" and isinstance(price, (int, float))
+                     and math.isfinite(price) and 0 < price < 1
+                     and abs(cost - n * price) <= 0.011)
+        if not valid:
+            raise ValueError(f"inconsistent reconciliation economics: {oid}")
+        out[oid] = r
+    return out
 
 
 def settle(ledger, captures, strategy=DEFAULT_STRATEGY):
