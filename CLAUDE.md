@@ -19,6 +19,11 @@ intervals. Current fixed-point API counts and complete fill evidence are now req
 verified reconciliation; legacy assumed-fill verdicts no longer establish execution evidence.
 Independent archive testing is preregistered in `reports/2026-09-22-archive-preregistration.md`;
 its data must stay separate from canonical captures and cannot authorize live promotion.
+The completed `reports/2026-09-22-archive-validation.md` records insufficient exact-candle
+coverage: 61/885 events recovered, only 29–55 causal training ladders at each entry. All four
+policies were NOT EVALUATED, not zero-return strategies. Do not interpret their empty-sample
+bootstrap/stress defaults as performance evidence. The account exposure cap now also reserves
+resting commitments, including orders outside the pilot ledger.
 
 ## Commands
 

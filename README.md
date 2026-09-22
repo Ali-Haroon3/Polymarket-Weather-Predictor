@@ -169,6 +169,9 @@ Public responses are cached and hashed under ignored `data/raw/`; canonical capt
 separate. Missing exact candles reject the whole event. Archive candles are sparse, so missing
 minutes do not establish missing orderbooks. Coverage must be read alongside any performance
 result, and historical quote replays are not execution evidence.
+The [completed archive test](reports/2026-09-22-archive-validation.md) recovered only 61 events;
+no entry had the 60 earlier settled ladders needed for training. All four policies remain
+unevaluated on that sample. Compressed inputs are included for offline reproduction.
 
 ## Environment Variables
 

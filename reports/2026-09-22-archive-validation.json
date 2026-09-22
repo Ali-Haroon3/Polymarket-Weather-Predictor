@@ -1,0 +1,974 @@
+{
+  "specification": "reports/2026-09-22-archive-preregistration.md",
+  "interpretation": "Out-of-period historical validation, not prospective results or fills. Four fixed policies; no live promotion. Bootstrap intervals are approximate. Zero-risk resamples have ROI 0 and remain in both intervals.",
+  "rule_coverage": {
+    "requested_event_ladders": 885,
+    "disclosed_probe_exclusions": [
+      [
+        "NYC",
+        "2026-06-15"
+      ]
+    ],
+    "excluded_probe_rows": 0,
+    "normalized_event_ladders": 61,
+    "missing_event_ladders": 823,
+    "probability_sum_incomplete_ladders": 1,
+    "expected_holdout_ladders": 404,
+    "available_holdout_ladders": 31,
+    "usable_holdout_ladders": 30,
+    "fixed_holdout_calendar_days": 27,
+    "entry_days_with_minimum_history": 0,
+    "ladders_missing_settlement_availability": 0,
+    "per_city": {
+      "NYC": {
+        "expected_holdout": 26,
+        "usable_holdout": 5
+      },
+      "Chicago": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "Austin": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "Denver": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "LA": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "Miami": {
+        "expected_holdout": 27,
+        "usable_holdout": 1
+      },
+      "Philadelphia": {
+        "expected_holdout": 27,
+        "usable_holdout": 1
+      },
+      "Dallas": {
+        "expected_holdout": 27,
+        "usable_holdout": 1
+      },
+      "Seattle": {
+        "expected_holdout": 27,
+        "usable_holdout": 0
+      },
+      "Atlanta": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "Boston": {
+        "expected_holdout": 27,
+        "usable_holdout": 1
+      },
+      "Phoenix": {
+        "expected_holdout": 27,
+        "usable_holdout": 3
+      },
+      "Vegas": {
+        "expected_holdout": 27,
+        "usable_holdout": 4
+      },
+      "Washington": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      },
+      "Houston": {
+        "expected_holdout": 27,
+        "usable_holdout": 2
+      }
+    }
+  },
+  "fit_paths": {
+    "2026-06-01": {
+      "history_ladders": 29,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-02": {
+      "history_ladders": 30,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-03": {
+      "history_ladders": 30,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-04": {
+      "history_ladders": 30,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-05": {
+      "history_ladders": 30,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-06": {
+      "history_ladders": 30,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-07": {
+      "history_ladders": 32,
+      "eligible_ladders": 3,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-08": {
+      "history_ladders": 32,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-09": {
+      "history_ladders": 35,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-10": {
+      "history_ladders": 35,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-11": {
+      "history_ladders": 35,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-12": {
+      "history_ladders": 37,
+      "eligible_ladders": 1,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-13": {
+      "history_ladders": 39,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-14": {
+      "history_ladders": 40,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-15": {
+      "history_ladders": 42,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-16": {
+      "history_ladders": 42,
+      "eligible_ladders": 1,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-17": {
+      "history_ladders": 42,
+      "eligible_ladders": 1,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-18": {
+      "history_ladders": 43,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-19": {
+      "history_ladders": 44,
+      "eligible_ladders": 0,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-20": {
+      "history_ladders": 44,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-21": {
+      "history_ladders": 44,
+      "eligible_ladders": 3,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-22": {
+      "history_ladders": 46,
+      "eligible_ladders": 1,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-23": {
+      "history_ladders": 49,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-24": {
+      "history_ladders": 50,
+      "eligible_ladders": 1,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-25": {
+      "history_ladders": 52,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-26": {
+      "history_ladders": 53,
+      "eligible_ladders": 2,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    },
+    "2026-06-27": {
+      "history_ladders": 55,
+      "eligible_ladders": 3,
+      "families": {
+        "joint": null,
+        "bias_only": null,
+        "scale_only": null
+      }
+    }
+  },
+  "policies": {
+    "joint": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "selected": 0,
+      "open": 0,
+      "unsettled_capital": 0,
+      "selection_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "by_side": {
+        "yes": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "no": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "by_city": {
+        "NYC": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Chicago": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Austin": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Denver": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "LA": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Miami": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Philadelphia": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Dallas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Seattle": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Atlanta": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Boston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Phoenix": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Vegas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Washington": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Houston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "remove_two_best_cities": {
+        "cities": [
+          "Atlanta",
+          "Austin"
+        ],
+        "net": 0
+      },
+      "day_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 1,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "moving_block_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 7,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "one_cent_stress": {
+        "contracts_unchanged": true,
+        "extra_capital_required": 0.0,
+        "requested_stressed_cost": 0.0,
+        "fees": 0.0,
+        "net": 0.0,
+        "impossible_prices": [],
+        "orders_over_15_stake": 0,
+        "city_targets_over_30": 0,
+        "note": "Settlement-scored orders only; quantities are not resized. Extra capital can exceed original stake/city caps. Impossible prices invalidate stress."
+      },
+      "criteria": {
+        "all_selected_outcomes_known": true,
+        "positive_simultaneous_day_lower": false,
+        "positive_simultaneous_block_lower": false,
+        "positive_repriced_stress_net": false,
+        "positive_after_removing_best_two_cities": false
+      },
+      "credible_candidate_for_prospective_testing": false,
+      "live_promotion": false
+    },
+    "joint_parent_no": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "selected": 0,
+      "open": 0,
+      "unsettled_capital": 0,
+      "selection_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "by_side": {
+        "yes": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "no": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "by_city": {
+        "NYC": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Chicago": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Austin": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Denver": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "LA": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Miami": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Philadelphia": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Dallas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Seattle": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Atlanta": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Boston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Phoenix": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Vegas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Washington": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Houston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "remove_two_best_cities": {
+        "cities": [
+          "Atlanta",
+          "Austin"
+        ],
+        "net": 0
+      },
+      "day_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 1,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "moving_block_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 7,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "one_cent_stress": {
+        "contracts_unchanged": true,
+        "extra_capital_required": 0.0,
+        "requested_stressed_cost": 0.0,
+        "fees": 0.0,
+        "net": 0.0,
+        "impossible_prices": [],
+        "orders_over_15_stake": 0,
+        "city_targets_over_30": 0,
+        "note": "Settlement-scored orders only; quantities are not resized. Extra capital can exceed original stake/city caps. Impossible prices invalidate stress."
+      },
+      "criteria": {
+        "all_selected_outcomes_known": true,
+        "positive_simultaneous_day_lower": false,
+        "positive_simultaneous_block_lower": false,
+        "positive_repriced_stress_net": false,
+        "positive_after_removing_best_two_cities": false
+      },
+      "credible_candidate_for_prospective_testing": false,
+      "live_promotion": false
+    },
+    "bias_only": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "selected": 0,
+      "open": 0,
+      "unsettled_capital": 0,
+      "selection_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "by_side": {
+        "yes": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "no": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "by_city": {
+        "NYC": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Chicago": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Austin": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Denver": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "LA": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Miami": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Philadelphia": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Dallas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Seattle": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Atlanta": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Boston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Phoenix": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Vegas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Washington": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Houston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "remove_two_best_cities": {
+        "cities": [
+          "Atlanta",
+          "Austin"
+        ],
+        "net": 0
+      },
+      "day_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 1,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "moving_block_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 7,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "one_cent_stress": {
+        "contracts_unchanged": true,
+        "extra_capital_required": 0.0,
+        "requested_stressed_cost": 0.0,
+        "fees": 0.0,
+        "net": 0.0,
+        "impossible_prices": [],
+        "orders_over_15_stake": 0,
+        "city_targets_over_30": 0,
+        "note": "Settlement-scored orders only; quantities are not resized. Extra capital can exceed original stake/city caps. Impossible prices invalidate stress."
+      },
+      "criteria": {
+        "all_selected_outcomes_known": true,
+        "positive_simultaneous_day_lower": false,
+        "positive_simultaneous_block_lower": false,
+        "positive_repriced_stress_net": false,
+        "positive_after_removing_best_two_cities": false
+      },
+      "credible_candidate_for_prospective_testing": false,
+      "live_promotion": false
+    },
+    "scale_only": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "selected": 0,
+      "open": 0,
+      "unsettled_capital": 0,
+      "selection_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "by_side": {
+        "yes": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "no": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "by_city": {
+        "NYC": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Chicago": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Austin": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Denver": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "LA": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Miami": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Philadelphia": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Dallas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Seattle": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Atlanta": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Boston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Phoenix": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Vegas": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Washington": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        },
+        "Houston": {
+          "settled": 0,
+          "net": 0,
+          "cost": 0
+        }
+      },
+      "remove_two_best_cities": {
+        "cities": [
+          "Atlanta",
+          "Austin"
+        ],
+        "net": 0
+      },
+      "day_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 1,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "moving_block_bootstrap": {
+        "calendar_days": 27,
+        "block_days": 7,
+        "draws": 10000,
+        "seed": 42,
+        "zero_risk_draws": 10000,
+        "nominal_95": [
+          0.0,
+          0.0
+        ],
+        "simultaneous_98_75": [
+          0.0,
+          0.0
+        ]
+      },
+      "one_cent_stress": {
+        "contracts_unchanged": true,
+        "extra_capital_required": 0.0,
+        "requested_stressed_cost": 0.0,
+        "fees": 0.0,
+        "net": 0.0,
+        "impossible_prices": [],
+        "orders_over_15_stake": 0,
+        "city_targets_over_30": 0,
+        "note": "Settlement-scored orders only; quantities are not resized. Extra capital can exceed original stake/city caps. Impossible prices invalidate stress."
+      },
+      "criteria": {
+        "all_selected_outcomes_known": true,
+        "positive_simultaneous_day_lower": false,
+        "positive_simultaneous_block_lower": false,
+        "positive_repriced_stress_net": false,
+        "positive_after_removing_best_two_cities": false
+      },
+      "credible_candidate_for_prospective_testing": false,
+      "live_promotion": false
+    }
+  },
+  "capture_sha256": "094dafd21aee0c78f6e0912a6caca5dcc8f5b86020855a1ac56d35b23224fe26",
+  "shared_code_sha256": {
+    "market_shape_alpha.py": "2c309132a39db89c55dda8daeab995a5dde12f0cfdde3f6a20056129aecf12e7",
+    "pilot_alpha_audit.py": "615df82678438722b1c6ffc8ff08a4fd479485aa0b47d186c6eb7c5c5c5343fc",
+    "go_live_gate.py": "061692e86b19748c878458e3ed303cc563f854fb77b871ec269958e01d396da4"
+  }
+}
