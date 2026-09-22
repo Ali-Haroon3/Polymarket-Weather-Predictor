@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Latest audited state (2026-09-21)
+
+See `reports/2026-09-21-alpha-audit.md` and reproduce with `scripts/pilot_alpha_audit.py --replay`.
+The market-shape ledger has 60 settled PAPER orders, −$1.31 net (−0.15%); no live orders are recorded.
+BUY NO within the selected top five is +$58 on 19, but a NO-only replacement replay is −$9.55 on 57.
+Do not promote the side filter from this exploratory subset. A rank-first, NO-only-without-replacement
+shadow attribution is frozen after the 09-21 capture; its future sample is reported separately.
+The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
+(Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
+Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
+below of advisory-only admission and intended-fill P&L reporting are superseded by this change.
+
 ## Commands
 
 ```bash

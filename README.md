@@ -118,15 +118,22 @@ the live model-vs-market disagreement signals.
 
 ## Kalshi pilot and real money
 
-`kalshi_pilot` is the evidence-backed strategy at pocket-change size (Kalshi only, SELL only via
-BUY NO limit orders, lead ≥ 1, shrunk edge over threshold + fee, flat `--stake`, hard exposure caps,
-automatic circuit breakers). It is a DRY RUN unless `--live` is passed, and even `--live` trades the
-demo host until `KALSHI_BASE_URL` points at production:
+`kalshi_pilot` defaults to the experimental market-shape strategy (Kalshi only, BUY YES or BUY NO,
+lead ≥ 1, edge after fees plus a buffer, flat `--stake`, exposure caps and circuit breakers).
+It is a DRY RUN unless `--live` is passed. Every live run, including demo, must pass the
+fee-inclusive go-live gate before placing new orders. `python3` is required for live admission;
+the scorer is embedded in the Rust binary at build time. Missing/invalid evidence or an
+unavailable scorer blocks new orders. Earlier live orders are reconciled before admission and
+breaker checks so standing down does not suppress expiry management. The trade host remains
+demo until `KALSHI_BASE_URL` points at production:
 
 ```bash
 cargo run --release --bin kalshi_pilot              # dry run: log intended orders + skips
 cargo run --release --bin kalshi_pilot -- --live    # real limit orders on the configured host
-python3 scripts/go_live_gate.py                     # the decision rule, scored on the ledger
+python3 scripts/go_live_gate.py                     # read the decision rule and current verdict
+python3 scripts/go_live_gate.py --enforce            # exit nonzero unless admission passes
+python3 scripts/pilot_alpha_audit.py                 # prospective side attribution and uncertainty
+python3 scripts/pilot_alpha_audit.py --replay        # slower capture-time comparison of both vs NO
 ```
 
 Every decision lands in `data/pilot_trades.jsonl`. Live orders are placed with a TTL
@@ -136,6 +143,13 @@ own orders still resting on their target day. The daily-capture GitHub Action is
 driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1`, the
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
+
+As of captures through 2026-09-21 the default has 60 settled **paper** orders, −$1.31 after
+modeled fees, and has not passed admission. BUY NO within the existing selected orders is a
+research lead; replacing omitted YES orders with extra NO bets loses in the forward replay.
+See [the reproducible loss audit](reports/2026-09-21-alpha-audit.md). No trading rule is promoted
+from these results. Python accounting tests run with
+`python3 -m unittest discover -s tests -p 'test_*.py'`.
 
 ## Environment Variables
 

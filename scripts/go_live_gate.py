@@ -31,7 +31,7 @@ stated purpose is to measure fills and slippage that paper cannot. It says nothi
 Since 2026-09-07 the ledger can also hold LIVE orders and their reconciliation rows (`fill` /
 `unfilled`, keyed by order_id — what Kalshi actually executed, at what average NO price). A live
 order is scored on its fill row when one exists (an `unfilled` order was no bet and is dropped),
-on its intended fill until then; paper rows are scored as intended, as before. The criteria pool
+as unverified until then; paper rows are scored as intended, as before. The criteria pool
 paper and live — it is one rule producing one sample — and the readout splits them so the
 paper-vs-real comparison (fill ratio, price improvement vs the intended limit) is visible.
 
@@ -45,16 +45,23 @@ NO-side at `no_price`). A gate is a rule about ONE strategy's sample, so this sc
 strategy at a time (`--strategy`, default market-shape) and never pools the 23 model-strategy
 orders into the new sample. Criterion 3 for market-shape is the module's own structure: (b, k)
 fitted only on ladders resolved before the trading day, at least MIN_LADDERS of them, plus the
-trailing-30-day replay breaker the pilot runs before touching the trade API.
+trailing-30-day replay breaker the pilot runs before placing new orders.
+
+Since the 2026-09-21 audit, --enforce makes NO-GO a nonzero exit. The Rust pilot embeds this
+scorer and invokes it on every --live run after reconciliation and before new orders. The
+original three research thresholds are unchanged. An additional execution-integrity check
+requires every prior live order (across strategies) to have a fill/expiry verdict. Unverified
+intentions never count as settled profits; zero fills count in the fill-rate denominator.
 
 Usage: python3 scripts/go_live_gate.py [--ledger data/pilot_trades.jsonl]
-                                       [--captures data/captures.jsonl] [--json]
+                                       [--captures data/captures.jsonl] [--json] [--enforce]
                                        [--strategy market-shape|model-shrunk]
 """
 import argparse
 import collections
 import json
 import math
+import sys
 
 MIN_SETTLED = 100
 MAX_CITY_LOSS_SHARE = 1.0 / 3.0
@@ -105,7 +112,8 @@ def settle(ledger, captures, strategy=DEFAULT_STRATEGY):
     """Join every 'order' ledger row of `strategy` to its resolved capture. Returns
     (settled, open, unfilled).
 
-    Live orders are taken at what actually filled once their reconciliation row exists; an
+    Live orders count only after reconciliation; unresolved fills stay open even if the
+    market has settled. Intended fills are not evidence of profit. An
     order that never filled is returned separately (no bet, so neither settled nor open). A
     NO-side order wins when the market resolves NO, a YES-side order when it resolves YES; the
     fee is charged on the price paid either way (Kalshi's formula is symmetric in P).
@@ -113,21 +121,38 @@ def settle(ledger, captures, strategy=DEFAULT_STRATEGY):
     outcome = {}
     for r in captures:
         if r.get("source") == "kalshi" and r.get("outcome") is not None:
-            outcome[(r.get("market_id"), r.get("target_date"))] = r["outcome"]
+            key = (r.get("market_id"), r.get("target_date"))
+            value = r["outcome"]
+            if value not in (0, 1) or (key in outcome and outcome[key] != value):
+                raise ValueError(f"invalid or conflicting settlement for {key}")
+            outcome[key] = value
     fills = reconciliations(ledger)
     settled, still_open, unfilled = [], [], []
+    seen = set()
     for o in ledger:
         if o.get("decision") != "order" or o.get("error") or strategy_of(o) != strategy:
             continue
         live = not o.get("dry_run", True)
+        identity = (("live", o.get("order_id")) if live and o.get("order_id") else
+                    ("paper" if not live else "unverified", o["ticker"], o["target_date"]))
+        if identity in seen:
+            raise ValueError(f"duplicate order evidence: {identity}")
+        seen.add(identity)
         side = side_of(o)
         n, cost, price = o["contracts"], o["cost"], paid_price(o)
         fill = fills.get(o.get("order_id")) if live else None
+        if live and fill is None:
+            still_open.append(o)
+            continue
         if fill is not None:
             if fill["contracts"] <= 0:
                 unfilled.append(o)
                 continue
             n, cost, price = fill["contracts"], fill["cost"], paid_price(fill)
+        if (side not in ("yes", "no") or n <= 0 or price is None or
+                not math.isfinite(price) or not 0 < price < 1 or
+                not math.isfinite(cost) or abs(cost - n * price) > 0.011):
+            raise ValueError(f"invalid order economics: {identity}")
         key = (o["ticker"], o["target_date"])
         if key not in outcome:
             still_open.append(o)
@@ -139,6 +164,7 @@ def settle(ledger, captures, strategy=DEFAULT_STRATEGY):
         settled.append(
             {
                 "run_at": o["run_at"][:10],
+                "target_date": o["target_date"],
                 "ticker": o["ticker"],
                 "city": o["city"],
                 "side": side,
@@ -168,7 +194,9 @@ def live_readout(settled, unfilled):
     """
     live = [t for t in settled if t["mode"] == "live"]
     real = [t for t in live if t["reconciled"]]
-    intended = sum(t["intended_contracts"] for t in real)
+    intended = sum(t["intended_contracts"] for t in real) + sum(
+        t["contracts"] for t in unfilled
+    )
     filled = sum(t["contracts"] for t in real)
     improvement = [
         (t["intended_price"] - t["price"]) * 100.0 for t in real if t["contracts"] > 0
@@ -235,11 +263,38 @@ def evaluate(settled, strategy=DEFAULT_STRATEGY):
     }
 
 
+def report(ledger, captures, strategy=DEFAULT_STRATEGY):
+    settled, still_open, unfilled = settle(ledger, captures, strategy)
+    r = evaluate(settled, strategy)
+    r["strategy"] = strategy
+    r["open"] = len(still_open)
+    fills = reconciliations(ledger)
+    # Admission may not assume outstanding live orders filled as intended. Keep managing
+    # them, but require verified executions before adding new exposure (across strategies).
+    unverified = sum(
+        o.get("decision") == "order" and not o.get("error") and
+        not o.get("dry_run", True) and o.get("order_id") not in fills
+        for o in ledger
+    )
+    r["unverified_live_orders"] = unverified
+    r["criteria"]["4_live_fill_evidence"] = {
+        "pass": unverified == 0,
+        "detail": f"{unverified} live orders await verified fill/expiry information",
+    }
+    r["go_live"] = all(c["pass"] for c in r["criteria"].values())
+    r["live"] = live_readout(settled, unfilled)
+    return r
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ledger", default="data/pilot_trades.jsonl")
     ap.add_argument("--captures", default="data/captures.jsonl")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--enforce", action="store_true",
+        help="exit 1 on NO-GO; the live pilot requires this check before new orders",
+    )
     ap.add_argument(
         "--strategy",
         default=DEFAULT_STRATEGY,
@@ -248,18 +303,13 @@ def main():
     )
     a = ap.parse_args()
 
-    settled, still_open, unfilled = settle(
+    r = report(
         load_jsonl(a.ledger), load_jsonl(a.captures), a.strategy
     )
-    r = evaluate(settled, a.strategy)
-    r["strategy"] = a.strategy
-    r["open"] = len(still_open)
-    r["go_live"] = all(c["pass"] for c in r["criteria"].values())
-    r["live"] = live_readout(settled, unfilled)
 
     if a.json:
         print(json.dumps(r, indent=2))
-        return
+        return 1 if a.enforce and not r["go_live"] else 0
 
     paper = r["settled"] - r["live"]["live_settled"]
     print(
@@ -287,7 +337,8 @@ def main():
             f"ROI {lv['live_roi_after_fees']:+.1%} · fill ratio {ratio} · "
             f"mean price improvement {impr} vs the intended limit"
         )
+    return 1 if a.enforce and not r["go_live"] else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

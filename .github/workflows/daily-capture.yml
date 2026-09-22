@@ -77,9 +77,15 @@ jobs:
         if: steps.guard.outputs.already != 'true'
         # The decision rule (scripts/go_live_gate.py) scored on the ledger as of this morning,
         # printed into every run's log so the verdict travels with the data it was read from.
-        # Advisory: it does not gate the step below — arming is a human act (PILOT_LIVE).
+        # Readout stays non-blocking for paper data collection. The pilot independently
+        # enforces this same scorer before every --live run can place new orders.
         continue-on-error: true
         run: python3 scripts/go_live_gate.py
+
+      - name: Prospective alpha attribution
+        if: steps.guard.outputs.already != 'true'
+        continue-on-error: true
+        run: python3 scripts/pilot_alpha_audit.py
 
       - name: Kalshi pilot
         if: steps.guard.outputs.already != 'true'

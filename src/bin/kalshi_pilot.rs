@@ -16,7 +16,7 @@
 //! double-order a market. Every decision (including skips) is appended to the ledger.
 //!
 //! Automatic circuit breakers (added after the first negative out-of-sample week, Jul 13–19):
-//! the pilot STANDS DOWN — no orders, before the trade API is even touched — when the fitted λ
+//! the pilot STANDS DOWN — no new orders, after reconciling earlier orders — when the fitted λ
 //! of the TRADED segment falls below `--lambda-floor` (realized edge too thin to be worth
 //! trading) or when its own settled orders lost more than `--max-weekly-loss` dollars over the
 //! trailing 7 days. Both are mode-scoped rehearsals: dry runs are gated by dry-run ledger rows,
@@ -367,10 +367,67 @@ fn parse_args() -> PilotConfig {
     }
 }
 
+/// Enforce the same readiness rule the operator reads. All --live runs (including demo) must
+/// pass; dry runs keep collecting the prospective sample without this admission requirement.
+fn enforce_go_live_gate(
+    strategy: Strategy,
+    ledger_path: &std::path::Path,
+    captures_path: &std::path::Path,
+) -> Result<(), String> {
+    let status = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(include_str!("../../scripts/go_live_gate.py"))
+        .arg("--enforce")
+        .arg("--strategy")
+        .arg(strategy.as_str())
+        .arg("--ledger")
+        .arg(ledger_path)
+        .arg("--captures")
+        .arg(captures_path)
+        .status()
+        .map_err(|e| format!("go-live gate unavailable (python3 required): {e}; no new orders"))?;
+    if !status.success() {
+        return Err("go-live gate did not pass; no new orders".into());
+    }
+    Ok(())
+}
+
 async fn run() -> Result<(), String> {
     let cfg = parse_args();
     let today = Utc::now().date_naive();
     println!("strategy: {}", cfg.strategy.as_str());
+
+    // Trade client: REQUIRED live, attempted for a dry run. With credentials a dry run rehearses
+    // auth and position/resting dedupe exactly like arming day; without them (the cred-free CI
+    // dry run) it degrades — loudly — to ledger-only dedupe rather than not rehearsing at all,
+    // because the daily decision sample is the evidence the go-live gate needs.
+    let trader = match KalshiTradeClient::new() {
+        Ok(t) => Some(t),
+        Err(e) if !cfg.live => {
+            eprintln!(
+                "warning: {e} — dry run continues with LEDGER-ONLY dedupe (no balance, no \
+                 position/resting-order rehearsal)"
+            );
+            None
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    // What became of the live orders placed by earlier runs: fills, expiries, and — in a live
+    // run — the cancel of anything still resting on its target day. Written down before today's
+    // decisions so the breaker's next read and the go-live gate see real fills, not intentions.
+    if let Some(t) = &trader {
+        let reconciled = reconcile_orders(t, &cfg.ledger_path, today, cfg.live).await;
+        if !reconciled.is_empty() {
+            append_ledger(&cfg.ledger_path, &reconciled)?;
+        }
+    }
+    // Reconcile and cancel expired risk even when admission or a breaker blocks NEW orders.
+    // The Python scorer is embedded at build time: CLI readouts and live admission share one
+    // rule, and a missing Python runtime or invalid/missing evidence fails closed.
+    if cfg.live {
+        enforce_go_live_gate(cfg.strategy, &cfg.ledger_path, &cfg.captures_path)?;
+    }
 
     // Market shape: (b, k) over the captures' resolved ladders as of today, and the trailing
     // walk-forward replay the breaker reads. Nothing here touches a forecast API.
@@ -423,8 +480,7 @@ async fn run() -> Result<(), String> {
         None => println!("spread→σ: too few resolved rows carrying spread — constant σ tables"),
     }
 
-    // Circuit breakers — evaluated BEFORE the trade API is touched, so a tripped breaker can
-    // never be defeated by an auth failure path or a partial run.
+    // Circuit breakers use the freshly reconciled ledger and run before any NEW orders.
     let (week_pnl, week_settled) = realized_week_pnl(
         &cfg.ledger_path,
         &cfg.captures_path,
@@ -463,21 +519,6 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    // Trade client: REQUIRED live, attempted for a dry run. With credentials a dry run rehearses
-    // auth and position/resting dedupe exactly like arming day; without them (the cred-free CI
-    // dry run) it degrades — loudly — to ledger-only dedupe rather than not rehearsing at all,
-    // because the daily decision sample is the evidence the go-live gate needs.
-    let trader = match KalshiTradeClient::new() {
-        Ok(t) => Some(t),
-        Err(e) if !cfg.live => {
-            eprintln!(
-                "warning: {e} — dry run continues with LEDGER-ONLY dedupe (no balance, no \
-                 position/resting-order rehearsal)"
-            );
-            None
-        }
-        Err(e) => return Err(e.to_string()),
-    };
     let (balance, positions, resting) = match &trader {
         Some(t) => {
             println!(
@@ -515,15 +556,6 @@ async fn run() -> Result<(), String> {
         None => (0.0, Vec::new(), Vec::new()),
     };
 
-    // What became of the live orders placed by earlier runs: fills, expiries, and — in a live
-    // run — the cancel of anything still resting on its target day. Written down before today's
-    // decisions so the breaker's next read and the go-live gate see real fills, not intentions.
-    if let Some(t) = &trader {
-        let reconciled = reconcile_orders(t, &cfg.ledger_path, today, cfg.live).await;
-        if !reconciled.is_empty() {
-            append_ledger(&cfg.ledger_path, &reconciled)?;
-        }
-    }
     // Live orders can never commit more than the funds actually there, whatever --max-exposure
     // says. Dry runs keep the configured cap so the ledger shows what a funded account would do.
     let exposure_cap = if cfg.live {
@@ -1808,6 +1840,37 @@ mod tests {
             .map(|r| serde_json::to_string(r).unwrap() + "\n")
             .collect();
         std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn live_admission_enforces_embedded_gate_without_trading() {
+        let dir = std::env::temp_dir().join(format!("pilot_admission_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        std::fs::write(&ledger, "").unwrap();
+        std::fs::write(&captures, "").unwrap();
+        assert!(enforce_go_live_gate(Strategy::MarketShape, &ledger, &captures).is_err());
+
+        let mut rows = Vec::new();
+        let mut outcomes = Vec::new();
+        for i in 0..100 {
+            let ticker = format!("TEST-{i}");
+            let mut row = order_row(&ticker, "NYC", "2026-09-09", 0.60, 10, true);
+            row.strategy = "market-shape".into();
+            rows.push(row);
+            outcomes.push(serde_json::json!({
+                "market_id": ticker, "target_date": "2026-09-09", "source": "kalshi", "outcome": 0
+            }));
+        }
+        write_jsonl(&ledger, &rows);
+        write_jsonl(&captures, &outcomes);
+        assert!(enforce_go_live_gate(Strategy::MarketShape, &ledger, &captures).is_ok());
+        // Another strategy cannot inherit this sample; malformed input cannot bypass admission.
+        assert!(enforce_go_live_gate(Strategy::ModelShrunk, &ledger, &captures).is_err());
+        std::fs::write(&captures, "invalid JSON").unwrap();
+        assert!(enforce_go_live_gate(Strategy::MarketShape, &ledger, &captures).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
