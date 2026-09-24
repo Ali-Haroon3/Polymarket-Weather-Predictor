@@ -146,14 +146,18 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-22 the default has 65 settled **paper** orders, −$42.75 after
-modeled fees (−4.45%), and has not passed admission. Five newly resolved orders lost $41.44.
-The frozen NO shadow still has zero prospective selections: today's only new order was YES.
-See [the latest forward update](reports/2026-09-22-forward-update.md),
+As of captures through 2026-09-23 the default has 67 settled **paper** orders, +$12.22 after
+modeled fees (+1.24%), and has not passed admission. Two newly resolved YES winners added
+$54.97, but the existing weekly loss breaker stopped new orders at a reported −$65.95.
+The frozen NO shadow still has zero prospective selections. No validated alpha is established.
+See [the latest forward update](reports/2026-09-23-forward-update.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
 from these results. Python accounting tests run with
 `python3 -m unittest discover -s tests -p 'test_*.py'`.
+The local `scripts/daily_capture.sh` wrapper builds current capture/dashboard binaries before
+running either, aborting on build failure. This prevents an obsolete local binary from silently
+dropping newer capture fields; the September 23 audit records the preserved data and cron repair.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
