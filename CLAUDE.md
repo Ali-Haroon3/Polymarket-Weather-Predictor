@@ -2,6 +2,60 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Latest audited state (2026-09-23; canonical captures through 2026-09-23)
+
+See `reports/2026-09-23-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 67 settled PAPER orders, +$12.22 net (+1.24%); no live orders are recorded.
+Two September 21 YES entries resolved for +$54.97. Historical selected NO is +$63.12 on 21;
+YES is −$50.90 on 46. Do not promote this exploratory side split. The September 21 replacement
+replay lost $9.55 on 57; its dated result remains in `reports/2026-09-21-alpha-audit.md`.
+A rank-first, NO-only-without-replacement shadow is frozen after the September21 capture.
+It still has zero prospective selections/settlements. The September 23 run hit the existing
+weekly loss breaker: −$65.95 under its legacy unrounded fee estimate, or −$66.12 with rounded
+fees on the same 32 settled orders. No new decisions were recorded. The September 22 Boston
+YES intent for September 23 is still open. Admission remains NO-GO at 67/100 settled; the
+positive cumulative result does not validate alpha (day CI −24.40% to +31.72%).
+The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
+(Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
+Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
+below of advisory-only admission and intended-fill P&L reporting are superseded by this change.
+The follow-up `reports/2026-09-21-alpha-validation.md` finds no decisive forward alpha: the
+old warm bias has disappeared, and separately refitted bias/scale variants have wide profit
+intervals. Current fixed-point API counts and complete fill evidence are now required for
+verified reconciliation; legacy assumed-fill verdicts no longer establish execution evidence.
+Independent archive testing is preregistered in `reports/2026-09-22-archive-preregistration.md`;
+its data must stay separate from canonical captures and cannot authorize live promotion.
+The completed `reports/2026-09-22-archive-validation.md` records insufficient exact-candle
+coverage: 61/885 events recovered, only 29–55 causal training ladders at each entry. All four
+policies were NOT EVALUATED, not zero-return strategies. Do not interpret their empty-sample
+bootstrap/stress defaults as performance evidence. The account exposure cap now also reserves
+resting commitments, including orders outside the pilot ledger.
+The preregistered March–April training extension is complete in
+`reports/2026-09-22-archive-training-extension.md`: 154 additional events supplied 182–208
+causal training ladders on all 27 June entry days. On the unchanged sparse June sample,
+joint / parent-selected NO / bias-only / scale-only returned −14.13% / −1.19% / −9.82% / −7.93%
+after fees. None passed any profitability criterion; intervals span zero, so this is not
+proof of negative expected return. Preserve the original inconclusive result and label
+the extension a reanalysis, not an untouched holdout. Do not add months, move the quote time,
+lower the history minimum, or mine profitable side/city slices to rescue this experiment.
+The separate `reports/2026-09-22-current-weather-audit.md` confirms all 90 September 22 daily
+contracts across 15 cities name The Weather Company; NYC Aug13 rules name NWS, while Aug14/15
+name TWC. This does not prove a universal cutover or changed underlying measurements, and
+does not explain losses by itself. Older direct-NWS source assertions below are historical
+calibration assumptions. Kalshi outcomes still come from venue YES/NO results. Future captures
+retain optional raw contract rules, conservative source tag and exact-text hash; legacy
+metadata remains unknown. No automatic source filter or pricing change is introduced.
+The September 22 same-day full-ladder snapshot found no net-positive basket at $15/$150;
+eleven sides lacked a quote. The later September 23-target screen in
+`reports/2026-09-22-next-day-basket-audit.md` found no positive basket across 23 quoted sides,
+with seven sides missing quotes. Neither snapshot is a claim about all possible alpha.
+Upstream capture commit ffdb792 is merged. Its scheduled run used main before these draft-PR
+changes, so new source metadata and enforced live admission are not implied to be deployed.
+The local 09:00 capture cron was separately routed through `scripts/daily_capture.sh`, which
+builds current capture/dashboard binaries and aborts on build failure. Old direct-binary writes
+dropped historical fields; the original edits remain in stash 3c5abd7 and separate ignored raw
+observations. Do not reapply that capture wholesale. See the September 23 report for backups.
+
 ## Commands
 
 ```bash

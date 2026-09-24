@@ -118,15 +118,24 @@ the live model-vs-market disagreement signals.
 
 ## Kalshi pilot and real money
 
-`kalshi_pilot` is the evidence-backed strategy at pocket-change size (Kalshi only, SELL only via
-BUY NO limit orders, lead ≥ 1, shrunk edge over threshold + fee, flat `--stake`, hard exposure caps,
-automatic circuit breakers). It is a DRY RUN unless `--live` is passed, and even `--live` trades the
-demo host until `KALSHI_BASE_URL` points at production:
+`kalshi_pilot` defaults to the experimental market-shape strategy (Kalshi only, BUY YES or BUY NO,
+lead ≥ 1, edge after fees plus a buffer, flat `--stake`, exposure caps and circuit breakers).
+It is a DRY RUN unless `--live` is passed. Every live run, including demo, must pass the
+fee-inclusive go-live gate before placing new orders. `python3` is required for live admission;
+the scorer is embedded in the Rust binary at build time. Missing/invalid evidence or an
+unavailable scorer blocks new orders. Earlier live orders are reconciled before admission and
+breaker checks so standing down does not suppress expiry management. Total exposure includes
+held positions and resting commitments, including orders outside the pilot ledger; unknown
+resting quantities block new orders. The trade host remains
+demo until `KALSHI_BASE_URL` points at production:
 
 ```bash
 cargo run --release --bin kalshi_pilot              # dry run: log intended orders + skips
 cargo run --release --bin kalshi_pilot -- --live    # real limit orders on the configured host
-python3 scripts/go_live_gate.py                     # the decision rule, scored on the ledger
+python3 scripts/go_live_gate.py                     # read the decision rule and current verdict
+python3 scripts/go_live_gate.py --enforce            # exit nonzero unless admission passes
+python3 scripts/pilot_alpha_audit.py                 # prospective side attribution and uncertainty
+python3 scripts/pilot_alpha_audit.py --replay        # slower capture-time comparison of both vs NO
 ```
 
 Every decision lands in `data/pilot_trades.jsonl`. Live orders are placed with a TTL
@@ -136,6 +145,68 @@ own orders still resting on their target day. The daily-capture GitHub Action is
 driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1`, the
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
+
+As of captures through 2026-09-23 the default has 67 settled **paper** orders, +$12.22 after
+modeled fees (+1.24%), and has not passed admission. Two newly resolved YES winners added
+$54.97, but the existing weekly loss breaker stopped new orders at a reported −$65.95.
+The frozen NO shadow still has zero prospective selections. No validated alpha is established.
+See [the latest forward update](reports/2026-09-23-forward-update.md),
+[the original loss audit](reports/2026-09-21-alpha-audit.md) and
+[independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
+from these results. Python accounting tests run with
+`python3 -m unittest discover -s tests -p 'test_*.py'`.
+The local `scripts/daily_capture.sh` wrapper builds current capture/dashboard binaries before
+running either, aborting on build failure. This prevents an obsolete local binary from silently
+dropping newer capture fields; the September 23 audit records the preserved data and cron repair.
+
+The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
+May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
+training availability. It evaluates four fixed policies without changing the pilot:
+
+```bash
+python3 scripts/kalshi_archive_capture.py --download --workers 12 \
+  --preregistration-commit e7c78f46121e4bfa9915c91c2165fba9377de118
+python3 scripts/archive_alpha_validation.py \
+  --captures data/raw/kalshi_archive_may_june_2026/captures.jsonl
+```
+
+Public responses are cached and hashed under ignored `data/raw/`; canonical captures remain
+separate. Missing exact candles reject the whole event. Archive candles are sparse, so missing
+minutes do not establish missing orderbooks. Coverage must be read alongside any performance
+result, and historical quote replays are not execution evidence.
+The [completed archive test](reports/2026-09-22-archive-validation.md) recovered only 61 events;
+no entry had the 60 earlier settled ladders needed for training. All four policies remain
+unevaluated on that sample. Compressed inputs are included for offline reproduction.
+
+A [bounded training extension](reports/2026-09-22-archive-training-extension-preregistration.md)
+adds March–April history while keeping the original May–June input and all four policies fixed.
+It is a reanalysis of the already processed June sample, not a new untouched holdout. The
+extension stops at April 30 regardless of results and cannot authorize live trading:
+
+```bash
+python3 scripts/kalshi_archive_warmup.py --download \
+  --preregistration-commit f534598c21615f5cb97b61933f8927844a9217a0
+python3 scripts/archive_alpha_validation.py \
+  --captures data/raw/kalshi_archive_may_june_2026/captures.jsonl \
+  --warmup data/raw/kalshi_archive_warmup_mar_apr_2026/captures.jsonl
+```
+
+The [completed extension](reports/2026-09-22-archive-training-extension.md) recovered 154
+training events and supplied 182–208 causal ladders at every June entry. All four policies
+lost after fees: joint −14.13%, parent-selected NO −1.19%, bias only −9.82%, scale only −7.93%.
+All failed the frozen criteria. Only 30 June events had usable quotes, and intervals still
+span loss and gain; this rejects promotion without proving negative expected returns.
+
+The [current contract-source audit](reports/2026-09-22-current-weather-audit.md) found that
+all 90 observed September 22 daily contracts name The Weather Company. Older NWS-based
+calibration descriptions are not proof of the current contractual source or identical
+measurement rules. New captures retain optional raw rules, an observed-source tag and a
+rules hash; legacy metadata stays missing. Venue-reported outcome labels remain unchanged.
+The same audit found no profitable full-ladder taker basket in one current 15-city snapshot.
+A separate [next-day quote screen](reports/2026-09-22-next-day-basket-audit.md) covers all
+15 September 23 ladders: 23 quoted basket sides and 46 budget comparisons, with no positive
+result after fees. The ordinary basket payoff is conditional on binary settlement; contract
+rules retain a last-fair-price exception when settlement data is unavailable.
 
 ## Environment Variables
 

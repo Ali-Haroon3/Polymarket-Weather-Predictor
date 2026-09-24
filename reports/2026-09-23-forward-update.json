@@ -1,0 +1,98 @@
+{
+  "freeze": "2026-09-07",
+  "latest_capture": "2026-09-23",
+  "inputs": {
+    "data/pilot_trades.jsonl": "cad692b0388df8bc36bac343fa1752a563706a1de4eb05522186929f9b041566",
+    "data/captures.jsonl": "2aed2bf5d7250a6f4a17d315984b2385043edc4ccba664014d2cd4037edc437e"
+  },
+  "all": {
+    "settled": 67,
+    "target_days": 14,
+    "wins": 37,
+    "cost": 989.46,
+    "net": 12.21999999999999,
+    "fees": 35.32,
+    "roi": 0.012350170800234461,
+    "bootstrap_95": [
+      -0.24398027270089936,
+      0.3171933160705616
+    ],
+    "net_with_1c_adverse_fill": -12.30000000000001
+  },
+  "by_side": {
+    "yes": {
+      "settled": 46,
+      "target_days": 14,
+      "wins": 17,
+      "cost": 681.26,
+      "net": -50.900000000000006,
+      "fees": 30.64,
+      "roi": -0.07471449960367556,
+      "bootstrap_95": [
+        -0.46852300242130746,
+        0.34526673270128766
+      ],
+      "net_with_1c_adverse_fill": -71.45
+    },
+    "no": {
+      "settled": 21,
+      "target_days": 12,
+      "wins": 20,
+      "cost": 308.2,
+      "net": 63.12,
+      "fees": 4.68,
+      "roi": 0.20480207657365346,
+      "bootstrap_95": [
+        0.06255162788047966,
+        0.3409697597513845
+      ],
+      "net_with_1c_adverse_fill": 59.15
+    }
+  },
+  "by_mode": {
+    "paper": {
+      "settled": 67,
+      "target_days": 14,
+      "wins": 37,
+      "cost": 989.46,
+      "net": 12.21999999999999,
+      "fees": 35.32,
+      "roi": 0.012350170800234461,
+      "bootstrap_95": [
+        -0.24398027270089936,
+        0.3171933160705616
+      ],
+      "net_with_1c_adverse_fill": -12.30000000000001
+    },
+    "live": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "bootstrap_95": null,
+      "net_with_1c_adverse_fill": 0.0
+    }
+  },
+  "open": 1,
+  "unfilled": 0,
+  "go_live": false,
+  "shadow_rank_then_no": {
+    "freeze": "2026-09-21",
+    "rule": "Keep NO orders from the existing pilot's selected top five; do not replace YES orders.",
+    "promotion": "Research only. No live admission from this subset; accrue a new prospective sample.",
+    "forward": {
+      "settled": 0,
+      "target_days": 0,
+      "wins": 0,
+      "cost": 0,
+      "net": 0,
+      "fees": 0,
+      "roi": null,
+      "bootstrap_95": null,
+      "net_with_1c_adverse_fill": 0.0
+    }
+  }
+}

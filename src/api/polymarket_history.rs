@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::types::SimulatedMarket;
 use crate::utils::{contains_word, contains_word_prefix, parse_date};
@@ -13,6 +14,109 @@ pub enum PolymarketHistoryError {
     Request(#[from] reqwest::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Provider explicitly attributed by the primary settlement rule, not inferred from the venue,
+/// ticker, city, or secondary guidance. Unknown and conflicting rules need manual interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementSource {
+    Twc,
+    Nws,
+    Unknown,
+    Conflicting,
+}
+
+/// Forward-only provenance as returned by the venue. Keep raw text unchanged: a rule edit may
+/// affect rounding, stations, or corrections even when the named provider does not change.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SettlementMetadata {
+    pub rules_primary: Option<String>,
+    pub rules_secondary: Option<String>,
+    pub source: SettlementSource,
+    /// SHA-256 of the UTF-8 compact JSON array [rules_primary, rules_secondary], including nulls.
+    /// Whitespace inside either raw string is significant; absent and empty are distinct.
+    pub rules_sha256: String,
+}
+
+impl SettlementMetadata {
+    pub fn from_rules(primary: Option<&str>, secondary: Option<&str>) -> Option<Self> {
+        if primary.is_none() && secondary.is_none() {
+            return None;
+        }
+        let pair = serde_json::to_vec(&(primary, secondary))
+            .expect("serializing optional rule strings cannot fail");
+        Some(Self {
+            rules_primary: primary.map(str::to_owned),
+            rules_secondary: secondary.map(str::to_owned),
+            source: primary_settlement_source(primary),
+            rules_sha256: format!("{:x}", Sha256::digest(pair)),
+        })
+    }
+}
+
+fn primary_settlement_source(primary: Option<&str>) -> SettlementSource {
+    let lower = primary.unwrap_or_default().to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mentions = |phrase: &[&str]| words.windows(phrase.len()).any(|part| part == phrase);
+    let twc = mentions(&["weather", "company"]);
+    let nws = mentions(&["national", "weather", "service"]);
+    if twc && nws {
+        return SettlementSource::Conflicting;
+    }
+    // Recognition is intentionally narrow. Mentions, links, abbreviations, and negated or
+    // alternative attributions are not enough to claim that a provider determines settlement.
+    if words.iter().any(|word| {
+        matches!(
+            *word,
+            "not"
+                | "neither"
+                | "either"
+                | "instead"
+                | "unless"
+                | "except"
+                | "fallback"
+                | "alternative"
+                | "alternatively"
+        )
+    }) {
+        return SettlementSource::Unknown;
+    }
+    let attributed = |phrase: &[&str]| {
+        words
+            .windows(phrase.len())
+            .position(|part| part == phrase)
+            .is_some_and(|start| {
+                // Stop at the standard rule's consequence ("then ..."). Alternatives in the
+                // provider clause stay unknown, even if the other provider is unfamiliar.
+                !words[start + phrase.len()..]
+                    .iter()
+                    .take_while(|word| **word != "then")
+                    .any(|word| matches!(*word, "or" | "and"))
+            })
+    };
+    if twc
+        && (attributed(&["according", "to", "the", "weather", "company"])
+            || attributed(&["according", "to", "weather", "company"])
+            || attributed(&["as", "reported", "by", "the", "weather", "company"])
+            || attributed(&["as", "reported", "by", "weather", "company"]))
+    {
+        SettlementSource::Twc
+    } else if nws
+        && (attributed(&["according", "to", "the", "national", "weather", "service"])
+            || attributed(&["according", "to", "national", "weather", "service"])
+            || attributed(&[
+                "as", "reported", "by", "the", "national", "weather", "service",
+            ])
+            || attributed(&["as", "reported", "by", "national", "weather", "service"]))
+    {
+        SettlementSource::Nws
+    } else {
+        SettlementSource::Unknown
+    }
 }
 
 /// A weather market parsed into the model's pricing inputs, with its current price and (if resolved)
@@ -34,6 +138,9 @@ pub struct WeatherMarketRow {
     /// Venue this market came from ("polymarket" / "kalshi").
     #[serde(default = "default_source")]
     pub source: String,
+    /// Raw settlement rules observed with this market. Never inferred for legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_metadata: Option<SettlementMetadata>,
     /// Top of the YES book at fetch time, when the venue exposes it. `price` is the last trade —
     /// a BUY actually fills at the ask and a SELL at the bid, so these are what an executable-edge
     /// readout needs. None ⇒ venue didn't report that side (empty book / legacy row).
@@ -728,6 +835,9 @@ fn parse_weather_market_row(market: &Value) -> Option<WeatherMarketRow> {
         price,
         outcome: infer_actual_outcome(market),
         source: "polymarket".to_string(),
+        // Gamma does not expose Kalshi's primary/secondary rule pair. Do not infer its source
+        // from the city or repurpose unrelated description fields as observed Kalshi rules.
+        settlement_metadata: None,
         best_bid: book_side("bestBid"),
         best_ask: book_side("bestAsk"),
         volume: num(&["volumeNum", "volume"]),
@@ -1041,6 +1151,117 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn settlement_source_requires_explicit_primary_attribution() {
+        let cases = [
+            (
+                "If the high is above 70 according to The Weather Company, then Yes.",
+                SettlementSource::Twc,
+            ),
+            (
+                "If the high is above 70 according to the National Weather Service's Climatological Report (Daily), then Yes.",
+                SettlementSource::Nws,
+            ),
+            (
+                "If the high is above 70 as reported by the National Weather Service's Climatological Report (Daily), then Yes.",
+                SettlementSource::Nws,
+            ),
+            (
+                "According TO\nTHE WEATHER COMPANY, then Yes.",
+                SettlementSource::Twc,
+            ),
+            (
+                "According to The Weather Company or the National Weather Service.",
+                SettlementSource::Conflicting,
+            ),
+            ("Consult The Weather Company.", SettlementSource::Unknown),
+            ("See weather.com/kalshi.", SettlementSource::Unknown),
+            ("According to TWC or NWS.", SettlementSource::Unknown),
+            (
+                "According to The Weather Company or another provider, then Yes.",
+                SettlementSource::Unknown,
+            ),
+            (
+                "As reported by the National Weather Service or another provider, then Yes.",
+                SettlementSource::Unknown,
+            ),
+            (
+                "According to the National Weather Service and TWC, then Yes.",
+                SettlementSource::Unknown,
+            ),
+            (
+                "If 70 or above according to The Weather Company, then Yes.",
+                SettlementSource::Twc,
+            ),
+            (
+                "Not according to The Weather Company.",
+                SettlementSource::Unknown,
+            ),
+            (
+                "According to The Weather CompanyX.",
+                SettlementSource::Unknown,
+            ),
+            ("", SettlementSource::Unknown),
+        ];
+        for (primary, expected) in cases {
+            let rules = SettlementMetadata::from_rules(Some(primary), None).unwrap();
+            assert_eq!(rules.source, expected, "primary: {primary}");
+            assert_eq!(rules.rules_primary.as_deref(), Some(primary));
+        }
+        let secondary_only =
+            SettlementMetadata::from_rules(None, Some("According to The Weather Company."))
+                .unwrap();
+        assert_eq!(secondary_only.source, SettlementSource::Unknown);
+        assert!(SettlementMetadata::from_rules(None, None).is_none());
+    }
+
+    #[test]
+    fn settlement_rules_hash_preserves_raw_pair_and_boundaries() {
+        let primary = "  According to The Weather Company.\n";
+        let secondary = "Corrections may occur.";
+        let metadata = SettlementMetadata::from_rules(Some(primary), Some(secondary)).unwrap();
+        assert_eq!(metadata.rules_primary.as_deref(), Some(primary));
+        assert_eq!(metadata.rules_secondary.as_deref(), Some(secondary));
+        assert_eq!(
+            metadata.rules_sha256,
+            "349555e1c74fc9757453d456b428573eefaf3976276d99d118ba4f8d06116a6c"
+        );
+        assert_ne!(
+            metadata.rules_sha256,
+            SettlementMetadata::from_rules(Some(primary.trim()), Some(secondary))
+                .unwrap()
+                .rules_sha256
+        );
+        let hash = |a, b| SettlementMetadata::from_rules(a, b).unwrap().rules_sha256;
+        assert_ne!(hash(Some("ab"), Some("c")), hash(Some("a"), Some("bc")));
+        assert_ne!(hash(Some(""), None), hash(None, Some("")));
+        assert_ne!(hash(Some(""), None), hash(Some(""), Some("")));
+    }
+
+    #[test]
+    fn legacy_market_row_and_new_settlement_metadata_roundtrip() {
+        let old = serde_json::json!({
+            "target_date": "2026-07-02", "market_id": "KXHIGHNY-26JUL02-T80",
+            "market_title": "NYC", "market_type": "temp_at_least", "threshold": 81.0,
+            "threshold_upper": null, "unit": "F", "city": "NYC", "price": 0.4,
+            "outcome": null, "source": "kalshi"
+        });
+        let mut row: WeatherMarketRow = serde_json::from_value(old).unwrap();
+        assert!(row.settlement_metadata.is_none());
+        assert!(serde_json::to_value(&row)
+            .unwrap()
+            .get("settlement_metadata")
+            .is_none());
+        row.settlement_metadata = SettlementMetadata::from_rules(
+            Some("According to The Weather Company."),
+            Some("Final values may be corrected."),
+        );
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["settlement_metadata"]["source"], "twc");
+        let round: WeatherMarketRow = serde_json::from_value(json).unwrap();
+        assert_eq!(round.settlement_metadata, row.settlement_metadata);
+    }
+
     // ── existing tests (preserved) ──────────────────────────────────────────
 
     #[test]
@@ -1243,6 +1464,7 @@ mod tests {
         assert_eq!(row.volume_24h, Some(812.25), "gamma numeric strings parse");
         assert_eq!(row.liquidity, Some(9051.0));
         assert_eq!(row.open_interest, None, "Polymarket has no open interest");
+        assert!(row.settlement_metadata.is_none());
 
         // Active market (unresolved) -> outcome None.
         let active = serde_json::json!({

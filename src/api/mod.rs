@@ -9,5 +9,6 @@ pub use kalshi_trade::{KalshiOrder, KalshiPosition, KalshiTradeClient, KalshiTra
 pub use live_trader::LiveTrader;
 pub use polymarket_client::{OrderConfirmation, PolymarketClient};
 pub use polymarket_history::{
-    PolymarketHistoryDownloader, PolymarketHistoryError, WeatherMarketRow,
+    PolymarketHistoryDownloader, PolymarketHistoryError, SettlementMetadata, SettlementSource,
+    WeatherMarketRow,
 };

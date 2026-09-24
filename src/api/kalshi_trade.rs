@@ -12,10 +12,10 @@
 //! `ceil(0.07 × count × P × (1−P))` cents with P the contract price in dollars — see `fee_cents`.
 //! A limit order rests until it fills, is cancelled, or its `expiration_ts` (unix seconds)
 //! passes; its status is `pending`/`resting` while live and `executed`/`canceled` once terminal
-//! (expiry surfaces as `canceled`), and `count − remaining_count` is what filled. Field names
-//! follow Kalshi's official SDK (kalshi-python 2.1.4: CreateOrderRequest, Order, Fill) — the
-//! parsers below also accept the older `yes_price`/`no_price`-per-fill and `*_dollars` shapes,
-//! because a fill row the pilot cannot read is a real position it cannot account for.
+//! (expiry surfaces as `canceled`). Explicit `fill_count_fp` is authoritative; cancellation
+//! clears the remainder and must not be mistaken for execution. Modern fixed-point fields and
+//! legacy fields are accepted only when this integer-contract, whole-cent client can represent
+//! them exactly. Unsupported or malformed account data fails closed, never silently drops risk.
 
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -50,6 +50,8 @@ pub struct KalshiOrder {
     pub count: Option<i64>,
     /// Contracts still unfilled and not cancelled.
     pub remaining_count: Option<i64>,
+    /// Explicitly executed contracts, independent of cancellation of the remainder.
+    pub fill_count: Option<i64>,
     /// The order's NO limit price in cents.
     pub no_price_cents: Option<i64>,
 }
@@ -61,9 +63,17 @@ impl KalshiOrder {
         matches!(self.status.as_str(), "executed" | "canceled" | "cancelled")
     }
 
-    /// Contracts filled so far — placed minus remaining — when the response carries both.
+    /// Explicit executed count first. Legacy subtraction is safe only before cancellation.
     pub fn filled(&self) -> Option<i64> {
-        Some((self.count? - self.remaining_count?).max(0))
+        if let Some(filled) = self.fill_count {
+            return (filled >= 0 && self.count.is_none_or(|count| filled <= count))
+                .then_some(filled);
+        }
+        if !matches!(self.status.as_str(), "pending" | "resting" | "executed") {
+            return None;
+        }
+        let (count, remaining) = (self.count?, self.remaining_count?);
+        (count >= 0 && remaining >= 0 && remaining <= count).then_some(count - remaining)
     }
 }
 
@@ -174,33 +184,26 @@ impl KalshiTradeClient {
 
     /// Nonzero per-market positions.
     pub async fn positions(&self) -> Result<Vec<KalshiPosition>, KalshiTradeError> {
-        let v = self.get("positions", "/portfolio/positions").await?;
-        let rows = v
-            .get("market_positions")
-            .and_then(|x| x.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(rows
-            .iter()
-            .filter_map(|p| {
-                let ticker = p.get("ticker")?.as_str()?.to_string();
-                let position = p.get("position").and_then(value_as_f64)? as i64;
-                (position != 0).then_some(KalshiPosition { ticker, position })
-            })
-            .collect())
+        let rows = self
+            .get_all(
+                "positions",
+                "/portfolio/positions",
+                "market_positions",
+                parse_position,
+            )
+            .await?;
+        Ok(rows.into_iter().filter(|p| p.position != 0).collect())
     }
 
     /// Resting (open) orders.
     pub async fn resting_orders(&self) -> Result<Vec<KalshiOrder>, KalshiTradeError> {
-        let v = self
-            .get("resting orders", "/portfolio/orders?status=resting")
-            .await?;
-        let rows = v
-            .get("orders")
-            .and_then(|x| x.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(rows.iter().filter_map(parse_order).collect())
+        self.get_all(
+            "resting orders",
+            "/portfolio/orders?status=resting",
+            "orders",
+            parse_order,
+        )
+        .await
     }
 
     /// Place a limit BUY of `count` NO contracts at `no_price_cents` (1..=99). This IS the pilot's
@@ -305,28 +308,48 @@ impl KalshiTradeClient {
     /// PRICE is what the pilot exists to measure — a limit that crosses the book fills at the
     /// resting side's price, so it can be better than the limit, never worse.
     pub async fn fills(&self, order_id: &str) -> Result<Vec<KalshiFill>, KalshiTradeError> {
+        let fills = self
+            .get_all(
+                "get fills",
+                &format!("/portfolio/fills?order_id={order_id}&limit=100"),
+                "fills",
+                parse_fill,
+            )
+            .await?;
+        if fills.iter().any(|f| f.order_id != order_id) {
+            return Err(KalshiTradeError::BadResponse(
+                "get fills".into(),
+                "response contains another order's fills".into(),
+            ));
+        }
+        Ok(fills)
+    }
+
+    /// Account lists must be complete and parseable before they can be used as risk evidence.
+    async fn get_all<T>(
+        &self,
+        what: &str,
+        path: &str,
+        field: &str,
+        parser: fn(&Value) -> Option<T>,
+    ) -> Result<Vec<T>, KalshiTradeError> {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::HashSet::new();
         loop {
-            let mut q = format!("/portfolio/fills?order_id={order_id}&limit=100");
+            let mut req = self.signed(Method::GET, path);
             if let Some(c) = &cursor {
-                q.push_str("&cursor=");
-                q.push_str(c);
+                req = req.query(&[("cursor", c)]);
             }
-            let v = self.get("get fills", &q).await?;
-            let rows = v
-                .get("fills")
-                .and_then(|x| x.as_array())
-                .cloned()
-                .unwrap_or_default();
-            out.extend(rows.iter().filter_map(parse_fill));
-            match v
-                .get("cursor")
-                .and_then(|c| c.as_str())
-                .filter(|c| !c.is_empty())
-            {
-                Some(c) if !rows.is_empty() => cursor = Some(c.to_string()),
-                _ => break,
+            let v = self.send(what, req).await?;
+            out.extend(parse_response_rows(&v, field, what, parser)?);
+            cursor = response_cursor(&v, what)?;
+            let Some(c) = &cursor else { break };
+            if !seen_cursors.insert(c.clone()) {
+                return Err(KalshiTradeError::BadResponse(
+                    what.into(),
+                    "pagination repeated a cursor; account data is incomplete".into(),
+                ));
             }
         }
         Ok(out)
@@ -374,84 +397,214 @@ impl KalshiTradeClient {
     }
 }
 
-/// Cents from a price the API may state in cents (`34`) or dollars (`0.34`, `"0.3400"`): a
-/// tradeable price is 1..=99 cents, so anything under 1 can only be dollars.
-fn to_cents(x: f64) -> i64 {
-    if x < 1.0 {
-        (x * 100.0).round() as i64
-    } else {
-        x.round() as i64
+/// Never drop one malformed row from an otherwise successful account response.
+fn parse_response_rows<T>(
+    response: &Value,
+    field: &str,
+    what: &str,
+    parser: fn(&Value) -> Option<T>,
+) -> Result<Vec<T>, KalshiTradeError> {
+    let rows = response
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            KalshiTradeError::BadResponse(what.into(), format!("missing or invalid {field} array"))
+        })?;
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            parser(row).ok_or_else(|| {
+                KalshiTradeError::BadResponse(
+                    what.into(),
+                    format!("unsupported or malformed {field} row {i}"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn response_cursor(response: &Value, what: &str) -> Result<Option<String>, KalshiTradeError> {
+    match response.get("cursor") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(c)) if c.is_empty() => Ok(None),
+        Some(Value::String(c)) => Ok(Some(c.clone())),
+        _ => Err(KalshiTradeError::BadResponse(
+            what.into(),
+            "invalid pagination cursor".into(),
+        )),
     }
 }
 
+/// This client trades whole contracts. Fractional, non-finite or imprecise quantities cannot
+/// be truncated: even a fractional position represents money at risk.
+fn exact_integer(value: &Value, signed: bool) -> Option<i64> {
+    if let Some(text) = value.as_str() {
+        let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+        if !fraction.bytes().all(|c| c == b'0') {
+            return None;
+        }
+        let count = whole.parse::<i64>().ok()?;
+        return (signed || count >= 0).then_some(count);
+    }
+    let x = value_as_f64(value)?;
+    if !x.is_finite()
+        || x.fract() != 0.0
+        || x.abs() > 9_007_199_254_740_991.0
+        || (!signed && x < 0.0)
+    {
+        return None;
+    }
+    Some(x as i64)
+}
+
+/// Outer None means invalid; Some(None) means absent. Reject conflicting modern/legacy data.
+fn integer_field(o: &Value, keys: &[&str], signed: bool) -> Option<Option<i64>> {
+    let mut result = None;
+    for key in keys {
+        if let Some(v) = o.get(*key).filter(|v| !v.is_null()) {
+            let parsed = exact_integer(v, signed)?;
+            if result.is_some_and(|old| old != parsed) {
+                return None;
+            }
+            result = Some(parsed);
+        }
+    }
+    Some(result)
+}
+
+/// Whole cents only; subcent values remain unsupported rather than rounded into false cost.
+fn to_cents(x: f64) -> Option<i64> {
+    let cents = if x < 1.0 { x * 100.0 } else { x };
+    exact_cents(cents)
+}
+
+fn exact_cents(cents: f64) -> Option<i64> {
+    (cents.is_finite() && (1.0..=99.0).contains(&cents) && (cents - cents.round()).abs() < 1e-8)
+        .then_some(cents.round() as i64)
+}
+
+fn price_field(o: &Value, keys: &[(&str, bool)]) -> Option<Option<i64>> {
+    let mut result = None;
+    for (key, dollars) in keys {
+        if let Some(v) = o.get(*key).filter(|v| !v.is_null()) {
+            let x = value_as_f64(v)?;
+            // Fixed-point strings retain decimal precision that an f64 might erase. A value
+            // such as "0.6000000000000001" must not become an apparently exact 60-cent fill.
+            if let Some(text) = v.as_str() {
+                let (_, fraction) = text.split_once('.').unwrap_or((text, ""));
+                let decimal_places = if *dollars || x < 1.0 { 2 } else { 0 };
+                if !fraction.bytes().all(|c| c.is_ascii_digit())
+                    || fraction.bytes().skip(decimal_places).any(|c| c != b'0')
+                {
+                    return None;
+                }
+            }
+            let cents = if *dollars {
+                exact_cents(x * 100.0)?
+            } else {
+                to_cents(x)?
+            };
+            if result.is_some_and(|old| old != cents) {
+                return None;
+            }
+            result = Some(cents);
+        }
+    }
+    Some(result)
+}
+
+fn no_price(o: &Value) -> Option<Option<i64>> {
+    let no = price_field(o, &[("no_price_dollars", true), ("no_price", false)])?;
+    let yes = price_field(o, &[("yes_price_dollars", true), ("yes_price", false)])?;
+    if no.zip(yes).is_some_and(|(n, y)| n + y != 100) {
+        return None;
+    }
+    Some(no.or_else(|| yes.map(|y| 100 - y)))
+}
+
+fn nonempty_string<'a>(o: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| o.get(*key)?.as_str().filter(|s| !s.is_empty()))
+}
+
+fn parse_position(p: &Value) -> Option<KalshiPosition> {
+    Some(KalshiPosition {
+        ticker: nonempty_string(p, &["ticker"])?.to_string(),
+        position: integer_field(p, &["position_fp", "position"], true)??,
+    })
+}
+
 fn parse_order(o: &Value) -> Option<KalshiOrder> {
-    let int = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| o.get(*k).and_then(value_as_f64))
-            .map(|x| x as i64)
-    };
+    let count = integer_field(
+        o,
+        &["initial_count_fp", "initial_count", "count", "place_count"],
+        false,
+    )?;
+    let remaining_count = integer_field(o, &["remaining_count_fp", "remaining_count"], false)?;
+    let fill_count = integer_field(o, &["fill_count_fp", "fill_count"], false)?;
+    if count.zip(remaining_count).is_some_and(|(c, r)| r > c)
+        || count.zip(fill_count).is_some_and(|(c, f)| f > c)
+        || count
+            .zip(remaining_count.zip(fill_count))
+            .is_some_and(|(c, (r, f))| r.checked_add(f).is_none_or(|total| total > c))
+    {
+        return None;
+    }
     Some(KalshiOrder {
-        order_id: o.get("order_id")?.as_str()?.to_string(),
-        ticker: o.get("ticker")?.as_str()?.to_string(),
+        order_id: nonempty_string(o, &["order_id"])?.to_string(),
+        ticker: nonempty_string(o, &["ticker"])?.to_string(),
         status: o
             .get("status")
-            .and_then(|s| s.as_str())
+            .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        count: int(&["count", "initial_count", "place_count"]),
-        remaining_count: int(&["remaining_count"]),
-        no_price_cents: ["no_price", "no_price_dollars"]
-            .iter()
-            .find_map(|k| o.get(*k).and_then(value_as_f64))
-            .map(to_cents)
-            .or_else(|| {
-                // A YES-side order states only its yes price; the NO complement keeps every
-                // reconciliation reader on the one convention (`KalshiFill` is NO-normalised).
-                ["yes_price", "yes_price_dollars"]
-                    .iter()
-                    .find_map(|k| o.get(*k).and_then(value_as_f64))
-                    .map(|x| 100 - to_cents(x))
-            }),
+        count,
+        remaining_count,
+        fill_count,
+        no_price_cents: no_price(o)?,
     })
 }
 
 fn parse_fill(f: &Value) -> Option<KalshiFill> {
-    let side = f.get("side").and_then(|s| s.as_str()).unwrap_or("no");
-    let str_of = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| f.get(*k).and_then(|s| s.as_str()))
-            .unwrap_or("")
-            .to_string()
-    };
+    let mut side = None;
+    for key in ["outcome_side", "side"] {
+        if let Some(value) = f.get(key).filter(|value| !value.is_null()) {
+            let parsed = value.as_str()?;
+            if !matches!(parsed, "yes" | "no") || side.is_some_and(|old| old != parsed) {
+                return None;
+            }
+            side = Some(parsed);
+        }
+    }
+    let count = integer_field(f, &["count_fp", "count"], false)??;
+    if count <= 0 {
+        return None;
+    }
     Some(KalshiFill {
-        fill_id: str_of(&["fill_id", "trade_id"]),
-        order_id: f.get("order_id")?.as_str()?.to_string(),
-        ticker: str_of(&["ticker"]),
-        count: f.get("count").and_then(value_as_f64)? as i64,
+        fill_id: nonempty_string(f, &["fill_id", "trade_id"])?.to_string(),
+        order_id: nonempty_string(f, &["order_id"])?.to_string(),
+        ticker: nonempty_string(f, &["ticker", "market_ticker"])?.to_string(),
+        count,
         no_price_cents: fill_no_price_cents(f, side)?,
-        is_taker: f.get("is_taker").and_then(|b| b.as_bool()).unwrap_or(false),
-        created_time: str_of(&["created_time"]),
+        is_taker: f.get("is_taker").and_then(Value::as_bool).unwrap_or(false),
+        created_time: f
+            .get("created_time")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
-/// The NO price of a fill in cents, whichever shape the API used: an explicit `no_price` /
-/// `no_price_dollars`, else the single `price` of the fill's own side (the official SDK's `Fill`
-/// model — a YES-side price is `100 − price` on the NO side), else `yes_price` likewise.
-fn fill_no_price_cents(f: &Value, side: &str) -> Option<i64> {
-    if let Some(c) = ["no_price", "no_price_dollars"]
-        .iter()
-        .find_map(|k| f.get(*k).and_then(value_as_f64))
-    {
-        return Some(to_cents(c));
+/// Explicit side prices take precedence over the legacy own-side `price` field.
+fn fill_no_price_cents(f: &Value, side: Option<&str>) -> Option<i64> {
+    if let Some(c) = no_price(f)? {
+        return Some(c);
     }
-    if let Some(p) = f.get("price").and_then(value_as_f64) {
-        let c = to_cents(p);
-        return Some(if side == "yes" { 100 - c } else { c });
-    }
-    ["yes_price", "yes_price_dollars"]
-        .iter()
-        .find_map(|k| f.get(*k).and_then(value_as_f64))
-        .map(|y| 100 - to_cents(y))
+    // A legacy `price` is paid on the fill's own side. Without that side its NO equivalent
+    // is unknowable; defaulting to NO could turn an 80-cent YES fill into a 20-cent one.
+    let side = side?;
+    let c = price_field(f, &[("price", false)])??;
+    Some(if side == "yes" { 100 - c } else { c })
 }
 
 /// Kalshi trading fee in CENTS for `count` contracts at `price_cents`:
@@ -509,7 +662,8 @@ mod tests {
         // Partially filled then expired: Kalshi reports the remainder as canceled.
         let o = serde_json::json!({
             "order_id": "o2", "ticker": "T", "status": "canceled",
-            "initial_count": 25, "remaining_count": 15, "no_price_dollars": "0.6000"
+            "initial_count": 25, "remaining_count": 0, "fill_count": 10,
+            "no_price_dollars": "0.6000"
         });
         let p = parse_order(&o).unwrap();
         assert_eq!(p.filled(), Some(10));
@@ -561,19 +715,19 @@ mod tests {
         assert_eq!((p.count, p.no_price_cents, p.is_taker), (10, 58, true));
         assert_eq!(p.fill_id, "f1");
         // The same fill seen from the YES side is the complement.
-        let f = serde_json::json!({"order_id": "o1", "side": "yes", "count": 10, "price": 42});
+        let f = serde_json::json!({"fill_id":"f2", "ticker":"T", "order_id": "o1", "side": "yes", "count": 10, "price": 42});
         assert_eq!(parse_fill(&f).unwrap().no_price_cents, 58);
         // Older shape: explicit per-side cents; `no_price` wins over `price`.
         let f = serde_json::json!({
-            "trade_id": "t9", "order_id": "o1", "side": "no", "count": 3,
+            "trade_id": "t9", "ticker":"T", "order_id": "o1", "side": "no", "count": 3,
             "yes_price": 41, "no_price": 59, "price": 1
         });
         let p = parse_fill(&f).unwrap();
         assert_eq!((p.no_price_cents, p.fill_id.as_str()), (59, "t9"));
         // Dollar-denominated fixed point.
-        let f = serde_json::json!({"order_id": "o1", "side": "no", "count": 3, "no_price_dollars": "0.5900"});
+        let f = serde_json::json!({"fill_id":"f3", "ticker":"T", "order_id": "o1", "side": "no", "count": 3, "no_price_dollars": "0.5900"});
         assert_eq!(parse_fill(&f).unwrap().no_price_cents, 59);
-        let f = serde_json::json!({"order_id": "o1", "side": "yes", "count": 3, "yes_price_dollars": 0.41});
+        let f = serde_json::json!({"fill_id":"f4", "ticker":"T", "order_id": "o1", "side": "yes", "count": 3, "yes_price_dollars": 0.41});
         assert_eq!(parse_fill(&f).unwrap().no_price_cents, 59);
         // No price at all, or no order id ⇒ unusable, never a phantom fill.
         assert!(parse_fill(&serde_json::json!({"order_id": "o1", "count": 3})).is_none());
@@ -581,10 +735,150 @@ mod tests {
     }
 
     #[test]
-    fn cents_heuristic_only_treats_sub_unit_values_as_dollars() {
-        assert_eq!(to_cents(34.0), 34);
-        assert_eq!(to_cents(0.34), 34);
-        assert_eq!(to_cents(1.0), 1, "1 is a legal cent price, not a dollar");
-        assert_eq!(to_cents(0.995), 100, "rounds, never truncates");
+    fn whole_cent_prices_are_exact_and_subcents_fail_closed() {
+        assert_eq!(to_cents(34.0), Some(34));
+        assert_eq!(to_cents(0.34), Some(34));
+        assert_eq!(to_cents(1.0), Some(1), "legacy 1 is one cent");
+        for invalid in [
+            0.995,
+            0.605,
+            60.5,
+            0.0,
+            -1.0,
+            100.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert_eq!(to_cents(invalid), None);
+        }
+        assert!(
+            parse_order(&json!({"order_id":"o", "ticker":"T", "no_price_dollars":"1.0000"}))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ambiguous_legacy_fill_prices_require_a_consistent_explicit_side() {
+        let mut fill = json!({"fill_id":"f", "order_id":"o", "ticker":"T", "count":10, "price":80});
+        assert!(
+            parse_fill(&fill).is_none(),
+            "own-side price without side is ambiguous"
+        );
+        fill["side"] = json!("yes");
+        assert_eq!(parse_fill(&fill).unwrap().no_price_cents, 20);
+        fill["outcome_side"] = json!("no");
+        assert!(
+            parse_fill(&fill).is_none(),
+            "conflicting side aliases cannot be normalized"
+        );
+        fill["no_price_dollars"] = json!("0.2000");
+        assert!(
+            parse_fill(&fill).is_none(),
+            "named prices cannot excuse conflicting sides"
+        );
+        fill.as_object_mut().unwrap().remove("side");
+        fill.as_object_mut().unwrap().remove("outcome_side");
+        assert_eq!(
+            parse_fill(&fill).unwrap().no_price_cents,
+            20,
+            "named NO price is unambiguous without side"
+        );
+        fill["side"] = json!("");
+        assert!(parse_fill(&fill).is_none());
+    }
+
+    #[test]
+    fn current_fixed_point_responses_preserve_execution_and_exposure() {
+        let o = json!({
+            "order_id":"o", "ticker":"T", "status":"canceled",
+            "initial_count_fp":"25.00", "remaining_count_fp":"0.00", "fill_count_fp":"10.00",
+            "no_price_dollars":"0.6000", "yes_price_dollars":"0.4000"
+        });
+        let order = parse_order(&o).unwrap();
+        assert_eq!(order.filled(), Some(10), "canceled remainder is not a fill");
+        assert_eq!(order.count, Some(25));
+        let f = json!({
+            "fill_id":"f", "order_id":"o", "ticker":"T", "outcome_side":"no",
+            "count_fp":"10.00", "no_price_dollars":"0.6000", "is_taker":true
+        });
+        let fill = parse_fill(&f).unwrap();
+        assert_eq!((fill.count, fill.no_price_cents), (10, 60));
+        let p = parse_position(&json!({"ticker":"T", "position_fp":"-10.00"})).unwrap();
+        assert_eq!(p.position, -10);
+        let mut missing = o;
+        missing.as_object_mut().unwrap().remove("fill_count_fp");
+        assert_eq!(parse_order(&missing).unwrap().filled(), None);
+    }
+
+    #[test]
+    fn unsupported_and_conflicting_counts_are_not_truncated_or_ignored() {
+        for value in [
+            json!("0.50"),
+            json!("10.0000000000000001"),
+            json!(-1),
+            json!("NaN"),
+            json!("Infinity"),
+            json!("9223372036854775808"),
+        ] {
+            assert!(
+                parse_order(&json!({"order_id":"o", "ticker":"T", "fill_count_fp":value}))
+                    .is_none()
+            );
+        }
+        assert!(parse_position(&json!({"ticker":"T", "position_fp":"-0.50"})).is_none());
+        assert!(parse_position(&json!({"ticker":"T"})).is_none());
+        assert!(parse_order(
+            &json!({"order_id":"o", "ticker":"T", "initial_count_fp":"10.00", "count":11})
+        )
+        .is_none());
+        assert!(parse_order(&json!({"order_id":"o", "ticker":"T", "initial_count_fp":"10.00", "fill_count_fp":"11.00"})).is_none());
+        assert!(parse_order(&json!({"order_id":"o", "ticker":"T", "initial_count_fp":"9223372036854775807", "remaining_count_fp":"9223372036854775807", "fill_count_fp":"9223372036854775807"})).is_none());
+    }
+
+    #[test]
+    fn account_pages_fail_as_a_whole_when_a_row_is_unreadable() {
+        let good = json!({"fill_id":"f", "order_id":"o", "ticker":"T", "count_fp":"10.00", "no_price_dollars":"0.6000"});
+        assert_eq!(
+            parse_response_rows(
+                &json!({"fills":[good.clone()]}),
+                "fills",
+                "test",
+                parse_fill
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        for bad in [
+            json!({"fill_id":"bad", "order_id":"o", "ticker":"T", "count_fp":"0.50", "no_price_dollars":"0.6000"}),
+            json!({"fill_id":"bad", "order_id":"o", "ticker":"T", "count_fp":"10.00", "no_price_dollars":"0.6050"}),
+            json!({"fill_id":"bad", "order_id":"o", "ticker":"T", "count_fp":"10.00", "no_price_dollars":"0.6000000000000001"}),
+            json!({"order_id":"o", "ticker":"T", "count_fp":"10.00", "no_price_dollars":"0.6000"}),
+            json!({"fill_id":"bad", "order_id":"o", "count_fp":"10.00", "no_price_dollars":"0.6000"}),
+        ] {
+            assert!(parse_response_rows(
+                &json!({"fills":[good.clone(), bad]}),
+                "fills",
+                "test",
+                parse_fill
+            )
+            .is_err());
+        }
+        assert!(parse_response_rows(&json!({}), "fills", "test", parse_fill).is_err());
+        assert!(parse_response_rows(
+            &json!({"market_positions":[{"ticker":"T","position_fp":"0.50"}]}),
+            "market_positions",
+            "test",
+            parse_position
+        )
+        .is_err());
+        assert!(parse_response_rows(
+            &json!({"orders":[{"order_id":"o", "ticker":"T", "remaining_count_fp":"0.50"}]}),
+            "orders",
+            "test",
+            parse_order
+        )
+        .is_err());
+        assert!(response_cursor(&json!({"cursor":42}), "test").is_err());
     }
 }
