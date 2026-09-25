@@ -87,9 +87,17 @@ Offline parser support is documented in `reports/2026-09-25-source-parser-design
 `weather_daily_observation.py` and `weather_market_observation.py` distinguish unsupported
 evidence from explicit absence. Market close_time conflicts with textual cutoff in inspected
 evidence; qualify only before both. No fee coefficient is inferred from quadratic metadata.
-These helpers do not select primary invocations or establish complete coverage. Reconcile the
-full run/artifact inventory before any study aggregate or reserved-data release, and freeze
-the complete analysis before the protocol deadline. No trading candidate is defined yet.
+These helpers alone do not select primary invocations or establish complete coverage.
+`weather_source_inventory_capture.py` now preserves read-only run/attempt metadata;
+`weather_source_inventory.py` validates full pagination and selects the earliest invocation;
+`weather_source_analysis.py` verifies raw metadata/artifact binding and aggregates all 1,260
+planned observations per phase. See `reports/2026-09-25-source-analysis.md`. Reserved bodies
+require fresh post-window inventory with all attempts terminal; no CLI override exists.
+The first real metadata-only check found zero runs before the study start: development
+not_evaluated with all observations pending, reserved locked. The new preserved client asset supplies verified
+daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
+Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis
+version history and the original freeze deadline; test success does not establish alpha.
 
 ## Commands
 

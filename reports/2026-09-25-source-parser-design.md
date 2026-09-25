@@ -40,6 +40,6 @@ Run `PYTHONPATH=tests python3 -m unittest test_weather_daily_observation test_we
 
 ## Remaining integration and interpretation
 
-Before producing any study result, an evaluator still must reconcile the complete workflow/artifact inventory, retain failed and missing slots in the fixed denominator, select the earliest-started invocation even if it failed, and treat unresolved timing ties as unknown. It must then combine these helpers into station/checkpoint results, distinguishing overlap, observed absence and unknown evidence, and summarize by target date without treating repeated checkpoints as independent outcomes. The helper outputs alone cannot establish any of those study-wide claims.
+The subsequent [inventory and evaluation integration](2026-09-25-source-analysis.md) implements complete metadata reconciliation, primary selection, artifact binding and station/checkpoint aggregation. It retains failed and missing observations in the fixed denominator and separates overlap, observed absence and unknown evidence by city and target date. The helper outputs alone still cannot establish those study-wide claims; use the inventory-backed entry point.
 
 The parsing and full eligibility analysis must be frozen before the protocol deadline. Any trading candidate requires its own earlier definition and untouched reserved evidence under the original rules. No candidate, fee-inclusive opportunity, availability rate or validated alpha is claimed here.
