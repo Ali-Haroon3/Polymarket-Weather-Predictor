@@ -64,6 +64,14 @@ dropped historical fields; the original edits remain in stash 3c5abd7 and separa
 observations. Do not reapply that capture wholesale. See the September 23 report for backups.
 At the September 24 audit the local log still ends September 23; a subsequent repaired local
 run has not been observed. Cloud metadata preservation does not establish local execution.
+The separate `scripts/weather_source_capture.py` collector preserves exact public source/book
+responses with receipt times and hashes into new research directories; it does not write canonical
+captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
+It is on-demand only, with no installed schedule. Engineering targets before September 26 are
+excluded; development targets September 26–October 9 and reserved targets October 10–23 are
+fixed in the protocol. A reserved availability sample is not automatically an untouched strategy
+test. Never reuse source values, quotes or availability/headroom already inspected while choosing
+a trading candidate as independent validation for that candidate.
 
 ## Commands
 

@@ -161,6 +161,13 @@ The local `scripts/daily_capture.sh` wrapper builds current capture/dashboard bi
 running either, aborting on build failure. This prevents an obsolete local binary from silently
 dropping newer capture fields; the September 23 audit records the preserved data and cron repair.
 
+The separate [prospective source-availability protocol](reports/2026-09-25-source-collection-protocol.md)
+defines collection of timestamped raw weather reports, market rules, fees and books across the
+existing 15 Kalshi stations. `scripts/weather_source_capture.py` is an on-demand anonymous
+research collector with immutable run directories and failure records. It does not place orders,
+alter canonical captures, or install a schedule. These records are needed to test source timing;
+they do not establish alpha or turn inspected observations into an independent validation sample.
+
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
 training availability. It evaluates four fixed policies without changing the pilot:
