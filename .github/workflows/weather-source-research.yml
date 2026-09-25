@@ -1,0 +1,71 @@
+name: weather-source-research
+
+on:
+  schedule:
+    - cron: "15 13,17,21 26-30 9 *"
+    - cron: "15 1,5,9 27-30 9 *"
+    - cron: "15 1,5,9 1 10 *"
+    - cron: "15 13,17,21 1-23 10 *"
+    - cron: "15 1,5,9 2-24 10 *"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: weather-source-research
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare fresh evidence directory outside checkout
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os, pathlib
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / (
+              f"weather-source-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          )
+          path.mkdir(mode=0o700, parents=True, exist_ok=False)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"WEATHER_SOURCE_EVIDENCE_DIR={path}\n")
+          (path / "bootstrap-status.json").write_text(json.dumps({
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "prepared_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "note": "If run/run-status.json is absent, no coordinator result was preserved."
+          }, indent=2) + "\n")
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Preserve minimal metadata for this GitHub run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --jq '{id, run_attempt, event, created_at, run_started_at, head_sha, html_url}' \
+            > "$WEATHER_SOURCE_EVIDENCE_DIR/github-run.json"
+
+      - name: Collect only a timely frozen slot
+        if: always()
+        run: |
+          python3 scripts/weather_source_schedule.py \
+            --run-metadata "$WEATHER_SOURCE_EVIDENCE_DIR/github-run.json" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output-dir "$WEATHER_SOURCE_EVIDENCE_DIR/run"
+
+      - name: Retain all available evidence including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: weather-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weather-source-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          overwrite: false
+          if-no-files-found: error
