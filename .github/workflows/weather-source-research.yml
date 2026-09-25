@@ -20,15 +20,17 @@ jobs:
   capture:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      WEATHER_SOURCE_EVIDENCE_DIR: ${{ runner.temp }}/weather-source-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Prepare fresh evidence directory outside checkout
         run: |
           python3 - <<'PY'
           import datetime, json, os, pathlib
-          path = pathlib.Path(os.environ["WEATHER_SOURCE_EVIDENCE_DIR"])
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / (
+              f"weather-source-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          )
           path.mkdir(mode=0o700, parents=True, exist_ok=False)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"WEATHER_SOURCE_EVIDENCE_DIR={path}\n")
           (path / "bootstrap-status.json").write_text(json.dumps({
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
@@ -63,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: weather-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.WEATHER_SOURCE_EVIDENCE_DIR }}
+          path: ${{ runner.temp }}/weather-source-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           overwrite: false
           if-no-files-found: error

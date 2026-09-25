@@ -35,9 +35,13 @@ The workflow has only `contents: read` and `actions: read` repository permission
 
 ## Validation before deployment
 
-All 11 focused offline scheduling tests pass. They cover the complete 168-slot calendar (84 development and 84 reserved), date/year and inclusive tolerance boundaries, queue delays, initialization delays, reruns, invalid metadata and chronology, frozen-file drift, separate duplicate evidence, and retention after partial failures or interruption. Tests use a fake collector and forbid importing the real collector; they issue no source requests.
+All 12 focused offline scheduling tests pass. They cover the complete 168-slot calendar (84 development and 84 reserved), date/year and inclusive tolerance boundaries, queue delays, initialization delays, reruns, invalid metadata and chronology, frozen-file drift, separate duplicate evidence, and retention after partial failures or interruption. An executed bootstrap test verifies directory export outside checkout, paths containing spaces, and preservation on duplicate initialization. Tests use a fake collector and forbid importing the real collector; they issue no source requests.
 
 The workflow parses successfully as YAML, and its embedded bootstrap Python compiles. Independent review verified the five calendar expressions against the original protocol. Both frozen file hashes remain unchanged. These checks do not establish GitHub schedule delivery, artifact upload success or collection coverage; those require actual default-branch run evidence. No workflow was dispatched during this validation.
+
+The initial branch push produced a [GitHub validation failure](https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/actions/runs/36172910879) before any jobs existed. The YAML-only check missed an invalid `runner.temp` expression in job-level environment configuration. GitHub's [context availability table](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability) disallows `runner` there. The corrected bootstrap derives its path from the runtime `RUNNER_TEMP` environment variable and exports it through `GITHUB_ENV`; artifact upload uses the permitted step-level context, independently of bootstrap success. No scientific observation was collected by the failed validation run.
+
+Actionlint 1.7.12, downloaded from its official release and checked against the published archive checksum, reproduces the original context error and passes the corrected workflow with exit 0 and no diagnostics. ShellCheck was unavailable; this validation covers actionlint's workflow and expression checks, not ShellCheck analysis or actual hosted execution.
 
 ## Interpretation
 

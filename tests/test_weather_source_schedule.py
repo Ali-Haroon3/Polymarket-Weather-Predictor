@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -165,6 +166,31 @@ class WeatherSourceScheduleTests(unittest.TestCase):
         self.assertEqual(status["evidence"]["bodies"][0]["sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(status["evidence"]["body_bytes"], len(raw))
         self.assertNotIn("private_fixture_value", json.dumps(status))
+
+    def test_workflow_bootstrap_exports_fresh_external_directory_and_preserves_duplicates(self):
+        text = (schedule.ROOT / ".github/workflows/weather-source-research.yml").read_text()
+        bootstrap = text.split("          python3 - <<'PY'\n", 1)[1].split("          PY", 1)[0]
+        script = "\n".join(line[10:] for line in bootstrap.splitlines())
+        runner_temp = self.root / "runner temp"
+        runner_temp.mkdir()
+        environment_file = self.root / "github-env"
+        environment = {"RUNNER_TEMP": str(runner_temp), "GITHUB_ENV": str(environment_file),
+                       "GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "1"}
+        command = [sys.executable, "-c", script]
+        result = subprocess.run(command, env=environment, cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        exported = dict(line.split("=", 1) for line in environment_file.read_text().splitlines())
+        evidence = Path(exported["WEATHER_SOURCE_EVIDENCE_DIR"])
+        self.assertEqual(evidence, runner_temp / "weather-source-101-1")
+        self.assertNotIn(self.repo, evidence.parents)
+        saved = (evidence / "bootstrap-status.json").read_bytes()
+        status = json.loads(saved)
+        self.assertEqual((status["run_id"], status["run_attempt"]), ("101", "1"))
+        self.assertIsNotNone(instant(status["prepared_at_utc"]).tzinfo)
+        duplicate = subprocess.run(command, env=environment, cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertEqual((evidence / "bootstrap-status.json").read_bytes(), saved)
+        self.assertEqual(len(environment_file.read_text().splitlines()), 1)
 
     def test_queue_cannot_move_to_later_slot_or_run_after_tolerance(self):
         for name, actual, reason in (
