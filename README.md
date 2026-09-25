@@ -146,12 +146,12 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-24 the default has 68 settled **paper** orders, +$58.54 after
-modeled fees (+5.83%), and has not passed admission. Boston's new YES settlement added
-$46.32. The rolling weekly result improved to −$1.02 with rounded fees (−$0.87 in the
-pilot's legacy approximation), clearing the existing loss breaker; two new YES paper intents remain open.
-The frozen NO shadow still has zero prospective selections. No validated alpha is established.
-See [the latest forward update](reports/2026-09-24-forward-update.md),
+As of captures through 2026-09-25 the default has 68 settled **paper** orders, +$58.54 after
+modeled fees (+5.83%), and has not passed admission. No pilot order newly settled today.
+The rolling weekly result is −$6.38 with rounded fees (−$6.26 in the pilot's legacy approximation).
+Three paper intents remain open. The frozen NO shadow now has its first selection—Seattle NO
+for September 26—and zero settlements. No validated alpha is established.
+See [the latest forward update](reports/2026-09-25-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -169,6 +169,10 @@ alter canonical captures, or install a schedule. These records are needed to tes
 they do not establish alpha or turn inspected observations into an independent validation sample.
 The [excluded engineering capture](reports/2026-09-25-source-engineering-check.md) verified all
 122 requests and preserved exact response bytes; it is not a profitability result.
+The separate [scheduled-collection addendum](reports/2026-09-25-source-schedule.md) prepares
+GitHub Actions collection for the protocol's fixed September 26–October 23 targets. Deployment
+and actual run evidence must be verified separately; the study does not place orders or alter
+canonical captures, and late/missing observations cannot be reconstructed afterward.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
