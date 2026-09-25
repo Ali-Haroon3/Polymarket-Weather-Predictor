@@ -167,6 +167,8 @@ existing 15 Kalshi stations. `scripts/weather_source_capture.py` is an on-demand
 research collector with immutable run directories and failure records. It does not place orders,
 alter canonical captures, or install a schedule. These records are needed to test source timing;
 they do not establish alpha or turn inspected observations into an independent validation sample.
+The [excluded engineering capture](reports/2026-09-25-source-engineering-check.md) verified all
+122 requests and preserved exact response bytes; it is not a profitability result.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for

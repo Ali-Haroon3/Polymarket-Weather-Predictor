@@ -72,6 +72,9 @@ excluded; development targets September 26–October 9 and reserved targets Octo
 fixed in the protocol. A reserved availability sample is not automatically an untouched strategy
 test. Never reuse source values, quotes or availability/headroom already inspected while choosing
 a trading candidate as independent validation for that candidate.
+An excluded September 24-target engineering run completed all 122 requests with verified hashes;
+see `reports/2026-09-25-source-engineering-check.md`. The protocol/code were pushed at d3837df
+before retrieval. This verifies collection, not source latency, executable fills or alpha.
 
 ## Commands
 
