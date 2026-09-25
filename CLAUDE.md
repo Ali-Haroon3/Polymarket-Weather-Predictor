@@ -2,19 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-09-23; canonical captures through 2026-09-23)
+## Latest audited state (2026-09-24; canonical captures through 2026-09-24)
 
-See `reports/2026-09-23-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
-The market-shape ledger has 67 settled PAPER orders, +$12.22 net (+1.24%); no live orders are recorded.
-Two September 21 YES entries resolved for +$54.97. Historical selected NO is +$63.12 on 21;
-YES is −$50.90 on 46. Do not promote this exploratory side split. The September 21 replacement
+See `reports/2026-09-24-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 68 settled PAPER orders, +$58.54 net (+5.83%); no live orders are recorded.
+Boston's September 23 YES target resolved for +$46.32. Historical selected NO is +$63.12 on 21;
+YES is −$4.58 on 47. Do not promote this exploratory side split. The September 21 replacement
 replay lost $9.55 on 57; its dated result remains in `reports/2026-09-21-alpha-audit.md`.
 A rank-first, NO-only-without-replacement shadow is frozen after the September21 capture.
-It still has zero prospective selections/settlements. The September 23 run hit the existing
-weekly loss breaker: −$65.95 under its legacy unrounded fee estimate, or −$66.12 with rounded
-fees on the same 32 settled orders. No new decisions were recorded. The September 22 Boston
-YES intent for September 23 is still open. Admission remains NO-GO at 67/100 settled; the
-positive cumulative result does not validate alpha (day CI −24.40% to +31.72%).
+It still has zero prospective selections/settlements. The rolling weekly result is now
+−$0.87 under the pilot's legacy unrounded fee estimate, or −$1.02 with rounded fees on the
+same 28 settlements. The existing breaker cleared without an override; it is not a latched
+human pause. Two September 24 YES intents for Atlanta/Austin September 25 remain open.
+Admission remains NO-GO at 68/100 settled; the positive cumulative result does not validate
+alpha (day CI −20.77% to +39.12%). Earlier dated reports preserve the preceding loss readings.
 The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
 Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
@@ -49,12 +50,20 @@ The September 22 same-day full-ladder snapshot found no net-positive basket at $
 eleven sides lacked a quote. The later September 23-target screen in
 `reports/2026-09-22-next-day-basket-audit.md` found no positive basket across 23 quoted sides,
 with seven sides missing quotes. Neither snapshot is a claim about all possible alpha.
-Upstream capture commit ffdb792 is merged. Its scheduled run used main before these draft-PR
-changes, so new source metadata and enforced live admission are not implied to be deployed.
+PR #48 merged at 4500607; the September 24 scheduled run used that implementation and
+produced capture commit 229e30a. All 90 new Kalshi rows preserve correctly hashed source
+metadata. The run was dry, so live-entry enforcement was not exercised. Its audit precedes
+paper selection; the committed ledger has two open orders, while the earlier run audit had zero.
+The source check in `reports/2026-09-24-weather-source-reconciliation.md` matches all 15
+September 23 daily maxima to winning contract buckets (90 outcomes agree). In the earlier
+incomplete hourly snapshot, 11/15 rounded hourly maxima differ from the later daily values.
+Do not substitute sampled hourly highs for official daily settlement values or infer alpha.
 The local 09:00 capture cron was separately routed through `scripts/daily_capture.sh`, which
 builds current capture/dashboard binaries and aborts on build failure. Old direct-binary writes
 dropped historical fields; the original edits remain in stash 3c5abd7 and separate ignored raw
 observations. Do not reapply that capture wholesale. See the September 23 report for backups.
+At the September 24 audit the local log still ends September 23; a subsequent repaired local
+run has not been observed. Cloud metadata preservation does not establish local execution.
 
 ## Commands
 

@@ -146,11 +146,13 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-23 the default has 67 settled **paper** orders, +$12.22 after
-modeled fees (+1.24%), and has not passed admission. Two newly resolved YES winners added
-$54.97, but the existing weekly loss breaker stopped new orders at a reported −$65.95.
+As of captures through 2026-09-24 the default has 68 settled **paper** orders, +$58.54 after
+modeled fees (+5.83%), and has not passed admission. Boston's new YES settlement added
+$46.32. The rolling weekly result improved to −$1.02 with rounded fees (−$0.87 in the
+pilot's legacy approximation), clearing the existing loss breaker; two new YES paper intents remain open.
 The frozen NO shadow still has zero prospective selections. No validated alpha is established.
-See [the latest forward update](reports/2026-09-23-forward-update.md),
+See [the latest forward update](reports/2026-09-24-forward-update.md),
+[the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
 from these results. Python accounting tests run with
