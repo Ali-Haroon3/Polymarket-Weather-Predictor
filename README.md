@@ -173,6 +173,9 @@ The separate [scheduled-collection addendum](reports/2026-09-25-source-schedule.
 GitHub Actions collection for the protocol's fixed September 26–October 23 targets. Deployment
 and actual run evidence must be verified separately; the study does not place orders or alter
 canonical captures, and late/missing observations cannot be reconstructed afterward.
+The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
+bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
+inventory/coverage integration and a separately frozen trading candidate remain outstanding.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for

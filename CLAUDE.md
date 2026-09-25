@@ -82,6 +82,14 @@ The operational addendum `reports/2026-09-25-source-schedule.md` prepares a sepa
 for the exact frozen study slots. It leaves the original protocol and collector bytes unchanged,
 checks their hashes, rejects late/rerun/off-window source requests and preserves per-run artifacts.
 No deployment or scheduled-run success is implied until verified on the default branch.
+Offline parser support is documented in `reports/2026-09-25-source-parser-design.md`.
+`weather_source_evidence.py` preserves decimal numbers and gates reserved body reads;
+`weather_daily_observation.py` and `weather_market_observation.py` distinguish unsupported
+evidence from explicit absence. Market close_time conflicts with textual cutoff in inspected
+evidence; qualify only before both. No fee coefficient is inferred from quadratic metadata.
+These helpers do not select primary invocations or establish complete coverage. Reconcile the
+full run/artifact inventory before any study aggregate or reserved-data release, and freeze
+the complete analysis before the protocol deadline. No trading candidate is defined yet.
 
 ## Commands
 
