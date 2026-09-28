@@ -74,7 +74,9 @@ canonical rows. This proves wrapper execution and fallback, not successful local
 The separate `scripts/weather_source_capture.py` collector preserves exact public source/book
 responses with receipt times and hashes into new research directories; it does not write canonical
 captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
-It is on-demand only, with no installed schedule. Engineering targets before September 26 are
+PR #50 deployed its separate research workflow at dccd89d on September 28, 04:33 UTC; GitHub
+reports it active, but successful hosted collection remains unverified at the activation check.
+The collector itself is also usable on demand. Engineering targets before September 26 are
 excluded; development targets September 26–October 9 and reserved targets October 10–23 are
 fixed in the protocol. A reserved availability sample is not automatically an untouched strategy
 test. Never reuse source values, quotes or availability/headroom already inspected while choosing
@@ -99,8 +101,8 @@ planned observations per phase. See `reports/2026-09-25-source-analysis.md`. Res
 require fresh post-window inventory with all attempts terminal; no CLI override exists.
 The first real metadata-only check found zero runs before the study start. The September 28
 04:24 UTC recheck still found zero runs: development not_evaluated, ten slots / 150 observations
-missing and 74 slots / 1,110 observations pending. Reserved validation stays locked; PR #50 remains
-an undeployed draft. Preserve missed slots and original dates; do not backfill or shift the window.
+missing and 74 slots / 1,110 observations pending. Reserved validation stays locked. PR #50 merged
+later at 04:33 UTC; preserve missed slots and original dates, with no backfill or shifted window.
 The new preserved client asset supplies verified
 daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
 Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis
@@ -110,6 +112,12 @@ The September 28 fee follow-up found official account-dependent rounding mechani
 −$30.18 paper decline by only $0.0216. It does not identify actual account status or execution
 fees. Keep frozen accounting and source fee-comparison gating unchanged; fill-price averaging
 is not equivalent to summing nonlinear fees across actual fills.
+The separate `reports/2026-09-28-source-activation.md` preserves one explicitly off-schedule
+development capture (target September 27; actual receipt September 28, 04:39–04:40 UTC).
+All 122 responses verify. All 15 study stations had no official daily report; snapshot eligibility
+is nine cities absent and six unknown due to conflicting textual/API close bounds. It supplies
+no primary coverage, independent validation or return estimate. Do not call it a scheduled run,
+engineering target, missed-slot replacement, or proof of whole-day source absence.
 
 ## Commands
 
