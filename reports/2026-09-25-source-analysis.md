@@ -40,6 +40,8 @@ The [authority evidence bundle](2026-09-25-source-authority-evidence.json.gz) pr
 
 Exact fee rounding remains unresolved. The saved series metadata lacks coefficient/rounding detail; the [official fee document](https://kalshi.com/docs/kalshi-fee-schedule.pdf)'s extracted prose and examples require reconciliation. The evaluator therefore continues to emit `payout_comparison_available=false`. It does not equate a price below binary payout with positive expected return or reuse paper-fee assumptions as authoritative transaction costs.
 
+**September 28 addendum:** the [fee sensitivity follow-up](2026-09-28-fee-sensitivity.md) located authoritative account-dependent rounding mechanics. It quantifies their limited effect on the current paper sample without claiming actual execution costs. Account category, applicable overrides and fill-level evidence remain unavailable; the evaluator's fee-inclusive comparison stays disabled. The preceding paragraph records the evidence available when this analysis was first committed.
+
 ## Verification and use
 
 All **86 new offline checks pass**: 28 inventory/selection tests, 14 exporter tests, 20 snapshot/unit tests and 24 study/binding tests. They cover incomplete pagination, reruns, failed earliest invocations, missing timing, stale inventory, preserved failures, raw/decoded tampering, artifact binding, exact denominators, unit evidence, partial overlap, missing-book ambiguity and the reserved gate. Existing collector/protocol and canonical capture/ledger hashes are unchanged.

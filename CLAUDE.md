@@ -105,6 +105,11 @@ The new preserved client asset supplies verified
 daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
 Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis
 version history and the original freeze deadline; test success does not establish alpha.
+The September 28 fee follow-up found official account-dependent rounding mechanics; see
+`reports/2026-09-28-fee-sensitivity.md`. A single-fill all-taker sensitivity changes the recent
+−$30.18 paper decline by only $0.0216. It does not identify actual account status or execution
+fees. Keep frozen accounting and source fee-comparison gating unchanged; fill-price averaging
+is not equivalent to summing nonlinear fees across actual fills.
 
 ## Commands
 

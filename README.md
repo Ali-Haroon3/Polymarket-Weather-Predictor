@@ -152,6 +152,9 @@ profit by $30.18 since September 25. The rolling week is +$13.24 with rounded fe
 in the pilot's legacy approximation); its improvement mainly reflects older losses aging out.
 Six paper intents remain open ($87.97 principal). The frozen NO shadow has two prospective
 selections: one settled win (+$1.49) and one open. No validated alpha is established.
+The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
+assumptions change the recent decline by only $0.0216 under a single-fill comparison; frozen
+accounting is unchanged. Fee rounding does not explain the losses.
 See [the latest forward update](reports/2026-09-27-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
