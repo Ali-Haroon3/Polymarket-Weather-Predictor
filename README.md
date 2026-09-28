@@ -146,12 +146,16 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-24 the default has 68 settled **paper** orders, +$58.54 after
-modeled fees (+5.83%), and has not passed admission. Boston's new YES settlement added
-$46.32. The rolling weekly result improved to −$1.02 with rounded fees (−$0.87 in the
-pilot's legacy approximation), clearing the existing loss breaker; two new YES paper intents remain open.
-The frozen NO shadow still has zero prospective selections. No validated alpha is established.
-See [the latest forward update](reports/2026-09-24-forward-update.md),
+As of captures through 2026-09-27 the default has 71 settled **paper** orders, +$28.36 after
+modeled fees (+2.70%), and has not passed admission. Two YES losses and a NO win reduced net
+profit by $30.18 since September 25. The rolling week is +$13.24 with rounded fees (+$13.32
+in the pilot's legacy approximation); its improvement mainly reflects older losses aging out.
+Six paper intents remain open ($87.97 principal). The frozen NO shadow has two prospective
+selections: one settled win (+$1.49) and one open. No validated alpha is established.
+The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
+assumptions change the recent decline by only $0.0216 under a single-fill comparison; frozen
+accounting is unchanged. Fee rounding does not explain the losses.
+See [the latest forward update](reports/2026-09-27-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -169,6 +173,17 @@ alter canonical captures, or install a schedule. These records are needed to tes
 they do not establish alpha or turn inspected observations into an independent validation sample.
 The [excluded engineering capture](reports/2026-09-25-source-engineering-check.md) verified all
 122 requests and preserved exact response bytes; it is not a profitability result.
+The separate [scheduled-collection addendum](reports/2026-09-25-source-schedule.md) prepares
+GitHub Actions collection for the protocol's fixed September 26–October 23 targets. Deployment
+and actual run evidence must be verified separately; the study does not place orders or alter
+canonical captures, and late/missing observations cannot be reconstructed afterward.
+The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
+bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
+inventory and fixed-denominator aggregation are implemented in the
+[offline study evaluator](reports/2026-09-25-source-analysis.md). The September 28 04:24 UTC
+check found zero scheduled runs: ten development slots missing and 74 pending, with the original
+denominator preserved. Deployment, observations and a separately frozen trading candidate remain
+outstanding. See the latest forward update for preserved inventory evidence and exact timing.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for

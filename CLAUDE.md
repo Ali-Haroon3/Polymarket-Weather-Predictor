@@ -2,20 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-09-24; canonical captures through 2026-09-24)
+## Latest audited state (2026-09-27 captures; checked 2026-09-28 UTC)
 
-See `reports/2026-09-24-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
-The market-shape ledger has 68 settled PAPER orders, +$58.54 net (+5.83%); no live orders are recorded.
-Boston's September 23 YES target resolved for +$46.32. Historical selected NO is +$63.12 on 21;
-YES is −$4.58 on 47. Do not promote this exploratory side split. The September 21 replacement
+See `reports/2026-09-27-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 71 settled PAPER orders, +$28.36 net (+2.70%); no live orders are recorded.
+September 26 added Atlanta/Austin YES losses totaling −$31.67; September 27 added Seattle NO +$1.49.
+Historical selected NO is +$64.61 on 22; YES is −$36.25 on 49. Do not promote this exploratory side split.
+The September 21 replacement
 replay lost $9.55 on 57; its dated result remains in `reports/2026-09-21-alpha-audit.md`.
 A rank-first, NO-only-without-replacement shadow is frozen after the September21 capture.
-It still has zero prospective selections/settlements. The rolling weekly result is now
-−$0.87 under the pilot's legacy unrounded fee estimate, or −$1.02 with rounded fees on the
-same 28 settlements. The existing breaker cleared without an override; it is not a latched
-human pause. Two September 24 YES intents for Atlanta/Austin September 25 remain open.
-Admission remains NO-GO at 68/100 settled; the positive cumulative result does not validate
-alpha (day CI −20.77% to +39.12%). Earlier dated reports preserve the preceding loss readings.
+It now has TWO prospective selections: Seattle NO for September 26 settled +$1.49; Seattle NO
+KXHIGHTSEA-26SEP27-B61.5, entered September 26, remains open (16 contracts at $0.90).
+The scorer's shadow section counts settlements only; one there does not imply one selection.
+The rolling weekly result is +$13.32 under the pilot's legacy estimate, or +$13.24 with rounded
+fees on 16 settlements. Its improvement mainly reflects older losses aging out, not new profit.
+The existing breaker remains clear without an override; it is not a latched human pause.
+Six paper intents remain open ($87.97 principal): September 27 Seattle NO/Philadelphia YES and
+September 28 Boston/Austin/Philadelphia/Atlanta YES. Admission remains NO-GO at 71/100 settled;
+the positive cumulative result does not validate alpha (day CI −23.22% to +33.86%). The unchanged
+one-cent same-contract sensitivity leaves only +$0.82. Earlier reports preserve the loss readings.
 The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
 Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
@@ -50,10 +55,11 @@ The September 22 same-day full-ladder snapshot found no net-positive basket at $
 eleven sides lacked a quote. The later September 23-target screen in
 `reports/2026-09-22-next-day-basket-audit.md` found no positive basket across 23 quoted sides,
 with seven sides missing quotes. Neither snapshot is a claim about all possible alpha.
-PR #48 merged at 4500607; the September 24 scheduled run used that implementation and
-produced capture commit 229e30a. All 90 new Kalshi rows preserve correctly hashed source
-metadata. The run was dry, so live-entry enforcement was not exercised. Its audit precedes
-paper selection; the committed ledger has two open orders, while the earlier run audit had zero.
+PR #49 merged at 822c8b6; canonical daily commits are 740fe91 (September 25), 6edef78 (September 26)
+and 151b15e (September 27). All 180 new Kalshi rows across the last two captures preserve correctly
+hashed source metadata (360 total). Runs were dry, so live-entry enforcement was not exercised.
+Capture identities and ledger byte-prefix are preserved; no known outcomes were revised.
+The workflow audit precedes paper selection, so its open count differs from the final ledger.
 The source check in `reports/2026-09-24-weather-source-reconciliation.md` matches all 15
 September 23 daily maxima to winning contract buckets (90 outcomes agree). In the earlier
 incomplete hourly snapshot, 11/15 rounded hourly maxima differ from the later daily values.
@@ -62,8 +68,9 @@ The local 09:00 capture cron was separately routed through `scripts/daily_captur
 builds current capture/dashboard binaries and aborts on build failure. Old direct-binary writes
 dropped historical fields; the original edits remain in stash 3c5abd7 and separate ignored raw
 observations. Do not reapply that capture wholesale. See the September 23 report for backups.
-At the September 24 audit the local log still ends September 23; a subsequent repaired local
-run has not been observed. Cloud metadata preservation does not establish local execution.
+The September 25 local log shows the guarded release build succeeded, then a Polymarket fetch
+failed before capture wrote data. The wrapper rendered the dashboard from the last-good 10,071
+canonical rows. This proves wrapper execution and fallback, not successful local data capture.
 The separate `scripts/weather_source_capture.py` collector preserves exact public source/book
 responses with receipt times and hashes into new research directories; it does not write canonical
 captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
@@ -75,6 +82,34 @@ a trading candidate as independent validation for that candidate.
 An excluded September 24-target engineering run completed all 122 requests with verified hashes;
 see `reports/2026-09-25-source-engineering-check.md`. The protocol/code were pushed at d3837df
 before retrieval. This verifies collection, not source latency, executable fills or alpha.
+The operational addendum `reports/2026-09-25-source-schedule.md` prepares a separate CI schedule
+for the exact frozen study slots. It leaves the original protocol and collector bytes unchanged,
+checks their hashes, rejects late/rerun/off-window source requests and preserves per-run artifacts.
+No deployment or scheduled-run success is implied until verified on the default branch.
+Offline parser support is documented in `reports/2026-09-25-source-parser-design.md`.
+`weather_source_evidence.py` preserves decimal numbers and gates reserved body reads;
+`weather_daily_observation.py` and `weather_market_observation.py` distinguish unsupported
+evidence from explicit absence. Market close_time conflicts with textual cutoff in inspected
+evidence; qualify only before both. No fee coefficient is inferred from quadratic metadata.
+These helpers alone do not select primary invocations or establish complete coverage.
+`weather_source_inventory_capture.py` now preserves read-only run/attempt metadata;
+`weather_source_inventory.py` validates full pagination and selects the earliest invocation;
+`weather_source_analysis.py` verifies raw metadata/artifact binding and aggregates all 1,260
+planned observations per phase. See `reports/2026-09-25-source-analysis.md`. Reserved bodies
+require fresh post-window inventory with all attempts terminal; no CLI override exists.
+The first real metadata-only check found zero runs before the study start. The September 28
+04:24 UTC recheck still found zero runs: development not_evaluated, ten slots / 150 observations
+missing and 74 slots / 1,110 observations pending. Reserved validation stays locked; PR #50 remains
+an undeployed draft. Preserve missed slots and original dates; do not backfill or shift the window.
+The new preserved client asset supplies verified
+daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
+Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis
+version history and the original freeze deadline; test success does not establish alpha.
+The September 28 fee follow-up found official account-dependent rounding mechanics; see
+`reports/2026-09-28-fee-sensitivity.md`. A single-fill all-taker sensitivity changes the recent
+−$30.18 paper decline by only $0.0216. It does not identify actual account status or execution
+fees. Keep frozen accounting and source fee-comparison gating unchanged; fill-price averaging
+is not equivalent to summing nonlinear fees across actual fills.
 
 ## Commands
 
