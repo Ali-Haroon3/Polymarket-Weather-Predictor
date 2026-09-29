@@ -128,10 +128,12 @@ class WeatherSourceScheduleTests(unittest.TestCase):
             actual.extend(dt.datetime(2026, int(month), day, int(hour), int(minute), tzinfo=schedule.UTC)
                           for day in range(first, last + 1) for hour in hours.split(","))
         expected = [self.created + dt.timedelta(hours=4 * i) for i in range(168)]
-        self.assertEqual(sorted(actual), expected)
-        for value in expected:
-            expected_target = value.date() - dt.timedelta(days=value.hour < 12)
-            self.assertEqual(schedule.slot_at(value)["target_date"], expected_target.isoformat())
+        self.assertEqual(sorted(actual), [slot - dt.timedelta(minutes=10) for slot in expected])
+        for dispatch, nominal in zip(sorted(actual), expected):
+            expected_target = nominal.date() - dt.timedelta(days=nominal.hour < 12)
+            self.assertEqual(schedule.slot_at(dispatch), schedule.slot_at(nominal))
+            self.assertEqual(schedule.slot_at(dispatch)["slot_utc"], schedule.stamp(nominal))
+            self.assertEqual(schedule.slot_at(dispatch)["target_date"], expected_target.isoformat())
         self.assertNotIn("workflow_dispatch", text)
         self.assertNotIn("secrets.", text)
         self.assertIn("contents: read\n  actions: read", text)
@@ -202,6 +204,31 @@ class WeatherSourceScheduleTests(unittest.TestCase):
                 status, code, factory, _ = self.run_fixture(actual=actual, name=name)
                 self.assertEqual((code, status["state"], status["reason"]), (0, "skipped", reason))
                 factory.assert_not_called()
+
+    def test_early_dispatch_keeps_original_slot_and_absolute_late_cutoff(self):
+        nominal = self.created
+        self.created = nominal - dt.timedelta(minutes=10)
+        self.write_metadata()
+        for name, actual in (("prompt", self.created),
+                             ("delayed", self.created + dt.timedelta(minutes=23)),
+                             ("boundary", nominal + dt.timedelta(minutes=15))):
+            with self.subTest(name=name):
+                status, code, _, instances = self.run_fixture(actual=actual, name=name)
+                self.assertEqual((code, status["state"]), (0, "complete"))
+                self.assertEqual(status["creation_slot"], schedule.slot_at(nominal))
+                self.assertEqual(status["slot"], schedule.slot_at(nominal))
+                self.assertEqual(instances[0].calls, 1)
+        status, code, factory, _ = self.run_fixture(
+            actual=nominal + dt.timedelta(minutes=15, microseconds=1), name="too_late")
+        self.assertEqual((code, status["reason"]), (0, "collector_start_off_schedule"))
+        factory.assert_not_called()
+        cutoff = nominal + dt.timedelta(minutes=15)
+        status, code, _, instances = self.run_fixture(
+            actual=cutoff - dt.timedelta(seconds=1),
+            initialized=cutoff + dt.timedelta(microseconds=1),
+            gate=cutoff + dt.timedelta(microseconds=1), name="initialization_late")
+        self.assertEqual((code, status["reason"]), (0, "initialization_missed_slot"))
+        self.assertEqual(instances[0].calls, 0)
 
     def test_creation_time_and_attempt_are_checked_before_initialization(self):
         for name, changes, attempt, reason in (

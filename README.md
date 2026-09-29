@@ -146,18 +146,18 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-28 the default has 73 settled **paper** orders, +$14.42 after
-modeled fees (+1.34%), and has not passed admission. New Seattle NO and Philadelphia YES
-settlements net −$13.94, reducing cumulative profit by $44.12 since September 25. The rolling
-week is +$15.73 with rounded fees (+$15.80 in the pilot's legacy approximation); its improvement
-reflects older losses aging out. Five paper intents remain open ($73.75 principal). The frozen
+As of captures through 2026-09-29 the default has 77 settled **paper** orders, −$20.02 after
+modeled fees (−1.76%), and has not passed admission. Four new YES settlements net −$34.44,
+bringing the decline since September 25 to $78.56. The rolling week is +$22.73 with rounded fees
+(+$22.81 in the pilot's legacy approximation); its improvement reflects older losses aging out.
+Four paper intents remain open ($59.46 principal). The frozen
 NO shadow has two settled wins (+$2.98), both Seattle with identical economics; that tiny sample
 and its degenerate bootstrap interval do not establish alpha. Full-sample one-cent adverse-entry
-sensitivity is −$13.77; admission remains NO-GO at 73/100 settlements.
+sensitivity is −$49.85; admission remains NO-GO at 77/100 settlements and negative ROI.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.
-See [the latest forward update](reports/2026-09-28-forward-update.md),
+See [the latest forward update](reports/2026-09-29-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -181,16 +181,18 @@ and actual run evidence must be verified separately; the study does not place or
 canonical captures, and late/missing observations cannot be reconstructed afterward.
 The [September 28 activation check](reports/2026-09-28-source-activation.md) records deployment
 and an explicitly off-schedule development snapshot, which remains excluded from the primary
-sample. The later [hosted-run audit](reports/2026-09-28-hosted-source-study.md) verifies four
-scheduled artifacts: two eligible captures and two jobs correctly skipped for late arrival.
-The eligible captures observed no official daily reports: 26 station checkpoints show absence
-of the defined source/quote overlap, and four remain unknown due to conflicting close bounds.
+sample. The latest [hosted-run audit](reports/2026-09-29-hosted-source-study.md) verifies eleven
+scheduled artifacts: six eligible captures and five jobs correctly skipped for late arrival.
+The eligible captures observed no official daily reports: 82 station checkpoints show absence
+of the defined source/quote overlap, and eight remain unknown due to conflicting close bounds.
+The [proposed dispatch repair](reports/2026-09-29-source-dispatch.md) triggers jobs ten minutes
+earlier within the unchanged observation windows; it is not deployed and cannot recover missed slots.
 The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
 bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
 inventory and fixed-denominator aggregation are implemented in the
-[offline study evaluator](reports/2026-09-25-source-analysis.md). At September 28 19:58 UTC,
-the full denominator remains 1,260: zero overlap, 26 absence and 1,234 unknown, including 1,050
-pending station checkpoints and 180 from twelve closed slots without eligible invocations.
+[offline study evaluator](reports/2026-09-25-source-analysis.md). At September 29 21:31 UTC,
+the full denominator remains 1,260: zero overlap, 82 absence and 1,178 unknown, including 945
+pending station checkpoints and 225 from fifteen closed slots without eligible invocations.
 Reserved validation remains locked. No separately frozen trading candidate or validated alpha
 is established; missed slots and original study dates remain unchanged.
 

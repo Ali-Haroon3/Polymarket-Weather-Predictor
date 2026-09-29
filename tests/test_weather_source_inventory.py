@@ -228,6 +228,21 @@ class PrimarySelectionTests(unittest.TestCase):
         self.assertEqual(selected["primary"]["coordinator"]["state"], "failed")
         self.assertEqual(selected["duplicates"], [{"run_id": 12, "run_attempt": 1}])
 
+    def test_failed_early_dispatch_precedes_successful_nominal_duplicate_across_revisions(self):
+        early = run(11, created="2026-09-26T13:05:00Z", conclusion="failure")
+        nominal = run(12, created="2026-09-26T13:15:00Z")
+        early["head_sha"] = "b" * 40
+        data = fixture([nominal, early])
+        data["coordinator_statuses"][1]["status"]["state"] = "failed"
+        selected = self.chosen(data)["slots"][0]
+        self.assertEqual(selected["state"], "selected")
+        self.assertEqual(selected["slot_utc"], "2026-09-26T13:15:00.000000Z")
+        self.assertEqual(selected["primary"]["id"], 11)
+        self.assertEqual(selected["primary"]["head_sha"], "b" * 40)
+        self.assertEqual(selected["primary"]["conclusion"], "failure")
+        self.assertEqual(selected["primary"]["coordinator"]["state"], "failed")
+        self.assertEqual(selected["duplicates"], [{"run_id": 12, "run_attempt": 1}])
+
     def test_tied_earliest_start_unknown_without_success_tiebreak(self):
         data = fixture([run(11), run(12)])
         data["coordinator_statuses"][0]["status"]["state"] = "failed"
