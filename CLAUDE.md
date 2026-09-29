@@ -110,10 +110,11 @@ and eight unknown (Chicago/Austin/Dallas/Houston close-bound conflicts at two 05
 Full development counts are 0 overlap / 82 absence / 1,178 unknown out of 1,260: unknown includes
 945 pending and 225 from fifteen closed slots without eligible invocations. Reserved validation
 stays locked. See `reports/2026-09-29-hosted-source-study.md`; preserve missed slots and original dates.
-The proposed `reports/2026-09-29-source-dispatch.md` repair changes cron launches to minute05 while
-keeping nominal minute15 slots and all ±15-minute gates unchanged. It is not deployed at this audit.
-Record deployment revision/time before attributing future observations to the new regime; preserve
-old/new duplicates and select the earliest invocation even if it failed. Never backfill missed slots.
+The `reports/2026-09-29-source-dispatch.md` repair merged at d0abc05 on September 29, 21:41:35 UTC;
+verified metadata is in `reports/2026-09-29-source-dispatch-deployment.json`. Cron launches now use
+minute05 while nominal minute15 slots and all ±15-minute gates remain unchanged. First expected
+dispatch is September 30 01:05 UTC, target September 29; actual delivery is not yet verified.
+Preserve old/new duplicates and select the earliest invocation even if it failed. Never backfill missed slots.
 The new preserved client asset supplies verified
 daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
 Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis

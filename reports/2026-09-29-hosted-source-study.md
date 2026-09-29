@@ -41,7 +41,7 @@ The machine totals are therefore **0 overlap / 82 absence / 1,178 unknown**. The
 
 Reserved evaluation at **21:31:12.291906 UTC** remains **locked**, with no source-comparison counts or reserved body inspection. The original development/validation dates, October 10 freeze, October 24 09:30 earliest release, and terminal-inventory requirement remain unchanged. A trading candidate and fee-inclusive payout comparison are still undefined.
 
-The repeated dispatch delays motivate a [prospective operational repair](2026-09-29-source-dispatch.md). That proposed change cannot recover any missed observation and is not deployed at this report. All runs analyzed here used the original :15 dispatch schedule.
+The repeated dispatch delays motivated an [operational repair](2026-09-29-source-dispatch.md). It was undeployed at this 21:31 evaluation and subsequently merged at 21:41:35 UTC, as preserved in the [deployment record](2026-09-29-source-dispatch-deployment.json). It cannot recover any missed observation. All runs analyzed here used the original :15 dispatch schedule.
 
 ## Evidence and reproduction
 

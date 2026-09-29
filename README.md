@@ -185,8 +185,9 @@ sample. The latest [hosted-run audit](reports/2026-09-29-hosted-source-study.md)
 scheduled artifacts: six eligible captures and five jobs correctly skipped for late arrival.
 The eligible captures observed no official daily reports: 82 station checkpoints show absence
 of the defined source/quote overlap, and eight remain unknown due to conflicting close bounds.
-The [proposed dispatch repair](reports/2026-09-29-source-dispatch.md) triggers jobs ten minutes
-earlier within the unchanged observation windows; it is not deployed and cannot recover missed slots.
+The [dispatch repair](reports/2026-09-29-source-dispatch.md) merged September 29 at 21:41 UTC,
+triggering jobs ten minutes earlier within unchanged observation windows. The first expected
+dispatch is September 30 at 01:05 UTC; its actual delivery is not yet verified. Missed slots remain missing.
 The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
 bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
 inventory and fixed-denominator aggregation are implemented in the

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "purpose": "research_dispatch_deployment",
+  "records": [
+    {
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "51",
+        "--json",
+        "url,state,mergedAt,mergeCommit,headRefOid"
+      ],
+      "requested_at_utc": "2026-09-29T21:42:36.625698+00:00",
+      "received_at_utc": "2026-09-29T21:42:37.155571+00:00",
+      "result": {
+        "headRefOid": "49de59cd9e573f2244371d91eafdbd36badd2608",
+        "mergeCommit": {
+          "oid": "d0abc0597d2c9471f782da66cb993d3c858e68cb"
+        },
+        "mergedAt": "2026-09-29T21:41:35Z",
+        "state": "MERGED",
+        "url": "https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/pull/51"
+      }
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/Ali-Haroon3/Polymarket-Weather-Predictor/actions/workflows/weather-source-research.yml",
+        "--jq",
+        "{id,name,path,state,created_at,updated_at}"
+      ],
+      "requested_at_utc": "2026-09-29T21:42:37.155808+00:00",
+      "received_at_utc": "2026-09-29T21:42:37.559830+00:00",
+      "result": {
+        "created_at": "2026-09-25T12:21:35.000-06:00",
+        "id": 367208409,
+        "name": "weather-source-research",
+        "path": ".github/workflows/weather-source-research.yml",
+        "state": "active",
+        "updated_at": "2026-09-27T22:33:30.000-06:00"
+      }
+    }
+  ],
+  "verified_default_branch_revision": "d0abc0597d2c9471f782da66cb993d3c858e68cb",
+  "files": {
+    ".github/workflows/weather-source-research.yml": "198cbef60f03f7e9d09ae5e22c8a1b0fc29fe1d334ec59efb1597e1a52f2b4f1",
+    "scripts/weather_source_schedule.py": "78b6807b86b9b651a0fd92ba50a5f5a9bf076c65874a0d028ba739ee9b2c0277",
+    "scripts/weather_source_capture.py": "652fb66e90caf065a3324e7d0d83ddb23a917c5e0859bbadf1704eb1a46a3ab6",
+    "scripts/weather_source_inventory.py": "e618b73a35162403d447c8eb0e5f2a50320b70bcc8d3f18867c214bcf25af59e",
+    "scripts/weather_source_analysis.py": "8cd49d8f8204d895ea19e16377bc4a40f9de1edf03f71fc3051e2e6601e68713",
+    "reports/2026-09-25-source-collection-protocol.md": "57c61d4c6495251e8b09f00897975893c4727dd25f33d16d3162e837fd2cd98c",
+    "scripts/go_live_gate.py": "061692e86b19748c878458e3ed303cc563f854fb77b871ec269958e01d396da4",
+    "scripts/pilot_alpha_audit.py": "615df82678438722b1c6ffc8ff08a4fd479485aa0b47d186c6eb7c5c5c5343fc",
+    "data/captures.jsonl": "ed515ff9ca7dd145ecd20c41208943c3cb10fe230ecf45b6c78cff2e56babc52",
+    "data/pilot_trades.jsonl": "70301d5f4800072014600f4508d6faa5159f6a8419368e550a96425595618e37"
+  },
+  "next_planned_dispatch_utc": "2026-09-30T01:05:00Z",
+  "next_nominal_slot_utc": "2026-09-30T01:15:00Z",
+  "next_target_date": "2026-09-29",
+  "actual_postdeployment_delivery_verified": false
+}
