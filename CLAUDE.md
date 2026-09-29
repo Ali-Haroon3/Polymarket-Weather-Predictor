@@ -2,25 +2,27 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-09-27 captures; checked 2026-09-28 UTC)
+## Latest audited state (2026-09-29 captures and hosted source artifacts)
 
-See `reports/2026-09-27-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
-The market-shape ledger has 71 settled PAPER orders, +$28.36 net (+2.70%); no live orders are recorded.
-September 26 added Atlanta/Austin YES losses totaling −$31.67; September 27 added Seattle NO +$1.49.
-Historical selected NO is +$64.61 on 22; YES is −$36.25 on 49. Do not promote this exploratory side split.
+See `reports/2026-09-29-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 77 settled PAPER orders, −$20.02 net (−1.76%); no live orders are recorded.
+September 29 reflected Boston YES −$15.53, Austin YES +$11.95, Philadelphia YES −$15.43 and
+Atlanta YES −$15.43 for September 28 targets. Decline: $34.44 since previous capture, $78.56 since September 25.
+The original roughly −$40 reading was September 22 cumulative −$42.75, not September 27.
+Historical selected NO is +$66.10 on 23; YES is −$86.12 on 54. Do not promote this exploratory side split.
 The September 21 replacement
 replay lost $9.55 on 57; its dated result remains in `reports/2026-09-21-alpha-audit.md`.
 A rank-first, NO-only-without-replacement shadow is frozen after the September21 capture.
-It now has TWO prospective selections: Seattle NO for September 26 settled +$1.49; Seattle NO
-KXHIGHTSEA-26SEP27-B61.5, entered September 26, remains open (16 contracts at $0.90).
-The scorer's shadow section counts settlements only; one there does not imply one selection.
-The rolling weekly result is +$13.32 under the pilot's legacy estimate, or +$13.24 with rounded
-fees on 16 settlements. Its improvement mainly reflects older losses aging out, not new profit.
+It now has TWO prospective selections, both settled Seattle NO wins totaling +$2.98, none open.
+Both have identical 16×$0.90 economics; the resulting degenerate bootstrap interval is not
+robust uncertainty evidence or validated alpha. The scorer's shadow section counts settlements.
+The rolling weekly result is +$22.81 under the pilot's legacy estimate, or +$22.73 with rounded
+fees on 12 settlements. Its improvement reflects older losses aging out, not new profit.
 The existing breaker remains clear without an override; it is not a latched human pause.
-Six paper intents remain open ($87.97 principal): September 27 Seattle NO/Philadelphia YES and
-September 28 Boston/Austin/Philadelphia/Atlanta YES. Admission remains NO-GO at 71/100 settled;
-the positive cumulative result does not validate alpha (day CI −23.22% to +33.86%). The unchanged
-one-cent same-contract sensitivity leaves only +$0.82. Earlier reports preserve the loss readings.
+Four paper intents remain open ($59.46 principal): September 29 Denver YES and September 30
+Austin/Chicago/NYC YES. Admission remains NO-GO at 77/100 settled and negative ROI.
+Alpha remains unproven (day CI −27.06% to +27.20%). The unchanged one-cent same-contract
+sensitivity is −$49.85. Earlier reports preserve the dated loss readings.
 The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
 Unverified live orders block new exposure; they cannot count as settled profit. Historical descriptions
@@ -74,7 +76,10 @@ canonical rows. This proves wrapper execution and fallback, not successful local
 The separate `scripts/weather_source_capture.py` collector preserves exact public source/book
 responses with receipt times and hashes into new research directories; it does not write canonical
 captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
-It is on-demand only, with no installed schedule. Engineering targets before September 26 are
+PR #50 deployed its separate research workflow at dccd89d on September 28, 04:33 UTC.
+The latest `reports/2026-09-29-hosted-source-study.md` verifies eleven scheduled artifacts: six
+eligible captures and five late jobs correctly skipped with no source requests.
+The collector itself is also usable on demand. Engineering targets before September 26 are
 excluded; development targets September 26–October 9 and reserved targets October 10–23 are
 fixed in the protocol. A reserved availability sample is not automatically an untouched strategy
 test. Never reuse source values, quotes or availability/headroom already inspected while choosing
@@ -85,7 +90,8 @@ before retrieval. This verifies collection, not source latency, executable fills
 The operational addendum `reports/2026-09-25-source-schedule.md` prepares a separate CI schedule
 for the exact frozen study slots. It leaves the original protocol and collector bytes unchanged,
 checks their hashes, rejects late/rerun/off-window source requests and preserves per-run artifacts.
-No deployment or scheduled-run success is implied until verified on the default branch.
+Deployment and the first scheduled artifacts are verified in the September 28 hosted-run report;
+workflow success alone does not prove that collection or eligibility checks passed.
 Offline parser support is documented in `reports/2026-09-25-source-parser-design.md`.
 `weather_source_evidence.py` preserves decimal numbers and gates reserved body reads;
 `weather_daily_observation.py` and `weather_market_observation.py` distinguish unsupported
@@ -97,10 +103,17 @@ These helpers alone do not select primary invocations or establish complete cove
 `weather_source_analysis.py` verifies raw metadata/artifact binding and aggregates all 1,260
 planned observations per phase. See `reports/2026-09-25-source-analysis.md`. Reserved bodies
 require fresh post-window inventory with all attempts terminal; no CLI override exists.
-The first real metadata-only check found zero runs before the study start. The September 28
-04:24 UTC recheck still found zero runs: development not_evaluated, ten slots / 150 observations
-missing and 74 slots / 1,110 observations pending. Reserved validation stays locked; PR #50 remains
-an undeployed draft. Preserve missed slots and original dates; do not backfill or shift the window.
+The first metadata-only checks found zero runs. At September 29 21:31 UTC, complete inventory
+contains eleven terminal original attempts: six eligible snapshots and five late skipped jobs.
+All 15 study daily reports are explicitly absent in all six. Selected observations are 82 absence
+and eight unknown (Chicago/Austin/Dallas/Houston close-bound conflicts at two 05:15 slots), no overlap.
+Full development counts are 0 overlap / 82 absence / 1,178 unknown out of 1,260: unknown includes
+945 pending and 225 from fifteen closed slots without eligible invocations. Reserved validation
+stays locked. See `reports/2026-09-29-hosted-source-study.md`; preserve missed slots and original dates.
+The proposed `reports/2026-09-29-source-dispatch.md` repair changes cron launches to minute05 while
+keeping nominal minute15 slots and all ±15-minute gates unchanged. It is not deployed at this audit.
+Record deployment revision/time before attributing future observations to the new regime; preserve
+old/new duplicates and select the earliest invocation even if it failed. Never backfill missed slots.
 The new preserved client asset supplies verified
 daily Fahrenheit semantics; its receipt is new, not the missing older asset vintage.
 Fee-inclusive payout comparisons and a trading candidate remain undefined. Preserve analysis
@@ -110,6 +123,12 @@ The September 28 fee follow-up found official account-dependent rounding mechani
 −$30.18 paper decline by only $0.0216. It does not identify actual account status or execution
 fees. Keep frozen accounting and source fee-comparison gating unchanged; fill-price averaging
 is not equivalent to summing nonlinear fees across actual fills.
+The separate `reports/2026-09-28-source-activation.md` preserves one explicitly off-schedule
+development capture (target September 27; actual receipt September 28, 04:39–04:40 UTC).
+All 122 responses verify. All 15 study stations had no official daily report; snapshot eligibility
+is nine cities absent and six unknown due to conflicting textual/API close bounds. It supplies
+no primary coverage, independent validation or return estimate. Do not call it a scheduled run,
+engineering target, missed-slot replacement, or proof of whole-day source absence.
 
 ## Commands
 

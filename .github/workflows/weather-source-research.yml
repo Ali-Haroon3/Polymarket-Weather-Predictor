@@ -2,11 +2,14 @@ name: weather-source-research
 
 on:
   schedule:
-    - cron: "15 13,17,21 26-30 9 *"
-    - cron: "15 1,5,9 27-30 9 *"
-    - cron: "15 1,5,9 1 10 *"
-    - cron: "15 13,17,21 1-23 10 *"
-    - cron: "15 1,5,9 2-24 10 *"
+    # Allow dispatch delay inside the frozen :15 +/-15-minute observation window.
+    # Slot identity and every actual-start guard remain in weather_source_schedule.py.
+    # Operational repair and original missed slots: reports/2026-09-29-source-dispatch.md.
+    - cron: "5 13,17,21 26-30 9 *"
+    - cron: "5 1,5,9 27-30 9 *"
+    - cron: "5 1,5,9 1 10 *"
+    - cron: "5 13,17,21 1-23 10 *"
+    - cron: "5 1,5,9 2-24 10 *"
 
 permissions:
   contents: read
