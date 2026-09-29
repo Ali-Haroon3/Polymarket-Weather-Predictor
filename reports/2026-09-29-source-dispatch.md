@@ -1,10 +1,10 @@
 # Dispatch research jobs earlier within the original observation windows
 
-**Five of the first eleven scheduled jobs were created too late to collect.** The proposed repair launches each job ten minutes before its nominal checkpoint, giving dispatch and initialization more time while retaining the exact frozen observation windows. The repair is prepared in the research branch and is not deployed at this report.
+**Five of the first eleven scheduled jobs were created too late to collect.** The repair launches each job ten minutes before its nominal checkpoint, giving dispatch and initialization more time while retaining the exact frozen observation windows. [PR #51](https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/pull/51) merged at **September 29, 21:41:35 UTC** as `d0abc0597d2c9471f782da66cb993d3c858e68cb`. The default branch contains the new timing and GitHub reports the workflow active; actual delivery under that timing remains unverified.
 
 The [September 29 artifact audit](2026-09-29-hosted-source-study.md) preserves all eleven original runs. Their five skipped creation delays relative to the preceding nominal slot were 23m11s, 17m27s, 24m49s, 15m08s and 18m42s. Each correctly returned `creation_off_schedule` without source requests. GitHub [documents that scheduled runs may be delayed or dropped](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); no cron adjustment guarantees timely delivery.
 
-## Proposed operational change
+## Operational change
 
 The five existing calendar expressions dispatch at minute **05** instead of **15**, once per original checkpoint. Nominal slots remain **13:15, 17:15 and 21:15 UTC on target date D**, followed by **01:15, 05:15 and 09:15 UTC on D+1**. All actual timestamps must still fall inside their original ±15-minute windows. No extra invocation, retry, manual catch-up, shifted target date or wider tolerance is introduced.
 
@@ -18,7 +18,7 @@ This is an operational response to observed delivery failures, prepared before t
 
 The current five late runs and ten earlier missed slots remain unknown in the original denominator. Subtracting ten minutes from historical timestamps is not evidence of successful collection. In particular, the slowest coordinator would have only about 4.7 seconds left for remaining initialization under an identical-delay hypothetical; future platform delays may differ.
 
-All analyzed runs through September 29 at 21:15 used the original schedule. The new policy becomes operative only when this workflow revision reaches the default branch. Record that merge revision and timestamp and verify subsequent run metadata/artifacts before claiming deployment or improved delivery. If old/new cron events both arrive during transition, retain both: the original earliest-invocation rule selects the primary even if it failed. A later successful duplicate cannot replace it.
+All analyzed runs through September 29 at 21:15 used the original schedule. The [deployment record](2026-09-29-source-dispatch-deployment.json) preserves the merged revision, API observations and file hashes. The first expected dispatch under the deployed policy is **September 30 at 01:05 UTC**, for the unchanged **01:15 nominal slot / September 29 target** (September 29, 19:05 / 19:15 in America/Denver). This is a planned event, not a claim that a new capture occurred. Verify subsequent run metadata and artifacts before claiming improved delivery. If old/new cron events both arrive during transition, retain both: the original earliest-invocation rule selects the primary even if it failed. A later successful duplicate cannot replace it.
 
 Reserved bodies remain uninspected until the original release requirements are satisfied. No paper-selection rule, live admission setting, source endpoint, request limit or trading credential changes.
 
