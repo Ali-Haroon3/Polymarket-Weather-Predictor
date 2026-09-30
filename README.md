@@ -146,18 +146,19 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of captures through 2026-09-29 the default has 77 settled **paper** orders, −$20.02 after
-modeled fees (−1.76%), and has not passed admission. Four new YES settlements net −$34.44,
-bringing the decline since September 25 to $78.56. The rolling week is +$22.73 with rounded fees
-(+$22.81 in the pilot's legacy approximation); its improvement reflects older losses aging out.
-Four paper intents remain open ($59.46 principal). The frozen
-NO shadow has two settled wins (+$2.98), both Seattle with identical economics; that tiny sample
-and its degenerate bootstrap interval do not establish alpha. Full-sample one-cent adverse-entry
-sensitivity is −$49.85; admission remains NO-GO at 77/100 settlements and negative ROI.
+As of canonical captures through 2026-09-30 the default has 78 settled **paper** orders,
+−$35.78 after modeled fees (−3.11%), and has not passed admission. The newly settled Denver YES
+loss is −$15.76, bringing the decline since September 25 to $94.32. The rolling week is −$48.00
+with rounded fees (−$47.92 in the pilot's legacy approximation), approximately $2.08 above its
+−$50 breaker. Two older winners aging out account for $54.97 of the weekly decline.
+Six paper intents remain open ($89.25 principal). The frozen NO shadow has four prospective
+selections: two settled Seattle wins (+$2.98) and two open orders. The tiny settled sample and
+its degenerate bootstrap interval do not establish alpha. Full-sample one-cent adverse-entry
+sensitivity is −$66.54; admission remains NO-GO at 78/100 settlements and negative ROI.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.
-See [the latest forward update](reports/2026-09-29-forward-update.md),
+See [the latest forward update](reports/2026-09-30-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -181,19 +182,23 @@ and actual run evidence must be verified separately; the study does not place or
 canonical captures, and late/missing observations cannot be reconstructed afterward.
 The [September 28 activation check](reports/2026-09-28-source-activation.md) records deployment
 and an explicitly off-schedule development snapshot, which remains excluded from the primary
-sample. The latest [hosted-run audit](reports/2026-09-29-hosted-source-study.md) verifies eleven
-scheduled artifacts: six eligible captures and five jobs correctly skipped for late arrival.
-The eligible captures observed no official daily reports: 82 station checkpoints show absence
-of the defined source/quote overlap, and eight remain unknown due to conflicting close bounds.
-The [dispatch repair](reports/2026-09-29-source-dispatch.md) merged September 29 at 21:41 UTC,
-triggering jobs ten minutes earlier within unchanged observation windows. The first expected
-dispatch is September 30 at 01:05 UTC; its actual delivery is not yet verified. Missed slots remain missing.
+sample. The latest [hosted-run audit](reports/2026-09-30-hosted-source-study.md) verifies sixteen
+terminal original runs: ten eligible captures and six jobs correctly skipped for late arrival.
+Selected observations contain zero source/quote overlaps, 123 absence and 27 unknown.
+At the September 30 09:15 UTC slot, all 15 September 29 study reports were preliminary
+(`isOfficial=false`, empty `issueTime`); the frozen evaluator retains them as unknown.
+A separate descriptive check finds all 90 associated markets closed; it does not change that
+primary classification. The [dispatch repair](reports/2026-09-29-source-dispatch.md) merged
+September 29 at 21:41 UTC, triggering jobs ten minutes earlier within unchanged observation
+windows. Its first five observed runs yielded four eligible captures and one late skip; this
+small delivery sample does not establish a causal improvement. Missed slots remain missing.
 The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
 bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
 inventory and fixed-denominator aggregation are implemented in the
-[offline study evaluator](reports/2026-09-25-source-analysis.md). At September 29 21:31 UTC,
-the full denominator remains 1,260: zero overlap, 82 absence and 1,178 unknown, including 945
-pending station checkpoints and 225 from fifteen closed slots without eligible invocations.
+[offline study evaluator](reports/2026-09-25-source-analysis.md). At September 30 18:10 UTC,
+the full denominator remains 1,260: zero overlap, 123 absence and 1,137 unknown, including 870
+pending station checkpoints across 58 future slots and 240 from sixteen closed slots without
+eligible invocations.
 Reserved validation remains locked. No separately frozen trading candidate or validated alpha
 is established; missed slots and original study dates remain unchanged.
 
