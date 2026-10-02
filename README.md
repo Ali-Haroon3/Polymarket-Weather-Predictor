@@ -174,19 +174,20 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of canonical captures through 2026-09-30 the default has 78 settled **paper** orders,
-−$35.78 after modeled fees (−3.11%), and has not passed admission. The newly settled Denver YES
-loss is −$15.76, bringing the decline since September 25 to $94.32. The rolling week is −$48.00
-with rounded fees (−$47.92 in the pilot's legacy approximation), approximately $2.08 above its
-−$50 breaker. Two older winners aging out account for $54.97 of the weekly decline.
-Six paper intents remain open ($89.25 principal). The frozen NO shadow has four prospective
+As of canonical captures through 2026-10-01 the default has 81 settled **paper** orders,
+−$82.60 after modeled fees (−6.91%), and has not passed admission. Three September 30 YES losses
+total −$46.82, bringing the decline since September 25 to $141.14. The rolling week is −$141.14
+with rounded fees (−$141.06 in the pilot's legacy approximation). The October 1 primary run
+stood down at its existing −$50 weekly breaker and placed no new orders. This automatic check
+can clear as losses age out; it is not a permanent disable or a latched pause.
+Three paper intents remain open ($44.67 principal). The frozen NO shadow has four prospective
 selections: two settled Seattle wins (+$2.98) and two open orders. The tiny settled sample and
 its degenerate bootstrap interval do not establish alpha. Full-sample one-cent adverse-entry
-sensitivity is −$66.54; admission remains NO-GO at 78/100 settlements and negative ROI.
+sensitivity is −$115.09; admission remains NO-GO at 81/100 settlements and negative ROI.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.
-See [the latest forward update](reports/2026-09-30-forward-update.md),
+See [the latest forward update](reports/2026-10-01-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -210,25 +211,30 @@ and actual run evidence must be verified separately; the study does not place or
 canonical captures, and late/missing observations cannot be reconstructed afterward.
 The [September 28 activation check](reports/2026-09-28-source-activation.md) records deployment
 and an explicitly off-schedule development snapshot, which remains excluded from the primary
-sample. The latest [hosted-run audit](reports/2026-09-30-hosted-source-study.md) verifies sixteen
-terminal original runs: ten eligible captures and six jobs correctly skipped for late arrival.
-Selected observations contain zero source/quote overlaps, 123 absence and 27 unknown.
-At the September 30 09:15 UTC slot, all 15 September 29 study reports were preliminary
-(`isOfficial=false`, empty `issueTime`); the frozen evaluator retains them as unknown.
+sample. The latest [hosted-run audit](reports/2026-10-01-hosted-source-study.md) verifies 24
+terminal original runs: sixteen eligible captures and eight jobs correctly skipped for late
+arrival. Eight newly inspected runs supplied six captures and two late skips. Corrected selected
+observations contain zero source/quote overlaps, 194 absence and 46 unknown. At the October 1
+09:15 UTC slot, all 40 source rows for September 30 were preliminary, including the 15 study
+stations (`isOfficial=false`, empty `issueTime`); the evaluator retains them as unknown.
 A separate descriptive check finds all 90 associated markets closed; it does not change that
 primary classification. The [dispatch repair](reports/2026-09-29-source-dispatch.md) merged
 September 29 at 21:41 UTC, triggering jobs ten minutes earlier within unchanged observation
-windows. Its first five observed runs yielded four eligible captures and one late skip; this
-small delivery sample does not establish a causal improvement. Missed slots remain missing.
+windows. Its thirteen observed runs yielded ten captures and three late skips; this delivery
+sample does not establish a causal improvement. Missed slots remain missing.
 The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
 bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
 inventory and fixed-denominator aggregation are implemented in the
-[offline study evaluator](reports/2026-09-25-source-analysis.md). At September 30 18:10 UTC,
-the full denominator remains 1,260: zero overlap, 123 absence and 1,137 unknown, including 870
-pending station checkpoints across 58 future slots and 240 from sixteen closed slots without
-eligible invocations.
-Reserved validation remains locked. No separately frozen trading candidate or validated alpha
-is established; missed slots and original study dates remain unchanged.
+[offline study evaluator](reports/2026-09-25-source-analysis.md). A documented correction before
+the October 10 analysis freeze accepts both `October 1` and `October 01` in the exact target-date
+cutoff text, preserving the date, cutoff and eligibility gates. Three October 1 snapshots change
+from unknown to absence at 45 station checkpoints; the other 81 planned slots are unchanged.
+Original outputs remain preserved alongside corrected outputs. At October 2 04:18 UTC, the full
+denominator remains 1,260: corrected totals are zero overlap, 194 absence and 1,066 unknown,
+including 750 pending checkpoints across 50 future slots and 270 from eighteen closed slots
+without eligible invocations. The original parser yielded 0 / 149 / 1,111 on the same evidence.
+Reserved validation remains identically locked in both versions. No separately frozen trading
+candidate or validated alpha is established; missed slots and original study dates remain unchanged.
 
 The [preregistered archive test](reports/2026-09-22-archive-preregistration.md) uses separate
 May–June data, exact prior-day 15:00 UTC quote candles, and actual settlement timestamps for
