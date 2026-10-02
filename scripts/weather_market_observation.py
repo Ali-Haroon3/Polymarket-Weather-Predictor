@@ -178,9 +178,14 @@ def market_lifecycle(market, metadata_receipt_utc, book_request_utc, book_receip
         if not received <= requested <= booked or opened >= closed:
             raise ValueError("invalid market/book chronology")
         text = market.get("early_close_condition")
-        day = f"{MONTHS[target.month-1]} {target.day}, {target.year}"
-        expected = (f"The Last Trading Time will be 11:59 PM local time on {day} "
-                    "regardless of any data releases or events occurring. Expiration will occur ")
+        # The venue uses both "October 1" and "October 01". Accept only those
+        # spellings of the exact target date, preserving the surrounding rule.
+        days = (str(target.day), f"{target.day:02d}")
+        expected = tuple(
+            f"The Last Trading Time will be 11:59 PM local time on "
+            f"{MONTHS[target.month-1]} {day}, {target.year} "
+            "regardless of any data releases or events occurring. Expiration will occur "
+            for day in days)
         if not isinstance(text, str) or not text.startswith(expected):
             raise ValueError("unsupported or missing textual last-trading-time rule")
         zone = ZoneInfo(timezone)
