@@ -159,6 +159,46 @@ class MarketObservationTests(unittest.TestCase):
         self.assertEqual(self.lifecycle(booked="2026-09-25T01:00:00")["state"], "unknown")
         self.assertEqual(self.lifecycle(market=None)["state"], "active")
 
+    def test_single_digit_date_spellings_preserve_both_close_boundaries(self):
+        market = self.market()
+        market.update(open_time="2026-09-30T13:00:00Z", close_time="2026-10-02T05:00:00Z")
+        template = market["early_close_condition"]
+        for booked, state in (("2026-10-02T03:58:59Z", "active"),
+                              ("2026-10-02T03:59:00Z", "unknown"),
+                              ("2026-10-02T04:30:00Z", "unknown"),
+                              ("2026-10-02T05:00:00Z", "closed")):
+            results = []
+            for day in ("1", "01"):
+                with self.subTest(day=day, booked=booked):
+                    market["early_close_condition"] = template.replace(
+                        "September 24, 2026", f"October {day}, 2026")
+                    result = observation.market_lifecycle(
+                        market, "2026-10-02T01:00:00Z", "2026-10-02T01:00:01Z", booked,
+                        target_date="2026-10-01", timezone="America/New_York")
+                    self.assertEqual(result["state"], state, result)
+                    self.assertEqual(result["textual_cutoff"], "2026-10-02T03:59:00+00:00")
+                    results.append(result)
+            self.assertEqual(results[0], results[1])
+
+    def test_padded_date_support_does_not_accept_wrong_dates_or_changed_rule(self):
+        market = self.market()
+        market.update(open_time="2026-09-30T13:00:00Z", close_time="2026-10-02T05:00:00Z")
+        template = market["early_close_condition"]
+        for label in ("October 02, 2026", "September 01, 2026", "October 01, 2027",
+                      "October 001, 2026", "October 0, 2026", "October 1st, 2026"):
+            with self.subTest(label=label):
+                market["early_close_condition"] = template.replace("September 24, 2026", label)
+                result = observation.market_lifecycle(
+                    market, "2026-10-02T01:00:00Z", "2026-10-02T01:00:01Z", "2026-10-02T01:00:02Z",
+                    target_date="2026-10-01", timezone="America/New_York")
+                self.assertEqual(result["state"], "unknown", result)
+        market["early_close_condition"] = template.replace(
+            "September 24, 2026", "October 01, 2026").replace("11:59 PM", "11:58 PM")
+        result = observation.market_lifecycle(
+            market, "2026-10-02T01:00:00Z", "2026-10-02T01:00:01Z", "2026-10-02T01:00:02Z",
+            target_date="2026-10-01", timezone="America/New_York")
+        self.assertEqual(result["state"], "unknown", result)
+
     def test_explicit_closed_status_is_observed_not_missing(self):
         market = self.market()
         market["status"] = "finalized"
