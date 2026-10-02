@@ -7,6 +7,34 @@ A Rust port of the full Polymarket Weather Prediction System, including:
 - End-to-end backtesting engine
 - Polymarket API client and live trader scaffolding
 
+## Strategy recovery (October 1, 2026 evidence)
+
+The active pilot is **Kalshi**, despite the repository's name. Its canonical paper ledger
+has 81 settlements and **−$82.60 after modeled fees**. The existing strategy did not change
+during the recent loss period. Older dashboard profits included phantom fills; later losses
+also reflect a disappearing market-temperature bias. See the
+[recovery analysis](reports/2026-10-01-strategy-recovery.md) for the evidence and replacements.
+
+The pilot now also stops new entries when realized drawdown exceeds `--max-drawdown 50`.
+This uses the full strategy/mode history, so losses cannot disappear by aging out of a weekly
+window. It preserves reconciliation of existing live orders and the enforced admission gate.
+
+Five fixed challenger families can be compared with the existing captured books and weather
+forecasts. They have a separate paper-only selector: exact ladders, delayed outcome availability,
+integer $15 budgets including modeled fees, one position per city/day, and five orders per run.
+Scale-only calibration is the preferred candidate for further paper observation; its historical
+profit does not establish future returns. No challenger can place orders or inherit admission.
+
+```bash
+python3 scripts/weather_challenger.py --output research-output/weather-study.json
+python3 scripts/weather_challenger.py --mode shadow --output research-output/weather-shadow.json
+```
+
+The existing daily capture workflow preserves fresh challenger decisions as separate run artifacts
+for 90 days. These artifacts begin prospective evidence only after deployment. The initial local
+October 1 reconstruction is development evidence. Capture records now retain first observed outcome
+receipt times; older resolved rows remain unknown rather than receiving fabricated timestamps.
+
 ## Project Layout
 
 - `src/data_pipeline/`: weather fetchers, aggregation, processing

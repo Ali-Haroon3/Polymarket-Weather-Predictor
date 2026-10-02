@@ -87,6 +87,24 @@ jobs:
         continue-on-error: true
         run: python3 scripts/pilot_alpha_audit.py
 
+      - name: Recovery challenger paper signals
+        id: recovery_shadow
+        if: steps.guard.outputs.already != 'true'
+        # Five fixed, separately named research families. No orders or canonical ledger writes;
+        # preserve decisions before their outcomes arrive, even when the parent pilot stands down.
+        continue-on-error: true
+        run: python3 scripts/weather_challenger.py --mode shadow --require-capture-date "$(date -u +%F)" --output research-output/weather-shadow.json
+
+      - name: Preserve recovery challenger decisions
+        if: always() && steps.recovery_shadow.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: weather-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research-output/weather-shadow.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Kalshi pilot
         if: steps.guard.outputs.already != 'true'
         # Runs after capture (fresh fits and outcomes); tolerates failure so a pilot hiccup can't

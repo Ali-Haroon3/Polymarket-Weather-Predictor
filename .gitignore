@@ -84,3 +84,4 @@ data/*
 !data/captures.jsonl
 !data/pilot_trades.jsonl
 backtest_results/
+research-output/

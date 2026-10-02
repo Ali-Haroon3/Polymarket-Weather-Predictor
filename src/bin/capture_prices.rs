@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use polymarket_weather_predictor::api::{
@@ -75,6 +75,10 @@ struct Snapshot {
     entry_price: f64,
     model_estimate: Option<f64>,
     outcome: Option<f64>,
+    /// First receipt of this outcome by the capture process, not the venue's settlement time.
+    /// Legacy resolved rows stay unknown; never manufacture historical availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome_observed_at: Option<DateTime<Utc>>,
     /// Venue ("polymarket" / "kalshi"). Defaulted for snapshots captured before multi-venue support.
     #[serde(default = "default_source")]
     source: String,
@@ -313,11 +317,13 @@ fn process(
     let existing: HashSet<String> = snaps.iter().map(|s| s.market_id.clone()).collect();
 
     // 1. Finalize: fill outcomes for snapshots that have since resolved.
+    let outcome_observed_at = Utc::now();
     let mut finalized = 0;
     for s in snaps.iter_mut() {
         if s.outcome.is_none() {
             if let Some(o) = outcomes.get(&s.market_id) {
                 s.outcome = Some(*o);
+                s.outcome_observed_at = Some(outcome_observed_at);
                 finalized += 1;
             }
         }
@@ -460,6 +466,9 @@ fn process(
                 entry_price: r.price,
                 model_estimate: est.get(r.market_id.as_str()).copied(),
                 outcome: outcomes.get(&r.market_id).copied(),
+                outcome_observed_at: outcomes
+                    .contains_key(&r.market_id)
+                    .then_some(outcome_observed_at),
                 source: r.source.clone(),
                 settlement_metadata: r.settlement_metadata.clone(),
                 forecast_high: fs.map(|(mu, _)| mu),
@@ -737,6 +746,11 @@ mod tests {
             "forecast_high_graphcast":null}"#;
         let s: Snapshot = serde_json::from_str(line).expect("old rows must keep parsing");
         assert!(s.settlement_metadata.is_none());
+        assert!(s.outcome_observed_at.is_none());
+        assert!(serde_json::to_value(&s)
+            .unwrap()
+            .get("outcome_observed_at")
+            .is_none());
         assert!(serde_json::to_value(&s)
             .unwrap()
             .get("settlement_metadata")
@@ -810,6 +824,13 @@ mod tests {
             Some("Rules observed at entry.\n"),
         );
         let entry_metadata = captured.settlement_metadata.clone();
+        let mut already_resolved = legacy.clone();
+        already_resolved.market_id = "already-resolved".into();
+        already_resolved.outcome = Some(1.0);
+        let mut timestamped = already_resolved.clone();
+        timestamped.market_id = "timestamped".into();
+        timestamped.outcome_observed_at =
+            Some("2026-07-03T15:00:00Z".parse::<DateTime<Utc>>().unwrap());
         let active = ["legacy", "captured"]
             .into_iter()
             .map(|id| {
@@ -833,7 +854,12 @@ mod tests {
             std::process::id()
         ));
         let path = dir.join("captures.jsonl");
-        write_snapshots(&path, &[legacy, captured]).unwrap();
+        write_snapshots(
+            &path,
+            &[legacy, captured, already_resolved, timestamped.clone()],
+        )
+        .unwrap();
+        let before_receipt = Utc::now();
         process(
             active,
             [("legacy".into(), 0.0), ("captured".into(), 1.0)]
@@ -846,9 +872,17 @@ mod tests {
         )
         .unwrap();
         let rows = load_snapshots(&path);
-        assert_eq!(rows.len(), 2, "existing markets do not trigger new fetches");
+        assert_eq!(rows.len(), 4, "existing markets do not trigger new fetches");
         assert_eq!(rows[0].outcome, Some(0.0));
         assert_eq!(rows[1].outcome, Some(1.0));
+        let received = rows[0].outcome_observed_at.unwrap();
+        assert!(received >= before_receipt && received <= Utc::now());
+        assert_eq!(rows[1].outcome_observed_at, Some(received));
+        assert!(
+            rows[2].outcome_observed_at.is_none(),
+            "old resolved rows stay unknown"
+        );
+        assert_eq!(rows[3].outcome_observed_at, timestamped.outcome_observed_at);
         assert!(rows[0].settlement_metadata.is_none());
         assert_eq!(rows[1].settlement_metadata, entry_metadata);
         let first_line = std::fs::read_to_string(&path).unwrap();
@@ -873,6 +907,7 @@ mod tests {
             entry_price: 0.3,
             model_estimate: Some(0.25),
             outcome: Some(1.0),
+            outcome_observed_at: None,
             source: "kalshi".into(),
             settlement_metadata: None,
             forecast_high: Some(31.2),
