@@ -1,4 +1,9 @@
-//! Market-implied distribution ("market shape") strategy — the model-free alpha found 2026-09-07.
+//! Experimental market-implied distribution ("market shape") strategy, introduced 2026-09-07.
+//!
+//! The numerical findings below describe the original research sample, not established forward
+//! profitability. Through 2026-10-01 the actual paper ledger is negative after modeled fees, and
+//! the historical warm bias has disappeared in newer observations. See
+//! `reports/2026-10-01-strategy-recovery.md`; historical replay profit is not live admission.
 //!
 //! The finding. On Kalshi a city-day's temperature markets form a LADDER: four 2 °F buckets plus
 //! an open-ended threshold at each end, mutually exclusive and jointly exhaustive, so their mids

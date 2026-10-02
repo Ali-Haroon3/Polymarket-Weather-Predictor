@@ -1,0 +1,2526 @@
+{
+  "mode": "study",
+  "latest_capture": "2026-10-01",
+  "capture_rows": 10767,
+  "qualifying_events": 911,
+  "policy_version": "weather-challenger-v1",
+  "forecast_events": 896,
+  "exclusions": {
+    "incoherent_mid_sum": 6
+  },
+  "outcome_availability_sources": {
+    "legacy_target_plus_2": 911
+  },
+  "specification": {
+    "families": [
+      "market_normal",
+      "joint_shape",
+      "bias_only",
+      "scale_only",
+      "weather_blend"
+    ],
+    "history_min": 60,
+    "history_cap": 300,
+    "fee_inclusive_stake": 15.0,
+    "min_price": 0.1,
+    "min_net_edge": 0.04,
+    "max_orders_per_day": 5,
+    "max_positions_per_event": 1,
+    "weather_ridge_intercept": 60,
+    "weather_ridge_slope": 300,
+    "max_weather_weight": 0.25,
+    "weather_scale_fit": "All-event categorical Brier, including tail winners, on the original fixed K grid.",
+    "selection": "Earliest qualifying complete lead>=1 book per city/target; rank by rounded-fee net edge."
+  },
+  "limitations": [
+    "Capture quotes are not execution proof; book depth and order fills are unverified.",
+    "Legacy target+2 outcome availability is an approximation, not observed publication evidence.",
+    "These historical dates were inspected before this study; no untouched holdout is claimed.",
+    "Winning interior bucket midpoints approximate realized temperature; tail winners are excluded from weather mean regression (possible truncation bias), but included in scale calibration.",
+    "Target-day bootstrap does not correct research selection or serial dependence across days.",
+    "Adverse 1c stress keeps ticker/side selection, then resizes and recomputes rounded fees inside $15.",
+    "All fitted families share 60 prior eligible events; no account inventory, dynamic breaker, or live promotion.",
+    "Challenger families have no live-admission authority and cannot inherit another strategy's go-live gate."
+  ],
+  "history_counts": {
+    "2026-07-05": 0,
+    "2026-07-06": 0,
+    "2026-07-07": 0,
+    "2026-07-08": 7,
+    "2026-07-09": 14,
+    "2026-07-10": 21,
+    "2026-07-11": 28,
+    "2026-07-12": 35,
+    "2026-07-13": 42,
+    "2026-07-14": 49,
+    "2026-07-15": 56,
+    "2026-07-16": 63,
+    "2026-07-17": 70,
+    "2026-07-18": 77,
+    "2026-07-19": 84,
+    "2026-07-20": 91,
+    "2026-07-21": 98,
+    "2026-07-22": 105,
+    "2026-07-23": 112,
+    "2026-07-24": 119,
+    "2026-07-25": 126,
+    "2026-07-26": 133,
+    "2026-07-27": 140,
+    "2026-07-28": 147,
+    "2026-07-29": 154,
+    "2026-07-30": 161,
+    "2026-07-31": 168,
+    "2026-08-01": 175,
+    "2026-08-02": 176,
+    "2026-08-03": 183,
+    "2026-08-04": 190,
+    "2026-08-05": 197,
+    "2026-08-06": 204,
+    "2026-08-07": 211,
+    "2026-08-08": 217,
+    "2026-08-09": 224,
+    "2026-08-10": 231,
+    "2026-08-11": 238,
+    "2026-08-12": 245,
+    "2026-08-19": 266,
+    "2026-08-20": 266,
+    "2026-08-21": 266,
+    "2026-08-22": 281,
+    "2026-08-23": 296,
+    "2026-08-24": 300,
+    "2026-08-25": 300,
+    "2026-08-27": 300,
+    "2026-08-28": 300,
+    "2026-08-29": 300,
+    "2026-08-30": 300,
+    "2026-08-31": 300,
+    "2026-09-01": 300,
+    "2026-09-02": 300,
+    "2026-09-03": 300,
+    "2026-09-04": 300,
+    "2026-09-05": 300,
+    "2026-09-06": 300,
+    "2026-09-07": 300,
+    "2026-09-08": 300,
+    "2026-09-09": 300,
+    "2026-09-10": 300,
+    "2026-09-11": 300,
+    "2026-09-12": 300,
+    "2026-09-13": 300,
+    "2026-09-14": 300,
+    "2026-09-15": 300,
+    "2026-09-16": 300,
+    "2026-09-17": 300,
+    "2026-09-18": 300,
+    "2026-09-19": 300,
+    "2026-09-20": 300,
+    "2026-09-21": 300,
+    "2026-09-22": 300,
+    "2026-09-23": 300,
+    "2026-09-24": 300,
+    "2026-09-25": 300,
+    "2026-09-26": 300,
+    "2026-09-27": 300,
+    "2026-09-28": 300,
+    "2026-09-29": 300,
+    "2026-09-30": 300,
+    "2026-10-01": 300
+  },
+  "families": {
+    "market_normal": {
+      "open_orders": 3,
+      "periods": {
+        "all": {
+          "orders": 75,
+          "target_days": 42,
+          "wins": 56,
+          "cost": 1103.85,
+          "fees": 23.65,
+          "net": -32.84999999999999,
+          "roi": -0.029759478189971454,
+          "target_day_bootstrap_95_roi": [
+            -0.23115057010230292,
+            0.25633837655109865
+          ],
+          "max_target_day_drawdown": 106.10999999999999,
+          "by_city": {
+            "Atlanta": {
+              "orders": 2,
+              "net": 43.34,
+              "cost": 29.660000000000004,
+              "roi": 1.461227242076871,
+              "capital_share": 0.026869592788875307
+            },
+            "Austin": {
+              "orders": 15,
+              "net": -15.179999999999998,
+              "cost": 219.18,
+              "roi": -0.06925814399124007,
+              "capital_share": 0.1985595869003941
+            },
+            "Boston": {
+              "orders": 3,
+              "net": -28.83,
+              "cost": 44.83,
+              "roi": -0.6430961409770243,
+              "capital_share": 0.04061240204737963
+            },
+            "Chicago": {
+              "orders": 1,
+              "net": 1.6500000000000004,
+              "cost": 14.35,
+              "roi": 0.11498257839721257,
+              "capital_share": 0.012999954703990579
+            },
+            "Dallas": {
+              "orders": 5,
+              "net": -42.730000000000004,
+              "cost": 73.73,
+              "roi": -0.57954699579547,
+              "capital_share": 0.06679349549304707
+            },
+            "Denver": {
+              "orders": 8,
+              "net": -15.75,
+              "cost": 117.75,
+              "roi": -0.1337579617834395,
+              "capital_share": 0.10667210218779727
+            },
+            "Houston": {
+              "orders": 1,
+              "net": 1.040000000000001,
+              "cost": 14.959999999999999,
+              "roi": 0.06951871657754018,
+              "capital_share": 0.013552566018933732
+            },
+            "LA": {
+              "orders": 9,
+              "net": -10.390000000000002,
+              "cost": 133.39000000000001,
+              "roi": -0.07789189594422372,
+              "capital_share": 0.12084069393486437
+            },
+            "Miami": {
+              "orders": 4,
+              "net": -27.229999999999997,
+              "cost": 59.23,
+              "roi": -0.4597332432888738,
+              "capital_share": 0.05365765276079178
+            },
+            "Philadelphia": {
+              "orders": 6,
+              "net": 87.28,
+              "cost": 88.72,
+              "roi": 0.9837691614066727,
+              "capital_share": 0.08037323911763374
+            },
+            "Phoenix": {
+              "orders": 9,
+              "net": -33.69,
+              "cost": 132.69,
+              "roi": -0.25390006782726654,
+              "capital_share": 0.12020654980296237
+            },
+            "Seattle": {
+              "orders": 5,
+              "net": 12.810000000000004,
+              "cost": 72.19,
+              "roi": 0.1774484000554094,
+              "capital_share": 0.06539837840286271
+            },
+            "Vegas": {
+              "orders": 4,
+              "net": 5.0,
+              "cost": 59.0,
+              "roi": 0.0847457627118644,
+              "capital_share": 0.05344929111745256
+            },
+            "Washington": {
+              "orders": 3,
+              "net": -10.17,
+              "cost": 44.17,
+              "roi": -0.2302467738283903,
+              "capital_share": 0.04001449472301491
+            }
+          },
+          "largest_city_capital_share": 0.1985595869003941,
+          "net_without_best_city": -120.13,
+          "stress_1c": {
+            "orders": 75,
+            "unpriceable": 0,
+            "cost": 1091.41,
+            "net": -56.41000000000001,
+            "fees": 22.75,
+            "roi": -0.051685434438020546
+          }
+        },
+        "through_2026_09_07": {
+          "orders": 43,
+          "target_days": 25,
+          "wins": 32,
+          "cost": 631.64,
+          "fees": 13.26,
+          "net": -70.63999999999999,
+          "roi": -0.11183585586726615,
+          "target_day_bootstrap_95_roi": [
+            -0.3104362816602572,
+            0.10461822843683852
+          ],
+          "max_target_day_drawdown": 86.12999999999998,
+          "by_city": {
+            "Atlanta": {
+              "orders": 1,
+              "net": 36.0,
+              "cost": 15.000000000000002,
+              "roi": 2.4,
+              "capital_share": 0.023747704388575774
+            },
+            "Austin": {
+              "orders": 10,
+              "net": -20.33,
+              "cost": 145.33,
+              "roi": -0.1398885295534301,
+              "capital_share": 0.2300835919194478
+            },
+            "Dallas": {
+              "orders": 1,
+              "net": -14.940000000000001,
+              "cost": 14.940000000000001,
+              "roi": -1.0,
+              "capital_share": 0.023652713571021472
+            },
+            "Denver": {
+              "orders": 7,
+              "net": -0.899999999999995,
+              "cost": 102.89999999999999,
+              "roi": -0.008746355685131147,
+              "capital_share": 0.1629092521056298
+            },
+            "LA": {
+              "orders": 6,
+              "net": 0.3099999999999987,
+              "cost": 88.69,
+              "roi": 0.0034953207802457856,
+              "capital_share": 0.14041226014818567
+            },
+            "Miami": {
+              "orders": 3,
+              "net": -12.379999999999997,
+              "cost": 44.379999999999995,
+              "roi": -0.27895448400180256,
+              "capital_share": 0.07026154138433284
+            },
+            "Philadelphia": {
+              "orders": 4,
+              "net": -27.82999999999999,
+              "cost": 58.82999999999999,
+              "roi": -0.47305796362400127,
+              "capital_share": 0.09313849661199416
+            },
+            "Phoenix": {
+              "orders": 6,
+              "net": -21.369999999999997,
+              "cost": 88.37,
+              "roi": -0.24182414846667416,
+              "capital_share": 0.13990564245456275
+            },
+            "Seattle": {
+              "orders": 1,
+              "net": 1.8000000000000007,
+              "cost": 14.2,
+              "roi": 0.12676056338028174,
+              "capital_share": 0.022481160154518395
+            },
+            "Vegas": {
+              "orders": 2,
+              "net": 1.8899999999999988,
+              "cost": 29.11,
+              "roi": 0.06492614221916863,
+              "capital_share": 0.04608637831676271
+            },
+            "Washington": {
+              "orders": 2,
+              "net": -12.89,
+              "cost": 29.89,
+              "roi": -0.4312479089996655,
+              "capital_share": 0.04732125894496866
+            }
+          },
+          "largest_city_capital_share": 0.2300835919194478,
+          "net_without_best_city": -106.63999999999999,
+          "stress_1c": {
+            "orders": 43,
+            "unpriceable": 0,
+            "cost": 625.02,
+            "net": -79.02000000000001,
+            "fees": 12.77,
+            "roi": -0.12642795430546225
+          }
+        },
+        "after_2026_09_07": {
+          "orders": 32,
+          "target_days": 17,
+          "wins": 24,
+          "cost": 472.21,
+          "fees": 10.39,
+          "net": 37.79,
+          "roi": 0.08002795366468309,
+          "target_day_bootstrap_95_roi": [
+            -0.3068576846097124,
+            0.7329160633378485
+          ],
+          "max_target_day_drawdown": 52.079999999999984,
+          "by_city": {
+            "Atlanta": {
+              "orders": 1,
+              "net": 7.34,
+              "cost": 14.66,
+              "roi": 0.5006821282401092,
+              "capital_share": 0.031045509413184815
+            },
+            "Austin": {
+              "orders": 5,
+              "net": 5.150000000000002,
+              "cost": 73.85,
+              "roi": 0.06973595125253897,
+              "capital_share": 0.15639228309438596
+            },
+            "Boston": {
+              "orders": 3,
+              "net": -28.83,
+              "cost": 44.83,
+              "roi": -0.6430961409770243,
+              "capital_share": 0.09493657482899558
+            },
+            "Chicago": {
+              "orders": 1,
+              "net": 1.6500000000000004,
+              "cost": 14.35,
+              "roi": 0.11498257839721257,
+              "capital_share": 0.03038902183350628
+            },
+            "Dallas": {
+              "orders": 4,
+              "net": -27.79,
+              "cost": 58.79,
+              "roi": -0.4726994386800476,
+              "capital_share": 0.12449969293322886
+            },
+            "Denver": {
+              "orders": 1,
+              "net": -14.850000000000005,
+              "cost": 14.850000000000005,
+              "roi": -1.0,
+              "capital_share": 0.03144787276847166
+            },
+            "Houston": {
+              "orders": 1,
+              "net": 1.040000000000001,
+              "cost": 14.959999999999999,
+              "roi": 0.06951871657754018,
+              "capital_share": 0.03168081997416404
+            },
+            "LA": {
+              "orders": 3,
+              "net": -10.700000000000001,
+              "cost": 44.7,
+              "roi": -0.23937360178970918,
+              "capital_share": 0.09466127358590459
+            },
+            "Miami": {
+              "orders": 1,
+              "net": -14.849999999999998,
+              "cost": 14.849999999999998,
+              "roi": -1.0,
+              "capital_share": 0.03144787276847165
+            },
+            "Philadelphia": {
+              "orders": 2,
+              "net": 115.10999999999999,
+              "cost": 29.89,
+              "roi": 3.851120776179324,
+              "capital_share": 0.06329810889223016
+            },
+            "Phoenix": {
+              "orders": 3,
+              "net": -12.32,
+              "cost": 44.32,
+              "roi": -0.2779783393501805,
+              "capital_share": 0.09385654687533089
+            },
+            "Seattle": {
+              "orders": 4,
+              "net": 11.010000000000003,
+              "cost": 57.989999999999995,
+              "roi": 0.1898603207449561,
+              "capital_share": 0.12280553143728426
+            },
+            "Vegas": {
+              "orders": 2,
+              "net": 3.110000000000001,
+              "cost": 29.89,
+              "roi": 0.1040481766477083,
+              "capital_share": 0.06329810889223016
+            },
+            "Washington": {
+              "orders": 1,
+              "net": 2.7200000000000006,
+              "cost": 14.28,
+              "roi": 0.19047619047619052,
+              "capital_share": 0.030240782702611126
+            }
+          },
+          "largest_city_capital_share": 0.15639228309438596,
+          "net_without_best_city": -77.32,
+          "stress_1c": {
+            "orders": 32,
+            "unpriceable": 0,
+            "cost": 466.39,
+            "net": 22.609999999999996,
+            "fees": 9.98,
+            "roi": 0.04847874096785951
+          }
+        },
+        "after_2026_09_21": {
+          "orders": 6,
+          "target_days": 5,
+          "wins": 4,
+          "cost": 88.69999999999999,
+          "fees": 2.02,
+          "net": -24.699999999999996,
+          "roi": -0.27846674182638104,
+          "target_day_bootstrap_95_roi": [
+            -0.7851772287862513,
+            0.08822386319471437
+          ],
+          "max_target_day_drawdown": 29.759999999999998,
+          "by_city": {
+            "Austin": {
+              "orders": 1,
+              "net": 1.040000000000001,
+              "cost": 14.959999999999999,
+              "roi": 0.06951871657754018,
+              "capital_share": 0.16865839909808344
+            },
+            "Boston": {
+              "orders": 2,
+              "net": -13.869999999999997,
+              "cost": 29.869999999999997,
+              "roi": -0.46434549715433543,
+              "capital_share": 0.3367531003382187
+            },
+            "Miami": {
+              "orders": 1,
+              "net": -14.849999999999998,
+              "cost": 14.849999999999998,
+              "roi": -1.0,
+              "capital_share": 0.16741826381059752
+            },
+            "Seattle": {
+              "orders": 2,
+              "net": 2.9800000000000004,
+              "cost": 29.02,
+              "roi": 0.10268780151619575,
+              "capital_share": 0.32717023675310036
+            }
+          },
+          "largest_city_capital_share": 0.3367531003382187,
+          "net_without_best_city": -27.679999999999996,
+          "stress_1c": {
+            "orders": 6,
+            "unpriceable": 0,
+            "cost": 87.33,
+            "net": -25.33,
+            "fees": 1.94,
+            "roi": -0.2900492385205542
+          }
+        }
+      }
+    },
+    "joint_shape": {
+      "open_orders": 8,
+      "periods": {
+        "all": {
+          "orders": 273,
+          "target_days": 66,
+          "wins": 161,
+          "cost": 4024.33,
+          "fees": 138.1,
+          "net": 627.67,
+          "roi": 0.15596881965445178,
+          "target_day_bootstrap_95_roi": [
+            0.006283580730352426,
+            0.31304501391321776
+          ],
+          "max_target_day_drawdown": 110.5100000000001,
+          "by_city": {
+            "Atlanta": {
+              "orders": 10,
+              "net": -23.910000000000004,
+              "cost": 147.91,
+              "roi": -0.1616523561625313,
+              "capital_share": 0.03675394413480008
+            },
+            "Austin": {
+              "orders": 41,
+              "net": 258.60999999999996,
+              "cost": 606.39,
+              "roi": 0.4264747109945744,
+              "capital_share": 0.1506809829213807
+            },
+            "Boston": {
+              "orders": 6,
+              "net": 26.25,
+              "cost": 88.75,
+              "roi": 0.29577464788732394,
+              "capital_share": 0.022053360435153182
+            },
+            "Chicago": {
+              "orders": 18,
+              "net": 123.99,
+              "cost": 265.01,
+              "roi": 0.4678691370136976,
+              "capital_share": 0.06585195548078811
+            },
+            "Dallas": {
+              "orders": 9,
+              "net": 7.5099999999999945,
+              "cost": 131.49,
+              "roi": 0.05711460947600573,
+              "capital_share": 0.03267376184358639
+            },
+            "Denver": {
+              "orders": 27,
+              "net": 81.19,
+              "cost": 398.81,
+              "roi": 0.203580652441012,
+              "capital_share": 0.09909972591710918
+            },
+            "Houston": {
+              "orders": 7,
+              "net": 19.510000000000005,
+              "cost": 102.49,
+              "roi": 0.19036003512537814,
+              "capital_share": 0.02546759336336732
+            },
+            "LA": {
+              "orders": 23,
+              "net": 114.73,
+              "cost": 339.27,
+              "roi": 0.33816724143012944,
+              "capital_share": 0.08430471656151459
+            },
+            "Miami": {
+              "orders": 32,
+              "net": 47.67,
+              "cost": 472.33,
+              "roi": 0.10092520060127454,
+              "capital_share": 0.11736860545730593
+            },
+            "NYC": {
+              "orders": 30,
+              "net": 111.00999999999999,
+              "cost": 441.99,
+              "roi": 0.2511595284961198,
+              "capital_share": 0.1098294622955871
+            },
+            "Philadelphia": {
+              "orders": 20,
+              "net": -112.12,
+              "cost": 295.12,
+              "roi": -0.3799132556248306,
+              "capital_share": 0.07333394627180177
+            },
+            "Phoenix": {
+              "orders": 17,
+              "net": -95.58,
+              "cost": 249.57999999999998,
+              "roi": -0.38296337847583944,
+              "capital_share": 0.062017776872174996
+            },
+            "Seattle": {
+              "orders": 8,
+              "net": 5.159999999999998,
+              "cost": 115.84,
+              "roi": 0.04454419889502761,
+              "capital_share": 0.028784915749950925
+            },
+            "Vegas": {
+              "orders": 20,
+              "net": 86.48999999999998,
+              "cost": 295.51,
+              "roi": 0.2926804507461676,
+              "capital_share": 0.0734308568134323
+            },
+            "Washington": {
+              "orders": 5,
+              "net": -22.84,
+              "cost": 73.84,
+              "roi": -0.30931744312026,
+              "capital_share": 0.01834839588204745
+            }
+          },
+          "largest_city_capital_share": 0.1506809829213807,
+          "net_without_best_city": 369.06,
+          "stress_1c": {
+            "orders": 273,
+            "unpriceable": 0,
+            "cost": 4020.11,
+            "net": 512.8899999999999,
+            "fees": 135.44,
+            "roi": 0.12758108608968408
+          }
+        },
+        "through_2026_09_07": {
+          "orders": 184,
+          "target_days": 44,
+          "wins": 113,
+          "cost": 2714.05,
+          "fees": 93.71,
+          "net": 633.9499999999999,
+          "roi": 0.23358081096516273,
+          "target_day_bootstrap_95_roi": [
+            0.06200349433407811,
+            0.41447675177648874
+          ],
+          "max_target_day_drawdown": 80.46999999999997,
+          "by_city": {
+            "Atlanta": {
+              "orders": 5,
+              "net": 32.53,
+              "cost": 74.47,
+              "roi": 0.43682019605210154,
+              "capital_share": 0.027438698623827855
+            },
+            "Austin": {
+              "orders": 32,
+              "net": 247.89999999999998,
+              "cost": 473.1,
+              "roi": 0.5239906996406679,
+              "capital_share": 0.1743151378935539
+            },
+            "Chicago": {
+              "orders": 12,
+              "net": 115.51,
+              "cost": 176.49,
+              "roi": 0.6544846733525979,
+              "capital_share": 0.06502827877157753
+            },
+            "Dallas": {
+              "orders": 6,
+              "net": 6.909999999999997,
+              "cost": 88.09,
+              "roi": 0.07844250198660457,
+              "capital_share": 0.0324570291630589
+            },
+            "Denver": {
+              "orders": 19,
+              "net": 66.38,
+              "cost": 280.62,
+              "roi": 0.23654764450146104,
+              "capital_share": 0.10339529485455315
+            },
+            "Houston": {
+              "orders": 5,
+              "net": 31.750000000000004,
+              "cost": 73.25,
+              "roi": 0.4334470989761093,
+              "capital_share": 0.02698918590298631
+            },
+            "LA": {
+              "orders": 18,
+              "net": 89.45,
+              "cost": 265.55,
+              "roi": 0.33684805121446054,
+              "capital_share": 0.09784270739301044
+            },
+            "Miami": {
+              "orders": 24,
+              "net": 15.780000000000003,
+              "cost": 354.21999999999997,
+              "roi": 0.04454858562475299,
+              "capital_share": 0.13051343932499399
+            },
+            "NYC": {
+              "orders": 20,
+              "net": 90.94999999999999,
+              "cost": 294.05,
+              "roi": 0.30930113926203023,
+              "capital_share": 0.10834361931430887
+            },
+            "Philadelphia": {
+              "orders": 17,
+              "net": -88.39,
+              "cost": 251.39,
+              "roi": -0.3516050757786706,
+              "capital_share": 0.09262541220684953
+            },
+            "Phoenix": {
+              "orders": 10,
+              "net": -71.85,
+              "cost": 146.85,
+              "roi": -0.48927477017364657,
+              "capital_share": 0.05410733037342716
+            },
+            "Seattle": {
+              "orders": 3,
+              "net": 11.329999999999998,
+              "cost": 43.67,
+              "roi": 0.25944584382871533,
+              "capital_share": 0.01609034468782815
+            },
+            "Vegas": {
+              "orders": 11,
+              "net": 98.57,
+              "cost": 162.43,
+              "roi": 0.6068460259804223,
+              "capital_share": 0.05984782889040364
+            },
+            "Washington": {
+              "orders": 2,
+              "net": -12.87,
+              "cost": 29.869999999999997,
+              "roi": -0.43086709072648144,
+              "capital_share": 0.011005692599620491
+            }
+          },
+          "largest_city_capital_share": 0.1743151378935539,
+          "net_without_best_city": 386.04999999999995,
+          "stress_1c": {
+            "orders": 184,
+            "unpriceable": 0,
+            "cost": 2710.33,
+            "net": 550.67,
+            "fees": 91.88,
+            "roi": 0.20317452118376728
+          }
+        },
+        "after_2026_09_07": {
+          "orders": 89,
+          "target_days": 22,
+          "wins": 48,
+          "cost": 1310.28,
+          "fees": 44.39,
+          "net": -6.280000000000021,
+          "roi": -0.004792868699819901,
+          "target_day_bootstrap_95_roi": [
+            -0.25423261741961045,
+            0.28397085762561575
+          ],
+          "max_target_day_drawdown": 110.50999999999999,
+          "by_city": {
+            "Atlanta": {
+              "orders": 5,
+              "net": -56.44,
+              "cost": 73.44,
+              "roi": -0.7685185185185185,
+              "capital_share": 0.05604908874439051
+            },
+            "Austin": {
+              "orders": 9,
+              "net": 10.709999999999994,
+              "cost": 133.29000000000002,
+              "roi": 0.08035111411208637,
+              "capital_share": 0.10172634856671858
+            },
+            "Boston": {
+              "orders": 6,
+              "net": 26.25,
+              "cost": 88.75,
+              "roi": 0.29577464788732394,
+              "capital_share": 0.06773361418933357
+            },
+            "Chicago": {
+              "orders": 6,
+              "net": 8.479999999999997,
+              "cost": 88.52,
+              "roi": 0.0957975598734749,
+              "capital_share": 0.06755807918918094
+            },
+            "Dallas": {
+              "orders": 3,
+              "net": 0.5999999999999979,
+              "cost": 43.400000000000006,
+              "roi": 0.013824884792626677,
+              "capital_share": 0.03312269133315017
+            },
+            "Denver": {
+              "orders": 8,
+              "net": 14.809999999999999,
+              "cost": 118.19,
+              "roi": 0.1253067095354937,
+              "capital_share": 0.09020209420887139
+            },
+            "Houston": {
+              "orders": 2,
+              "net": -12.24,
+              "cost": 29.240000000000002,
+              "roi": -0.41860465116279066,
+              "capital_share": 0.0223158408889703
+            },
+            "LA": {
+              "orders": 5,
+              "net": 25.28,
+              "cost": 73.72,
+              "roi": 0.3429191535539881,
+              "capital_share": 0.05626278352718503
+            },
+            "Miami": {
+              "orders": 8,
+              "net": 31.89,
+              "cost": 118.11,
+              "roi": 0.27000254000508,
+              "capital_share": 0.09014103855664438
+            },
+            "NYC": {
+              "orders": 10,
+              "net": 20.060000000000002,
+              "cost": 147.94,
+              "roi": 0.13559551169393,
+              "capital_share": 0.11290716488078884
+            },
+            "Philadelphia": {
+              "orders": 3,
+              "net": -23.73,
+              "cost": 43.730000000000004,
+              "roi": -0.5426480676880859,
+              "capital_share": 0.033374545898586565
+            },
+            "Phoenix": {
+              "orders": 7,
+              "net": -23.730000000000004,
+              "cost": 102.73,
+              "roi": -0.23099386741944908,
+              "capital_share": 0.07840308941600269
+            },
+            "Seattle": {
+              "orders": 5,
+              "net": -6.17,
+              "cost": 72.17,
+              "roi": -0.0854925869474851,
+              "capital_share": 0.05507983026528681
+            },
+            "Vegas": {
+              "orders": 9,
+              "net": -12.080000000000007,
+              "cost": 133.08,
+              "roi": -0.0907724676886084,
+              "capital_share": 0.1015660774796227
+            },
+            "Washington": {
+              "orders": 3,
+              "net": -9.97,
+              "cost": 43.97,
+              "roi": -0.22674550830111442,
+              "capital_share": 0.033557712855267575
+            }
+          },
+          "largest_city_capital_share": 0.11290716488078884,
+          "net_without_best_city": -38.17000000000002,
+          "stress_1c": {
+            "orders": 89,
+            "unpriceable": 0,
+            "cost": 1309.78,
+            "net": -37.780000000000044,
+            "fees": 43.56,
+            "roi": -0.028844538777504654
+          }
+        },
+        "after_2026_09_21": {
+          "orders": 19,
+          "target_days": 8,
+          "wins": 9,
+          "cost": 280.85,
+          "fees": 9.459999999999999,
+          "net": -79.85000000000001,
+          "roi": -0.2843154708919352,
+          "target_day_bootstrap_95_roi": [
+            -0.6293245469522242,
+            0.16950620848974873
+          ],
+          "max_target_day_drawdown": 110.51000000000002,
+          "by_city": {
+            "Atlanta": {
+              "orders": 1,
+              "net": -14.909999999999998,
+              "cost": 14.909999999999998,
+              "roi": -1.0,
+              "capital_share": 0.053088837457717634
+            },
+            "Austin": {
+              "orders": 2,
+              "net": -13.810000000000004,
+              "cost": 29.810000000000002,
+              "roi": -0.46326735994632684,
+              "capital_share": 0.10614206871995727
+            },
+            "Boston": {
+              "orders": 2,
+              "net": 45.12,
+              "cost": 29.88,
+              "roi": 1.5100401606425702,
+              "capital_share": 0.10639131208830335
+            },
+            "Chicago": {
+              "orders": 2,
+              "net": -29.35,
+              "cost": 29.35,
+              "roi": -1.0,
+              "capital_share": 0.10450418372796866
+            },
+            "Denver": {
+              "orders": 1,
+              "net": -14.910000000000002,
+              "cost": 14.910000000000002,
+              "roi": -1.0,
+              "capital_share": 0.05308883745771765
+            },
+            "Houston": {
+              "orders": 2,
+              "net": -12.24,
+              "cost": 29.240000000000002,
+              "roi": -0.41860465116279066,
+              "capital_share": 0.10411251557771052
+            },
+            "Miami": {
+              "orders": 1,
+              "net": 1.3399999999999999,
+              "cost": 14.66,
+              "roi": 0.09140518417462482,
+              "capital_share": 0.05219868257076731
+            },
+            "NYC": {
+              "orders": 1,
+              "net": -15.000000000000002,
+              "cost": 15.000000000000002,
+              "roi": -1.0,
+              "capital_share": 0.05340929321701977
+            },
+            "Philadelphia": {
+              "orders": 1,
+              "net": -14.8,
+              "cost": 14.8,
+              "roi": -1.0,
+              "capital_share": 0.0526971693074595
+            },
+            "Phoenix": {
+              "orders": 1,
+              "net": -14.96,
+              "cost": 14.96,
+              "roi": -1.0,
+              "capital_share": 0.05326686843510771
+            },
+            "Seattle": {
+              "orders": 2,
+              "net": 2.9800000000000004,
+              "cost": 29.02,
+              "roi": 0.10268780151619575,
+              "capital_share": 0.10332917927719422
+            },
+            "Vegas": {
+              "orders": 2,
+              "net": -1.5400000000000027,
+              "cost": 29.540000000000003,
+              "roi": -0.052132701421801035,
+              "capital_share": 0.10518070144205091
+            },
+            "Washington": {
+              "orders": 1,
+              "net": 2.2300000000000004,
+              "cost": 14.77,
+              "roi": 0.1509817197020989,
+              "capital_share": 0.052590350721025456
+            }
+          },
+          "largest_city_capital_share": 0.10639131208830335,
+          "net_without_best_city": -124.97,
+          "stress_1c": {
+            "orders": 19,
+            "unpriceable": 0,
+            "cost": 280.32,
+            "net": -84.32000000000002,
+            "fees": 9.27,
+            "roi": -0.30079908675799094
+          }
+        }
+      }
+    },
+    "bias_only": {
+      "open_orders": 6,
+      "periods": {
+        "all": {
+          "orders": 232,
+          "target_days": 60,
+          "wins": 116,
+          "cost": 3438.65,
+          "fees": 143.08,
+          "net": 1039.35,
+          "roi": 0.3022552455178631,
+          "target_day_bootstrap_95_roi": [
+            0.05960184473948668,
+            0.553025123774576
+          ],
+          "max_target_day_drawdown": 129.34000000000003,
+          "by_city": {
+            "Atlanta": {
+              "orders": 10,
+              "net": -80.82000000000001,
+              "cost": 148.82,
+              "roi": -0.5430721677193926,
+              "capital_share": 0.043278612246084945
+            },
+            "Austin": {
+              "orders": 35,
+              "net": 281.84999999999997,
+              "cost": 517.15,
+              "roi": 0.545006284443585,
+              "capital_share": 0.15039332296104574
+            },
+            "Boston": {
+              "orders": 8,
+              "net": -4.250000000000002,
+              "cost": 119.25,
+              "roi": -0.03563941299790358,
+              "capital_share": 0.03467930728628968
+            },
+            "Chicago": {
+              "orders": 9,
+              "net": 71.25,
+              "cost": 133.75,
+              "roi": 0.5327102803738317,
+              "capital_share": 0.038896078402861585
+            },
+            "Dallas": {
+              "orders": 9,
+              "net": -79.08,
+              "cost": 134.07999999999998,
+              "roi": -0.5897971360381862,
+              "capital_share": 0.038992046297238736
+            },
+            "Denver": {
+              "orders": 20,
+              "net": 1.579999999999993,
+              "cost": 297.42,
+              "roi": 0.00531235290162058,
+              "capital_share": 0.08649324589591846
+            },
+            "Houston": {
+              "orders": 3,
+              "net": 100.74,
+              "cost": 44.26,
+              "roi": 2.2760957975598735,
+              "capital_share": 0.012871330318584328
+            },
+            "LA": {
+              "orders": 23,
+              "net": 74.53,
+              "cost": 340.46999999999997,
+              "roi": 0.21890328075895088,
+              "capital_share": 0.09901269393511987
+            },
+            "Miami": {
+              "orders": 27,
+              "net": 250.59,
+              "cost": 401.41,
+              "roi": 0.6242744326249968,
+              "capital_share": 0.11673476509676763
+            },
+            "NYC": {
+              "orders": 14,
+              "net": 6.499999999999995,
+              "cost": 207.5,
+              "roi": 0.03132530120481925,
+              "capital_share": 0.06034344873714975
+            },
+            "Philadelphia": {
+              "orders": 22,
+              "net": 151.93,
+              "cost": 326.07,
+              "roi": 0.46594289569724295,
+              "capital_share": 0.09482500399866226
+            },
+            "Phoenix": {
+              "orders": 18,
+              "net": 196.39,
+              "cost": 266.61,
+              "roi": 0.736619031544203,
+              "capital_share": 0.07753333430270601
+            },
+            "Seattle": {
+              "orders": 6,
+              "net": 65.63000000000001,
+              "cost": 87.37,
+              "roi": 0.7511731715691886,
+              "capital_share": 0.025408227065854334
+            },
+            "Vegas": {
+              "orders": 24,
+              "net": 44.71000000000001,
+              "cost": 355.29,
+              "roi": 0.1258408623941006,
+              "capital_share": 0.10332252482805752
+            },
+            "Washington": {
+              "orders": 4,
+              "net": -42.2,
+              "cost": 59.2,
+              "roi": -0.7128378378378378,
+              "capital_share": 0.01721605862765911
+            }
+          },
+          "largest_city_capital_share": 0.15039332296104574,
+          "net_without_best_city": 757.5,
+          "stress_1c": {
+            "orders": 232,
+            "unpriceable": 0,
+            "cost": 3426.9,
+            "net": 859.0999999999999,
+            "fees": 140.6,
+            "roi": 0.2506930461933526
+          }
+        },
+        "through_2026_09_07": {
+          "orders": 152,
+          "target_days": 40,
+          "wins": 73,
+          "cost": 2251.9,
+          "fees": 97.0,
+          "net": 687.1,
+          "roi": 0.30512012078689105,
+          "target_day_bootstrap_95_roi": [
+            0.005769154952405562,
+            0.6345225333770387
+          ],
+          "max_target_day_drawdown": 129.34000000000003,
+          "by_city": {
+            "Atlanta": {
+              "orders": 6,
+              "net": -38.7,
+              "cost": 89.7,
+              "roi": -0.43143812709030105,
+              "capital_share": 0.03983302988587415
+            },
+            "Austin": {
+              "orders": 26,
+              "net": 151.42999999999998,
+              "cost": 383.57,
+              "roi": 0.3947910420522981,
+              "capital_share": 0.17033171988098939
+            },
+            "Boston": {
+              "orders": 2,
+              "net": -29.81,
+              "cost": 29.81,
+              "roi": -1.0,
+              "capital_share": 0.013237710377903103
+            },
+            "Chicago": {
+              "orders": 7,
+              "net": 42.169999999999995,
+              "cost": 103.83,
+              "roi": 0.406144659539632,
+              "capital_share": 0.046107731249167366
+            },
+            "Dallas": {
+              "orders": 6,
+              "net": -61.379999999999995,
+              "cost": 89.38,
+              "roi": -0.6867308122622511,
+              "capital_share": 0.039690927661086194
+            },
+            "Denver": {
+              "orders": 14,
+              "net": 48.959999999999994,
+              "cost": 208.04,
+              "roi": 0.23533935781580465,
+              "capital_share": 0.09238420889027044
+            },
+            "Houston": {
+              "orders": 1,
+              "net": 6.600000000000001,
+              "cost": 14.399999999999999,
+              "roi": 0.4583333333333335,
+              "capital_share": 0.006394600115458057
+            },
+            "LA": {
+              "orders": 18,
+              "net": 48.37,
+              "cost": 266.63,
+              "roi": 0.18141244421107902,
+              "capital_share": 0.1184022381100404
+            },
+            "Miami": {
+              "orders": 17,
+              "net": 96.35000000000001,
+              "cost": 252.65,
+              "roi": 0.38135760934098556,
+              "capital_share": 0.11219414716461655
+            },
+            "NYC": {
+              "orders": 11,
+              "net": 14.039999999999992,
+              "cost": 162.96,
+              "roi": 0.08615611192930775,
+              "capital_share": 0.07236555797326702
+            },
+            "Philadelphia": {
+              "orders": 15,
+              "net": 45.59,
+              "cost": 222.41,
+              "roi": 0.2049817903871229,
+              "capital_share": 0.09876548692215462
+            },
+            "Phoenix": {
+              "orders": 10,
+              "net": 241.8,
+              "cost": 148.2,
+              "roi": 1.6315789473684212,
+              "capital_share": 0.0658110928549225
+            },
+            "Seattle": {
+              "orders": 3,
+              "net": 59.93000000000001,
+              "cost": 44.07,
+              "roi": 1.3598820058997052,
+              "capital_share": 0.01957014077001643
+            },
+            "Vegas": {
+              "orders": 14,
+              "net": 91.67000000000002,
+              "cost": 206.32999999999998,
+              "roi": 0.4442882760626182,
+              "capital_share": 0.09162485012655978
+            },
+            "Washington": {
+              "orders": 2,
+              "net": -29.92,
+              "cost": 29.92,
+              "roi": -1.0,
+              "capital_share": 0.013286558017673965
+            }
+          },
+          "largest_city_capital_share": 0.17033171988098939,
+          "net_without_best_city": 445.3,
+          "stress_1c": {
+            "orders": 152,
+            "unpriceable": 0,
+            "cost": 2247.07,
+            "net": 567.93,
+            "fees": 95.47,
+            "roi": 0.2527424601814807
+          }
+        },
+        "after_2026_09_07": {
+          "orders": 80,
+          "target_days": 20,
+          "wins": 43,
+          "cost": 1186.75,
+          "fees": 46.08,
+          "net": 352.24999999999994,
+          "roi": 0.29681904360648825,
+          "target_day_bootstrap_95_roi": [
+            -0.07291566419658041,
+            0.6814543649562573
+          ],
+          "max_target_day_drawdown": 95.42,
+          "by_city": {
+            "Atlanta": {
+              "orders": 4,
+              "net": -42.120000000000005,
+              "cost": 59.120000000000005,
+              "roi": -0.7124492557510149,
+              "capital_share": 0.04981672635348642
+            },
+            "Austin": {
+              "orders": 9,
+              "net": 130.42,
+              "cost": 133.58,
+              "roi": 0.9763437640365322,
+              "capital_share": 0.11255951127027597
+            },
+            "Boston": {
+              "orders": 6,
+              "net": 25.559999999999995,
+              "cost": 89.44,
+              "roi": 0.285778175313059,
+              "capital_share": 0.07536549399620814
+            },
+            "Chicago": {
+              "orders": 2,
+              "net": 29.08,
+              "cost": 29.92,
+              "roi": 0.9719251336898395,
+              "capital_share": 0.025211712660627765
+            },
+            "Dallas": {
+              "orders": 3,
+              "net": -17.7,
+              "cost": 44.7,
+              "roi": -0.3959731543624161,
+              "capital_share": 0.03766589424899937
+            },
+            "Denver": {
+              "orders": 6,
+              "net": -47.379999999999995,
+              "cost": 89.38,
+              "roi": -0.5300962183933766,
+              "capital_share": 0.07531493574889403
+            },
+            "Houston": {
+              "orders": 2,
+              "net": 94.14,
+              "cost": 29.86,
+              "roi": 3.1527126590756867,
+              "capital_share": 0.025161154413313673
+            },
+            "LA": {
+              "orders": 5,
+              "net": 26.16,
+              "cost": 73.84,
+              "roi": 0.3542795232936078,
+              "capital_share": 0.062220349694543924
+            },
+            "Miami": {
+              "orders": 10,
+              "net": 154.24,
+              "cost": 148.76,
+              "roi": 1.036837859639688,
+              "capital_share": 0.12535074784074152
+            },
+            "NYC": {
+              "orders": 3,
+              "net": -7.539999999999997,
+              "cost": 44.54,
+              "roi": -0.16928603502469686,
+              "capital_share": 0.037531072256161785
+            },
+            "Philadelphia": {
+              "orders": 7,
+              "net": 106.33999999999999,
+              "cost": 103.66,
+              "roi": 1.0258537526529037,
+              "capital_share": 0.0873477986096482
+            },
+            "Phoenix": {
+              "orders": 8,
+              "net": -45.41,
+              "cost": 118.41,
+              "roi": -0.3834980153703234,
+              "capital_share": 0.09977670107436275
+            },
+            "Seattle": {
+              "orders": 3,
+              "net": 5.700000000000001,
+              "cost": 43.3,
+              "roi": 0.13163972286374137,
+              "capital_share": 0.036486201811670525
+            },
+            "Vegas": {
+              "orders": 10,
+              "net": -46.96000000000001,
+              "cost": 148.96,
+              "roi": -0.3152524167561762,
+              "capital_share": 0.1255192753317885
+            },
+            "Washington": {
+              "orders": 2,
+              "net": -12.28,
+              "cost": 29.28,
+              "roi": -0.4193989071038251,
+              "capital_share": 0.02467242468927744
+            }
+          },
+          "largest_city_capital_share": 0.1255192753317885,
+          "net_without_best_city": 198.00999999999993,
+          "stress_1c": {
+            "orders": 80,
+            "unpriceable": 0,
+            "cost": 1179.83,
+            "net": 291.16999999999996,
+            "fees": 45.13,
+            "roi": 0.24678979174965884
+          }
+        },
+        "after_2026_09_21": {
+          "orders": 12,
+          "target_days": 6,
+          "wins": 7,
+          "cost": 177.67000000000002,
+          "fees": 5.75,
+          "net": -10.670000000000003,
+          "roi": -0.06005515843980415,
+          "target_day_bootstrap_95_roi": [
+            -0.6118634771969793,
+            1.0260613703236654
+          ],
+          "max_target_day_drawdown": 57.13000000000001,
+          "by_city": {
+            "Atlanta": {
+              "orders": 1,
+              "net": -14.909999999999998,
+              "cost": 14.909999999999998,
+              "roi": -1.0,
+              "capital_share": 0.08391962627342825
+            },
+            "Austin": {
+              "orders": 2,
+              "net": -13.9,
+              "cost": 29.9,
+              "roi": -0.46488294314381273,
+              "capital_share": 0.1682895255248494
+            },
+            "Boston": {
+              "orders": 2,
+              "net": 45.12,
+              "cost": 29.88,
+              "roi": 1.5100401606425702,
+              "capital_share": 0.1681769572803512
+            },
+            "Miami": {
+              "orders": 1,
+              "net": 1.3399999999999999,
+              "cost": 14.66,
+              "roi": 0.09140518417462482,
+              "capital_share": 0.08251252321720041
+            },
+            "Philadelphia": {
+              "orders": 1,
+              "net": -14.8,
+              "cost": 14.8,
+              "roi": -1.0,
+              "capital_share": 0.08330050092868801
+            },
+            "Phoenix": {
+              "orders": 1,
+              "net": -14.96,
+              "cost": 14.96,
+              "roi": -1.0,
+              "capital_share": 0.08420104688467384
+            },
+            "Seattle": {
+              "orders": 2,
+              "net": 2.9800000000000004,
+              "cost": 29.02,
+              "roi": 0.10268780151619575,
+              "capital_share": 0.16333652276692742
+            },
+            "Vegas": {
+              "orders": 2,
+              "net": -1.5400000000000027,
+              "cost": 29.540000000000003,
+              "roi": -0.052132701421801035,
+              "capital_share": 0.16626329712388135
+            }
+          },
+          "largest_city_capital_share": 0.1682895255248494,
+          "net_without_best_city": -55.79,
+          "stress_1c": {
+            "orders": 12,
+            "unpriceable": 0,
+            "cost": 176.4,
+            "net": -14.400000000000006,
+            "fees": 5.609999999999999,
+            "roi": -0.08163265306122452
+          }
+        }
+      }
+    },
+    "scale_only": {
+      "open_orders": 7,
+      "periods": {
+        "all": {
+          "orders": 218,
+          "target_days": 61,
+          "wins": 139,
+          "cost": 3209.09,
+          "fees": 95.51,
+          "net": 350.90999999999997,
+          "roi": 0.10934875618944934,
+          "target_day_bootstrap_95_roi": [
+            -0.021327202093078593,
+            0.2627084116340988
+          ],
+          "max_target_day_drawdown": 129.60000000000002,
+          "by_city": {
+            "Atlanta": {
+              "orders": 5,
+              "net": 98.74,
+              "cost": 74.26,
+              "roi": 1.329652572044169,
+              "capital_share": 0.023140516470401266
+            },
+            "Austin": {
+              "orders": 24,
+              "net": -56.760000000000005,
+              "cost": 351.76,
+              "roi": -0.16136001819422335,
+              "capital_share": 0.10961362878573053
+            },
+            "Boston": {
+              "orders": 5,
+              "net": -42.11,
+              "cost": 74.11,
+              "roi": -0.5682094184320604,
+              "capital_share": 0.023093774247528114
+            },
+            "Chicago": {
+              "orders": 11,
+              "net": -31.28,
+              "cost": 162.28,
+              "roi": -0.19275326596006903,
+              "capital_share": 0.050568852852366244
+            },
+            "Dallas": {
+              "orders": 11,
+              "net": 16.259999999999998,
+              "cost": 161.74,
+              "roi": 0.10053171757141088,
+              "capital_share": 0.05040058085002291
+            },
+            "Denver": {
+              "orders": 22,
+              "net": 17.660000000000004,
+              "cost": 325.34,
+              "roi": 0.05428167455584928,
+              "capital_share": 0.10138076526367287
+            },
+            "Houston": {
+              "orders": 10,
+              "net": 56.99,
+              "cost": 148.01,
+              "roi": 0.38504155124653744,
+              "capital_share": 0.046122109383033814
+            },
+            "LA": {
+              "orders": 25,
+              "net": 38.41999999999999,
+              "cost": 368.58,
+              "roi": 0.10423788594063702,
+              "capital_share": 0.11485499004390652
+            },
+            "Miami": {
+              "orders": 27,
+              "net": 31.529999999999994,
+              "cost": 397.47,
+              "roi": 0.07932674164087854,
+              "capital_share": 0.1238575421692754
+            },
+            "NYC": {
+              "orders": 13,
+              "net": 78.23,
+              "cost": 190.77,
+              "roi": 0.4100749593751638,
+              "capital_share": 0.059446759050073385
+            },
+            "Philadelphia": {
+              "orders": 21,
+              "net": 92.41,
+              "cost": 310.59,
+              "roi": 0.29753050645545576,
+              "capital_share": 0.09678444668114636
+            },
+            "Phoenix": {
+              "orders": 10,
+              "net": 46.540000000000006,
+              "cost": 146.46,
+              "roi": 0.3177659429195685,
+              "capital_share": 0.04563910641334459
+            },
+            "Seattle": {
+              "orders": 11,
+              "net": -12.899999999999999,
+              "cost": 159.9,
+              "roi": -0.08067542213883676,
+              "capital_share": 0.04982720958277892
+            },
+            "Vegas": {
+              "orders": 13,
+              "net": 45.379999999999995,
+              "cost": 190.62,
+              "roi": 0.2380652607281502,
+              "capital_share": 0.05940001682720023
+            },
+            "Washington": {
+              "orders": 10,
+              "net": -28.199999999999996,
+              "cost": 147.2,
+              "roi": -0.19157608695652173,
+              "capital_share": 0.0458697013795188
+            }
+          },
+          "largest_city_capital_share": 0.1238575421692754,
+          "net_without_best_city": 252.16999999999996,
+          "stress_1c": {
+            "orders": 218,
+            "unpriceable": 0,
+            "cost": 3196.4500000000003,
+            "net": 268.5499999999999,
+            "fees": 93.22,
+            "roi": 0.0840150792285191
+          }
+        },
+        "through_2026_09_07": {
+          "orders": 150,
+          "target_days": 40,
+          "wins": 87,
+          "cost": 2207.14,
+          "fees": 72.38,
+          "net": 130.85999999999999,
+          "roi": 0.05928939713837817,
+          "target_day_bootstrap_95_roi": [
+            -0.08253532307439633,
+            0.20976332731230604
+          ],
+          "max_target_day_drawdown": 116.69999999999999,
+          "by_city": {
+            "Atlanta": {
+              "orders": 2,
+              "net": 21.049999999999997,
+              "cost": 29.950000000000003,
+              "roi": 0.702838063439065,
+              "capital_share": 0.013569596853847062
+            },
+            "Austin": {
+              "orders": 17,
+              "net": -48.53000000000001,
+              "cost": 248.53,
+              "roi": -0.19526817688005477,
+              "capital_share": 0.11260273476082171
+            },
+            "Boston": {
+              "orders": 2,
+              "net": -29.72,
+              "cost": 29.72,
+              "roi": -1.0,
+              "capital_share": 0.013465389599209837
+            },
+            "Chicago": {
+              "orders": 7,
+              "net": -30.520000000000003,
+              "cost": 103.52,
+              "roi": -0.29482225656877903,
+              "capital_share": 0.046902326087153515
+            },
+            "Dallas": {
+              "orders": 5,
+              "net": 4.859999999999999,
+              "cost": 73.14,
+              "roi": 0.06644790812141098,
+              "capital_share": 0.033137906974636866
+            },
+            "Denver": {
+              "orders": 19,
+              "net": 30.380000000000003,
+              "cost": 280.62,
+              "roi": 0.10826028080678499,
+              "capital_share": 0.1271419121578151
+            },
+            "Houston": {
+              "orders": 5,
+              "net": 54.230000000000004,
+              "cost": 73.77,
+              "roi": 0.7351226785956352,
+              "capital_share": 0.033423344237338816
+            },
+            "LA": {
+              "orders": 21,
+              "net": 46.06999999999999,
+              "cost": 308.93,
+              "roi": 0.14912763409186544,
+              "capital_share": 0.13996846597859675
+            },
+            "Miami": {
+              "orders": 22,
+              "net": 61.64999999999999,
+              "cost": 324.35,
+              "roi": 0.19007245259750266,
+              "capital_share": 0.1469548827894923
+            },
+            "NYC": {
+              "orders": 8,
+              "net": 14.660000000000005,
+              "cost": 117.34,
+              "roi": 0.12493608317709225,
+              "capital_share": 0.05316382286579012
+            },
+            "Philadelphia": {
+              "orders": 15,
+              "net": -23.959999999999997,
+              "cost": 221.96,
+              "roi": -0.10794737790592898,
+              "capital_share": 0.10056453147512166
+            },
+            "Phoenix": {
+              "orders": 7,
+              "net": 41.300000000000004,
+              "cost": 102.69999999999999,
+              "roi": 0.4021421616358326,
+              "capital_share": 0.0465308045706208
+            },
+            "Seattle": {
+              "orders": 5,
+              "net": -23.6,
+              "cost": 72.6,
+              "roi": -0.32506887052341604,
+              "capital_share": 0.03289324646374947
+            },
+            "Vegas": {
+              "orders": 9,
+              "net": 32.379999999999995,
+              "cost": 131.62,
+              "roi": 0.24601124449171854,
+              "capital_share": 0.05963373415370118
+            },
+            "Washington": {
+              "orders": 6,
+              "net": -19.389999999999997,
+              "cost": 88.39,
+              "roi": -0.21936870686729265,
+              "capital_share": 0.040047301032104896
+            }
+          },
+          "largest_city_capital_share": 0.1469548827894923,
+          "net_without_best_city": 69.21,
+          "stress_1c": {
+            "orders": 150,
+            "unpriceable": 0,
+            "cost": 2203.76,
+            "net": 81.23999999999994,
+            "fees": 70.88,
+            "roi": 0.03686426834138015
+          }
+        },
+        "after_2026_09_07": {
+          "orders": 68,
+          "target_days": 21,
+          "wins": 52,
+          "cost": 1001.95,
+          "fees": 23.13,
+          "net": 220.04999999999998,
+          "roi": 0.21962173761165724,
+          "target_day_bootstrap_95_roi": [
+            -0.06182679879362346,
+            0.5572768862541532
+          ],
+          "max_target_day_drawdown": 42.91000000000001,
+          "by_city": {
+            "Atlanta": {
+              "orders": 3,
+              "net": 77.69,
+              "cost": 44.31,
+              "roi": 1.7533288196795305,
+              "capital_share": 0.04422376366086132
+            },
+            "Austin": {
+              "orders": 7,
+              "net": -8.229999999999997,
+              "cost": 103.22999999999999,
+              "roi": -0.07972488617649906,
+              "capital_share": 0.10302909326812713
+            },
+            "Boston": {
+              "orders": 3,
+              "net": -12.39,
+              "cost": 44.39,
+              "roi": -0.2791169182248254,
+              "capital_share": 0.044303607964469284
+            },
+            "Chicago": {
+              "orders": 4,
+              "net": -0.759999999999998,
+              "cost": 58.76,
+              "roi": -0.012933968686181041,
+              "capital_share": 0.058645641000049896
+            },
+            "Dallas": {
+              "orders": 6,
+              "net": 11.399999999999997,
+              "cost": 88.60000000000001,
+              "roi": 0.12866817155756202,
+              "capital_share": 0.08842756624582065
+            },
+            "Denver": {
+              "orders": 3,
+              "net": -12.72,
+              "cost": 44.72,
+              "roi": -0.28443649373881935,
+              "capital_share": 0.04463296571685214
+            },
+            "Houston": {
+              "orders": 5,
+              "net": 2.7600000000000033,
+              "cost": 74.24,
+              "roi": 0.037176724137931084,
+              "capital_share": 0.07409551374819102
+            },
+            "LA": {
+              "orders": 4,
+              "net": -7.650000000000002,
+              "cost": 59.650000000000006,
+              "roi": -0.1282481139983236,
+              "capital_share": 0.05953390887768851
+            },
+            "Miami": {
+              "orders": 5,
+              "net": -30.120000000000005,
+              "cost": 73.12,
+              "roi": -0.4119256017505471,
+              "capital_share": 0.07297769349767953
+            },
+            "NYC": {
+              "orders": 5,
+              "net": 63.56999999999999,
+              "cost": 73.43,
+              "roi": 0.8657224567615415,
+              "capital_share": 0.0732870901741604
+            },
+            "Philadelphia": {
+              "orders": 6,
+              "net": 116.36999999999999,
+              "cost": 88.63,
+              "roi": 1.312986573395013,
+              "capital_share": 0.08845750785967363
+            },
+            "Phoenix": {
+              "orders": 3,
+              "net": 5.24,
+              "cost": 43.76,
+              "roi": 0.11974405850091409,
+              "capital_share": 0.04367483407355656
+            },
+            "Seattle": {
+              "orders": 6,
+              "net": 10.700000000000001,
+              "cost": 87.3,
+              "roi": 0.1225658648339061,
+              "capital_share": 0.08713009631219122
+            },
+            "Vegas": {
+              "orders": 4,
+              "net": 13.000000000000002,
+              "cost": 59.0,
+              "roi": 0.22033898305084748,
+              "capital_share": 0.05888517391087379
+            },
+            "Washington": {
+              "orders": 4,
+              "net": -8.809999999999999,
+              "cost": 58.81,
+              "roi": -0.14980445502465564,
+              "capital_share": 0.05869554368980488
+            }
+          },
+          "largest_city_capital_share": 0.10302909326812713,
+          "net_without_best_city": 103.67999999999999,
+          "stress_1c": {
+            "orders": 68,
+            "unpriceable": 0,
+            "cost": 992.69,
+            "net": 187.30999999999997,
+            "fees": 22.34,
+            "roi": 0.18868931892131477
+          }
+        },
+        "after_2026_09_21": {
+          "orders": 12,
+          "target_days": 7,
+          "wins": 9,
+          "cost": 177.45,
+          "fees": 3.66,
+          "net": 12.55,
+          "roi": 0.07072414764722458,
+          "target_day_bootstrap_95_roi": [
+            -0.36919150575432186,
+            0.9605940017470639
+          ],
+          "max_target_day_drawdown": 38.870000000000005,
+          "by_city": {
+            "Austin": {
+              "orders": 2,
+              "net": 2.380000000000001,
+              "cost": 29.619999999999997,
+              "roi": 0.08035111411208647,
+              "capital_share": 0.16692025922795153
+            },
+            "Boston": {
+              "orders": 1,
+              "net": 1.040000000000001,
+              "cost": 14.959999999999999,
+              "roi": 0.06951871657754018,
+              "capital_share": 0.084305438151592
+            },
+            "Denver": {
+              "orders": 1,
+              "net": -14.910000000000002,
+              "cost": 14.910000000000002,
+              "roi": -1.0,
+              "capital_share": 0.08402366863905326
+            },
+            "Houston": {
+              "orders": 2,
+              "net": 31.25,
+              "cost": 29.75,
+              "roi": 1.050420168067227,
+              "capital_share": 0.1676528599605523
+            },
+            "Miami": {
+              "orders": 1,
+              "net": 1.3399999999999999,
+              "cost": 14.66,
+              "roi": 0.09140518417462482,
+              "capital_share": 0.08261482107635955
+            },
+            "Philadelphia": {
+              "orders": 1,
+              "net": -14.8,
+              "cost": 14.8,
+              "roi": -1.0,
+              "capital_share": 0.08340377571146802
+            },
+            "Seattle": {
+              "orders": 2,
+              "net": 2.9800000000000004,
+              "cost": 29.02,
+              "roi": 0.10268780151619575,
+              "capital_share": 0.16353902507748663
+            },
+            "Washington": {
+              "orders": 2,
+              "net": 3.2700000000000014,
+              "cost": 29.729999999999997,
+              "roi": 0.10998990918264386,
+              "capital_share": 0.16754015215553678
+            }
+          },
+          "largest_city_capital_share": 0.1676528599605523,
+          "net_without_best_city": -18.7,
+          "stress_1c": {
+            "orders": 12,
+            "unpriceable": 0,
+            "cost": 175.95000000000002,
+            "net": 9.049999999999992,
+            "fees": 3.51,
+            "roi": 0.05143506678033527
+          }
+        }
+      }
+    },
+    "weather_blend": {
+      "open_orders": 5,
+      "periods": {
+        "all": {
+          "orders": 264,
+          "target_days": 65,
+          "wins": 157,
+          "cost": 3890.62,
+          "fees": 132.35,
+          "net": 613.3799999999999,
+          "roi": 0.1576561062247148,
+          "target_day_bootstrap_95_roi": [
+            0.011720298479926367,
+            0.30894000301623037
+          ],
+          "max_target_day_drawdown": 151.52999999999997,
+          "by_city": {
+            "Atlanta": {
+              "orders": 10,
+              "net": -27.17,
+              "cost": 148.17000000000002,
+              "roi": -0.18337045285820341,
+              "capital_share": 0.03808390436485702
+            },
+            "Austin": {
+              "orders": 37,
+              "net": 219.71999999999997,
+              "cost": 546.28,
+              "roi": 0.4022113202020941,
+              "capital_share": 0.14040949771501715
+            },
+            "Boston": {
+              "orders": 6,
+              "net": 10.289999999999996,
+              "cost": 88.71000000000001,
+              "roi": 0.11599594183293872,
+              "capital_share": 0.022800993157902856
+            },
+            "Chicago": {
+              "orders": 16,
+              "net": 160.82999999999998,
+              "cost": 236.17,
+              "roi": 0.6809925053986535,
+              "capital_share": 0.06070240732839496
+            },
+            "Dallas": {
+              "orders": 10,
+              "net": -50.71,
+              "cost": 146.71,
+              "roi": -0.34564787676368347,
+              "capital_share": 0.0377086428384165
+            },
+            "Denver": {
+              "orders": 25,
+              "net": 75.28,
+              "cost": 369.71999999999997,
+              "roi": 0.20361354538569731,
+              "capital_share": 0.09502855585999147
+            },
+            "Houston": {
+              "orders": 10,
+              "net": 42.18,
+              "cost": 146.82,
+              "roi": 0.28729055986922764,
+              "capital_share": 0.03773691596712092
+            },
+            "LA": {
+              "orders": 25,
+              "net": 57.31999999999999,
+              "cost": 368.68,
+              "roi": 0.15547358142562653,
+              "capital_share": 0.0947612462795133
+            },
+            "Miami": {
+              "orders": 27,
+              "net": 135.16,
+              "cost": 397.84000000000003,
+              "roi": 0.33973456665996377,
+              "capital_share": 0.10225619567061292
+            },
+            "NYC": {
+              "orders": 24,
+              "net": 8.79,
+              "cost": 352.21,
+              "roi": 0.02495670196757616,
+              "capital_share": 0.09052798782713295
+            },
+            "Philadelphia": {
+              "orders": 23,
+              "net": -22.010000000000005,
+              "cost": 340.01,
+              "roi": -0.06473339019440606,
+              "capital_share": 0.08739224082536974
+            },
+            "Phoenix": {
+              "orders": 11,
+              "net": -43.47,
+              "cost": 161.47,
+              "roi": -0.26921409549761566,
+              "capital_share": 0.04150238265366445
+            },
+            "Seattle": {
+              "orders": 8,
+              "net": 5.159999999999998,
+              "cost": 115.84,
+              "roi": 0.04454419889502761,
+              "capital_share": 0.029774174810184496
+            },
+            "Vegas": {
+              "orders": 25,
+              "net": 78.59999999999998,
+              "cost": 368.40000000000003,
+              "roi": 0.21335504885993478,
+              "capital_share": 0.0946892783155384
+            },
+            "Washington": {
+              "orders": 7,
+              "net": -36.59,
+              "cost": 103.59,
+              "roi": -0.3532194227242012,
+              "capital_share": 0.026625576386282906
+            }
+          },
+          "largest_city_capital_share": 0.14040949771501715,
+          "net_without_best_city": 393.6599999999999,
+          "stress_1c": {
+            "orders": 264,
+            "unpriceable": 0,
+            "cost": 3883.32,
+            "net": 504.67999999999984,
+            "fees": 129.71,
+            "roi": 0.12996096123935186
+          }
+        },
+        "through_2026_09_07": {
+          "orders": 171,
+          "target_days": 43,
+          "wins": 107,
+          "cost": 2520.87,
+          "fees": 85.61,
+          "net": 566.13,
+          "roi": 0.22457722928988802,
+          "target_day_bootstrap_95_roi": [
+            0.05153998555443917,
+            0.39379154920475934
+          ],
+          "max_target_day_drawdown": 124.16999999999999,
+          "by_city": {
+            "Atlanta": {
+              "orders": 5,
+              "net": 29.27,
+              "cost": 74.73,
+              "roi": 0.3916767027967349,
+              "capital_share": 0.029644527484558904
+            },
+            "Austin": {
+              "orders": 26,
+              "net": 168.52999999999997,
+              "cost": 383.47,
+              "roi": 0.43948679166557997,
+              "capital_share": 0.15211811795134222
+            },
+            "Chicago": {
+              "orders": 11,
+              "net": 137.76,
+              "cost": 162.24,
+              "roi": 0.8491124260355029,
+              "capital_share": 0.06435873329445788
+            },
+            "Dallas": {
+              "orders": 6,
+              "net": -9.960000000000003,
+              "cost": 87.96000000000001,
+              "roi": -0.11323328785811734,
+              "capital_share": 0.034892715610087
+            },
+            "Denver": {
+              "orders": 18,
+              "net": 65.98,
+              "cost": 266.02,
+              "roi": 0.24802646417562593,
+              "capital_share": 0.10552706010226628
+            },
+            "Houston": {
+              "orders": 8,
+              "net": 54.42,
+              "cost": 117.58,
+              "roi": 0.46283381527470663,
+              "capital_share": 0.046642627346908015
+            },
+            "LA": {
+              "orders": 20,
+              "net": 32.03999999999999,
+              "cost": 294.96000000000004,
+              "roi": 0.1086248982912937,
+              "capital_share": 0.11700722369658097
+            },
+            "Miami": {
+              "orders": 20,
+              "net": 70.51,
+              "cost": 294.49,
+              "roi": 0.23943088050528033,
+              "capital_share": 0.11682078012749568
+            },
+            "NYC": {
+              "orders": 16,
+              "net": 23.319999999999997,
+              "cost": 234.68,
+              "roi": 0.09936935401397647,
+              "capital_share": 0.09309484424028214
+            },
+            "Philadelphia": {
+              "orders": 17,
+              "net": -73.66,
+              "cost": 251.66,
+              "roi": -0.2926964952713979,
+              "capital_share": 0.09983061403404381
+            },
+            "Phoenix": {
+              "orders": 5,
+              "net": -15.429999999999993,
+              "cost": 73.42999999999999,
+              "roi": -0.21013209859730347,
+              "capital_share": 0.029128832506237923
+            },
+            "Seattle": {
+              "orders": 3,
+              "net": 11.329999999999998,
+              "cost": 43.67,
+              "roi": 0.25944584382871533,
+              "capital_share": 0.01732338438713619
+            },
+            "Vegas": {
+              "orders": 13,
+              "net": 99.67999999999999,
+              "cost": 191.32000000000002,
+              "roi": 0.5210119172067739,
+              "capital_share": 0.07589443327105326
+            },
+            "Washington": {
+              "orders": 3,
+              "net": -27.66,
+              "cost": 44.66,
+              "roi": -0.6193461710703091,
+              "capital_share": 0.017716105947549854
+            }
+          },
+          "largest_city_capital_share": 0.15211811795134222,
+          "net_without_best_city": 397.6,
+          "stress_1c": {
+            "orders": 171,
+            "unpriceable": 0,
+            "cost": 2515.25,
+            "net": 493.7499999999999,
+            "fees": 83.85,
+            "roi": 0.19630255441804986
+          }
+        },
+        "after_2026_09_07": {
+          "orders": 93,
+          "target_days": 22,
+          "wins": 50,
+          "cost": 1369.75,
+          "fees": 46.74,
+          "net": 47.249999999999964,
+          "roi": 0.03449534586603392,
+          "target_day_bootstrap_95_roi": [
+            -0.2253933549369461,
+            0.32197753723999856
+          ],
+          "max_target_day_drawdown": 151.53,
+          "by_city": {
+            "Atlanta": {
+              "orders": 5,
+              "net": -56.44,
+              "cost": 73.44,
+              "roi": -0.7685185185185185,
+              "capital_share": 0.05361562328892133
+            },
+            "Austin": {
+              "orders": 11,
+              "net": 51.19,
+              "cost": 162.81,
+              "roi": 0.31441557643879364,
+              "capital_share": 0.1188611060412484
+            },
+            "Boston": {
+              "orders": 6,
+              "net": 10.289999999999996,
+              "cost": 88.71000000000001,
+              "roi": 0.11599594183293872,
+              "capital_share": 0.06476364300054756
+            },
+            "Chicago": {
+              "orders": 5,
+              "net": 23.069999999999997,
+              "cost": 73.93,
+              "roi": 0.3120519410252941,
+              "capital_share": 0.05397335280160614
+            },
+            "Dallas": {
+              "orders": 4,
+              "net": -40.75,
+              "cost": 58.75,
+              "roi": -0.6936170212765957,
+              "capital_share": 0.04289103851067713
+            },
+            "Denver": {
+              "orders": 7,
+              "net": 9.299999999999997,
+              "cost": 103.7,
+              "roi": 0.08968177434908386,
+              "capital_share": 0.07570724584778245
+            },
+            "Houston": {
+              "orders": 2,
+              "net": -12.24,
+              "cost": 29.240000000000002,
+              "roi": -0.41860465116279066,
+              "capital_share": 0.021346961124292754
+            },
+            "LA": {
+              "orders": 5,
+              "net": 25.28,
+              "cost": 73.72,
+              "roi": 0.3429191535539881,
+              "capital_share": 0.05382004015331265
+            },
+            "Miami": {
+              "orders": 7,
+              "net": 64.64999999999999,
+              "cost": 103.35000000000001,
+              "roi": 0.6255442670537009,
+              "capital_share": 0.07545172476729331
+            },
+            "NYC": {
+              "orders": 8,
+              "net": -14.529999999999998,
+              "cost": 117.53,
+              "roi": -0.12362800986982045,
+              "capital_share": 0.08580397882825333
+            },
+            "Philadelphia": {
+              "orders": 6,
+              "net": 51.64999999999999,
+              "cost": 88.35000000000001,
+              "roi": 0.5846066779852856,
+              "capital_share": 0.06450082131775872
+            },
+            "Phoenix": {
+              "orders": 6,
+              "net": -28.040000000000003,
+              "cost": 88.04,
+              "roi": -0.3184915947296683,
+              "capital_share": 0.06427450264646833
+            },
+            "Seattle": {
+              "orders": 5,
+              "net": -6.17,
+              "cost": 72.17,
+              "roi": -0.0854925869474851,
+              "capital_share": 0.052688446796860744
+            },
+            "Vegas": {
+              "orders": 12,
+              "net": -21.080000000000005,
+              "cost": 177.08,
+              "roi": -0.11904224079512087,
+              "capital_share": 0.12927906552290566
+            },
+            "Washington": {
+              "orders": 4,
+              "net": -8.93,
+              "cost": 58.93,
+              "roi": -0.1515357203461734,
+              "capital_share": 0.04302244935207154
+            }
+          },
+          "largest_city_capital_share": 0.12927906552290566,
+          "net_without_best_city": -17.400000000000027,
+          "stress_1c": {
+            "orders": 93,
+            "unpriceable": 0,
+            "cost": 1368.07,
+            "net": 10.929999999999941,
+            "fees": 45.86,
+            "roi": 0.007989357269730307
+          }
+        },
+        "after_2026_09_21": {
+          "orders": 25,
+          "target_days": 8,
+          "wins": 13,
+          "cost": 369.33,
+          "fees": 12.459999999999999,
+          "net": -39.33000000000001,
+          "roi": -0.10649013077735363,
+          "target_day_bootstrap_95_roi": [
+            -0.4768586903003446,
+            0.28265046476605904
+          ],
+          "max_target_day_drawdown": 99.81000000000002,
+          "by_city": {
+            "Atlanta": {
+              "orders": 1,
+              "net": -14.909999999999998,
+              "cost": 14.909999999999998,
+              "roi": -1.0,
+              "capital_share": 0.04037040045487775
+            },
+            "Austin": {
+              "orders": 3,
+              "net": -12.56,
+              "cost": 44.56,
+              "roi": -0.28186714542190305,
+              "capital_share": 0.12065090840170038
+            },
+            "Boston": {
+              "orders": 2,
+              "net": 29.159999999999997,
+              "cost": 29.840000000000003,
+              "roi": 0.9772117962466486,
+              "capital_share": 0.08079495302304174
+            },
+            "Chicago": {
+              "orders": 1,
+              "net": -14.760000000000002,
+              "cost": 14.760000000000002,
+              "roi": -1.0,
+              "capital_share": 0.0399642596052311
+            },
+            "Dallas": {
+              "orders": 1,
+              "net": -14.940000000000001,
+              "cost": 14.940000000000001,
+              "roi": -1.0,
+              "capital_share": 0.04045162862480709
+            },
+            "Denver": {
+              "orders": 1,
+              "net": -14.910000000000002,
+              "cost": 14.910000000000002,
+              "roi": -1.0,
+              "capital_share": 0.04037040045487776
+            },
+            "Houston": {
+              "orders": 2,
+              "net": -12.24,
+              "cost": 29.240000000000002,
+              "roi": -0.41860465116279066,
+              "capital_share": 0.0791703896244551
+            },
+            "Miami": {
+              "orders": 3,
+              "net": 11.749999999999998,
+              "cost": 44.25,
+              "roi": 0.26553672316384175,
+              "capital_share": 0.11981155064576396
+            },
+            "Philadelphia": {
+              "orders": 2,
+              "net": 24.429999999999996,
+              "cost": 29.57,
+              "roi": 0.8261751775448087,
+              "capital_share": 0.08006389949367775
+            },
+            "Phoenix": {
+              "orders": 1,
+              "net": -14.96,
+              "cost": 14.96,
+              "roi": -1.0,
+              "capital_share": 0.04050578073809331
+            },
+            "Seattle": {
+              "orders": 2,
+              "net": 2.9800000000000004,
+              "cost": 29.02,
+              "roi": 0.10268780151619575,
+              "capital_share": 0.07857471637830667
+            },
+            "Vegas": {
+              "orders": 4,
+              "net": -11.640000000000002,
+              "cost": 58.64,
+              "roi": -0.19849931787175992,
+              "capital_share": 0.15877399615519996
+            },
+            "Washington": {
+              "orders": 2,
+              "net": 3.2700000000000014,
+              "cost": 29.729999999999997,
+              "roi": 0.10998990918264386,
+              "capital_share": 0.0804971163999675
+            }
+          },
+          "largest_city_capital_share": 0.15877399615519996,
+          "net_without_best_city": -68.49000000000001,
+          "stress_1c": {
+            "orders": 25,
+            "unpriceable": 0,
+            "cost": 368.71000000000004,
+            "net": -46.71000000000002,
+            "fees": 12.209999999999999,
+            "roi": -0.12668492853462074
+          }
+        }
+      }
+    }
+  },
+  "required_capture_date": null,
+  "capture_sha256": "5abe243d99b09d1da15a31fdb1da2689e12b13e9b18a17e63fb973a12a39533a",
+  "policy_code_sha256": {
+    "weather_challenger.py": "6a1ec856d03ed5fa9895115efd75128c609cdf68e0a5bca4903d79b43f4da5b3",
+    "market_shape_alpha.py": "2c309132a39db89c55dda8daeab995a5dde12f0cfdde3f6a20056129aecf12e7",
+    "go_live_gate.py": "061692e86b19748c878458e3ed303cc563f854fb77b871ec269958e01d396da4"
+  },
+  "policy_sha256": "d7509940235a42ab998357cf067b868bd3689e27e7686a069299ac24d2a95df1",
+  "artifact_note": "Summary only. Reproduce full selections and fit paths with scripts/weather_challenger.py on input hash."
+}

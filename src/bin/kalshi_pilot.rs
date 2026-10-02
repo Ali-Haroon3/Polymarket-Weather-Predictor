@@ -1,6 +1,13 @@
-//! Kalshi real-money PILOT — the evidence-backed strategy at pocket-change size.
+//! Experimental Kalshi pilot — DRY RUN by default; profitable alpha is not established.
 //!
-//! Encodes the configuration every slice of forward evidence agrees on (July 2026, ~600 settled
+//! Current default `market-shape` fits and adjusts Kalshi's price ladder, then considers both
+//! YES and NO orders. It does not use weather forecasts. The earlier `model-shrunk` strategy
+//! remains an explicit option. Model/SELL evidence and dated performance claims below are
+//! historical; September 7 corrected phantom fills and later forward results deteriorated.
+//! Live admission is enforced separately. A $50 current realized-drawdown breaker supplements
+//! the weekly loss and strategy-health checks; calendar aging alone cannot clear drawdown.
+//!
+//! Historical model-shrunk configuration (July 2026, ~600 settled
 //! paper trades): KALSHI only, SELL only (executed as buying NO — max loss is the price paid),
 //! lead ≥ 1 only, thresholded on the SHRUNK edge λ·(bid − model) with λ fitted per-venue on
 //! resolved lead ≥ 1 captures, and the edge must ALSO clear Kalshi's trading fee plus a buffer —
@@ -25,6 +32,10 @@
 //! the running strategy's own settled orders count), because on 09-08 the freshly-launched
 //! market-shape pilot read $−45.62 of its $50 limit from the retired model strategy's three LA
 //! losses — a rail that can stand a strategy down for trades it never made measures nothing.
+//! The additional `--max-drawdown` breaker (default $50) compares cumulative realized net
+//! after modeled fees with its target-day high-water mark, separately per strategy and mode.
+//! Time alone cannot clear it. Later settlements can recover the current drawdown; it is not
+//! a permanently latched pause. Reconciliation still precedes all new-order breakers.
 //! Correlated exposure is capped per (city, target day) via
 //! `--max-city-exposure` — N bucket markets on one city-day are one weather bet, not N
 //! independent bets.
@@ -101,7 +112,7 @@
 //! question the λ floor asked of the model. The go-live gate scores each strategy's orders as
 //! its own sample (`scripts/go_live_gate.py --strategy`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -141,6 +152,9 @@ const DEFAULT_LAMBDA_FLOOR: f64 = 0.2;
 /// Stand down when the pilot's own settled orders lost more than this (dollars) over the
 /// trailing 7 days. Resuming after a trip is a human decision (raise the flag or wait it out).
 const DEFAULT_MAX_WEEKLY_LOSS: f64 = 50.0;
+/// Maximum decline from the strategy/mode's realized high-water mark. Unlike the weekly
+/// breaker, old losses cannot age out of this calculation. Same risk scale as the weekly cap.
+const DEFAULT_MAX_DRAWDOWN: f64 = 50.0;
 /// Per-(city, target-day) exposure cap, in multiples of the stake: bucket markets on the same
 /// city-day settle on the SAME daily high, so stacking them is pyramiding one bet.
 const DEFAULT_CITY_EXPOSURE_STAKES: f64 = 2.0;
@@ -295,6 +309,7 @@ struct PilotConfig {
     fee_buffer: f64,
     lambda_floor: f64,
     max_weekly_loss: f64,
+    max_drawdown: f64,
     max_city_exposure: f64,
     order_ttl_mins: i64,
     captures_path: PathBuf,
@@ -359,6 +374,7 @@ fn parse_args() -> PilotConfig {
         fee_buffer: fval("--fee-buffer", DEFAULT_FEE_BUFFER),
         lambda_floor: fval("--lambda-floor", DEFAULT_LAMBDA_FLOOR),
         max_weekly_loss: fval("--max-weekly-loss", DEFAULT_MAX_WEEKLY_LOSS),
+        max_drawdown: fval("--max-drawdown", DEFAULT_MAX_DRAWDOWN),
         max_city_exposure: fval("--max-city-exposure", DEFAULT_CITY_EXPOSURE_STAKES * stake),
         order_ttl_mins: val("--order-ttl-mins")
             .and_then(|v| v.parse().ok())
@@ -399,6 +415,9 @@ fn enforce_go_live_gate(
 
 async fn run() -> Result<(), String> {
     let cfg = parse_args();
+    if !cfg.max_drawdown.is_finite() || cfg.max_drawdown < 0.0 {
+        return Err("--max-drawdown must be finite and nonnegative".into());
+    }
     let today = Utc::now().date_naive();
     println!("strategy: {}", cfg.strategy.as_str());
 
@@ -486,6 +505,24 @@ async fn run() -> Result<(), String> {
     }
 
     // Circuit breakers use the freshly reconciled ledger and run before any NEW orders.
+    let drawdown = realized_drawdown(
+        &cfg.ledger_path,
+        &cfg.captures_path,
+        today,
+        cfg.live,
+        cfg.strategy,
+    )?;
+    if drawdown.settled > 0 {
+        println!(
+            "Realized drawdown: ${:.2} from ${:+.2} peak; net ${:+.2} over {} settled {} {} orders (modeled fees)",
+            drawdown.drawdown,
+            drawdown.peak,
+            drawdown.pnl,
+            drawdown.settled,
+            if cfg.live { "live" } else { "dry-run" },
+            cfg.strategy.as_str(),
+        );
+    }
     let (week_pnl, week_settled) = realized_week_pnl(
         &cfg.ledger_path,
         &cfg.captures_path,
@@ -500,7 +537,7 @@ async fn run() -> Result<(), String> {
             cfg.strategy.as_str(),
         );
     }
-    let reason = match &shape {
+    let reason = drawdown_stand_down_reason(&drawdown, cfg.max_drawdown).or_else(|| match &shape {
         Some(sr) => shape_stand_down_reason(
             sr,
             cfg.min_trailing_roi,
@@ -515,11 +552,11 @@ async fn run() -> Result<(), String> {
             week_settled,
             cfg.max_weekly_loss,
         ),
-    };
+    });
     if let Some(reason) = reason {
         eprintln!(
-            "STAND DOWN: {reason}. No orders this run. Resuming is a human decision — \
-             re-run with --lambda-floor / --max-weekly-loss overridden once you've looked."
+            "STAND DOWN: {reason}. No new orders this run. Review the strategy and its \
+             risk limits before changing any breaker override."
         );
         return Ok(());
     }
@@ -1519,6 +1556,139 @@ fn reconciliation_row(
     })
 }
 
+#[derive(Debug, Default, PartialEq)]
+struct RealizedDrawdown {
+    pnl: f64,
+    peak: f64,
+    drawdown: f64,
+    settled: usize,
+}
+
+/// Reconstruct the entire realized curve for one strategy and mode, starting at zero.
+/// Target-day totals are the finest trustworthy ordering: captures do not retain settlement
+/// publication timestamps, so ledger order must not manufacture intraday peaks. Unresolved
+/// and current/future target days do not contribute. Known days never age out.
+///
+/// Fees match the audit's conservative whole-cent, per-order taker estimate. Live prices and
+/// quantities require verified fills; fees remain modeled, including the existing limitation
+/// that a reconciled average price cannot recover per-fill fees or account-specific rounding.
+fn realized_drawdown(
+    ledger_path: &PathBuf,
+    captures_path: &PathBuf,
+    today: NaiveDate,
+    live: bool,
+    strategy: Strategy,
+) -> Result<RealizedDrawdown, String> {
+    let text = match std::fs::read_to_string(ledger_path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("cannot read drawdown ledger: {e}")),
+    };
+    let rows: Vec<LedgerRow> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|e| format!("invalid drawdown ledger: {e}")))
+        .collect::<Result<_, _>>()?;
+    let mut orders: Vec<&LedgerRow> = rows
+        .iter()
+        .filter(|row| {
+            row.decision == "order"
+                && row.error.is_none()
+                && row.dry_run != live
+                && row.strategy == strategy.as_str()
+                && row.target_date < today
+        })
+        .collect();
+    if orders.is_empty() {
+        return Ok(RealizedDrawdown::default());
+    }
+    // Stable summation within each day, independent of ledger append order.
+    orders.sort_by(|a, b| (a.target_date, &a.ticker).cmp(&(b.target_date, &b.ticker)));
+    let wanted: HashSet<&str> = orders.iter().map(|row| row.ticker.as_str()).collect();
+    let capture_text = std::fs::read_to_string(captures_path)
+        .map_err(|e| format!("cannot read drawdown outcomes: {e}"))?;
+    let mut outcomes = HashMap::new();
+    for line in capture_text.lines().filter(|line| !line.trim().is_empty()) {
+        let row: CaptureRow =
+            serde_json::from_str(line).map_err(|e| format!("invalid drawdown capture: {e}"))?;
+        let (Some(ticker), Some(outcome)) = (row.market_id, row.outcome) else {
+            continue;
+        };
+        if row.source != "kalshi" || row.captured_at > today || !wanted.contains(ticker.as_str()) {
+            continue;
+        }
+        if outcome != 0.0 && outcome != 1.0 {
+            return Err(format!("invalid drawdown outcome for {ticker}"));
+        }
+        let value = (row.target_date, outcome);
+        if outcomes
+            .insert(ticker.clone(), value)
+            .is_some_and(|old| old != value)
+        {
+            return Err(format!("conflicting drawdown outcomes for {ticker}"));
+        }
+    }
+    let fills = reconciliation_by_order(&rows);
+    let mut days: BTreeMap<NaiveDate, f64> = BTreeMap::new();
+    let mut seen = HashSet::new();
+    let mut result = RealizedDrawdown::default();
+    for row in orders {
+        if !seen.insert(&row.ticker) {
+            return Err(format!("duplicate drawdown order for {}", row.ticker));
+        }
+        let Some(&(target, outcome)) = outcomes.get(&row.ticker) else {
+            continue;
+        };
+        if target != row.target_date {
+            return Err(format!("drawdown target mismatch for {}", row.ticker));
+        }
+        if live
+            && !row
+                .order_id
+                .as_ref()
+                .is_some_and(|id| fills.contains_key(id))
+        {
+            return Err(format!("unverified drawdown execution for {}", row.ticker));
+        }
+        let (contracts, price, _) = effective_fill(row, &fills);
+        if contracts == 0 && live {
+            continue; // verified unfilled intent
+        }
+        let price = price
+            .filter(|p| p.is_finite() && *p > 0.0 && *p < 1.0)
+            .ok_or_else(|| format!("invalid drawdown price for {}", row.ticker))?;
+        if contracts <= 0 {
+            return Err(format!("invalid drawdown quantity for {}", row.ticker));
+        }
+        let payout = match row.side.as_str() {
+            "yes" => outcome,
+            "no" => 1.0 - outcome,
+            _ => return Err(format!("invalid drawdown side for {}", row.ticker)),
+        };
+        // Match go_live_gate.py's exact-cent guard instead of rounding a float artifact up.
+        let fee = (100.0 * contracts as f64 * fee_frac(price) - 1e-9).ceil() / 100.0;
+        let net = contracts as f64 * (payout - price) - fee;
+        *days.entry(row.target_date).or_default() += net;
+        result.settled += 1;
+    }
+    for net in days.values() {
+        result.pnl += net;
+        result.peak = result.peak.max(result.pnl);
+    }
+    result.drawdown = result.peak - result.pnl;
+    Ok(result)
+}
+
+fn drawdown_stand_down_reason(run: &RealizedDrawdown, max_drawdown: f64) -> Option<String> {
+    (run.settled > 0 && run.drawdown > max_drawdown).then(|| {
+        format!(
+            "realized drawdown ${:.2} from ${:+.2} peak breaches the ${max_drawdown:.2} limit; \
+             this history does not reset when old losses leave the weekly window",
+            run.drawdown, run.peak
+        )
+    })
+}
+
 /// Realized PnL (dollars) of the pilot's own orders whose markets settled in the trailing 7
 /// days, joined against capture outcomes; returns (pnl, settled-order count). Mode-scoped: live
 /// runs are judged by live orders and dry runs by dry-run orders, so the breaker logic rehearses
@@ -1974,6 +2144,267 @@ mod tests {
         assert_eq!(stand_down_reason(0.35, 0.2, -50.01, 0, 50.0), None);
         // Loss exactly at the line does not trip (breach is strict).
         assert_eq!(stand_down_reason(0.35, 0.2, -50.0, 3, 50.0), None);
+    }
+
+    #[test]
+    fn drawdown_groups_days_and_keeps_losses_after_the_weekly_window() {
+        let dir = std::env::temp_dir().join(format!("pilot_drawdown_days_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let today = d("2026-10-01");
+        let mut yes_win = order_row("A-YES-WIN", "NYC", "2026-09-02", 0.60, 100, true);
+        yes_win.side = "yes".into();
+        yes_win.price = Some(0.40);
+        let mut other_strategy = order_row("OTHER", "NYC", "2026-09-04", 0.10, 1000, true);
+        other_strategy.strategy = "market-shape".into();
+        let mut rows = vec![
+            order_row("FINAL", "NYC", "2026-09-03", 0.60, 100, true),
+            yes_win,
+            order_row("FIRST", "NYC", "2026-09-01", 0.40, 100, true),
+            order_row("Z-NO-LOSS", "NYC", "2026-09-02", 0.60, 100, true),
+            other_strategy,
+            order_row("LIVE", "NYC", "2026-09-04", 0.10, 1000, false),
+            order_row("OPEN", "NYC", "2026-09-04", 0.60, 100, true),
+            order_row("FUTURE", "NYC", "2026-10-02", 0.60, 100, true),
+        ];
+        write_jsonl(&ledger, &rows);
+        let cap = |ticker: &str, target: &str, outcome: f64| {
+            serde_json::json!({
+                "captured_at": "2026-09-01", "target_date": target,
+                "market_id": ticker, "source": "kalshi", "entry_price": 0.5,
+                "model_estimate": null, "outcome": outcome
+            })
+        };
+        write_jsonl(
+            &captures,
+            &[
+                cap("FIRST", "2026-09-01", 0.0),
+                cap("A-YES-WIN", "2026-09-02", 1.0),
+                cap("Z-NO-LOSS", "2026-09-02", 1.0),
+                cap("FINAL", "2026-09-03", 1.0),
+                cap("OTHER", "2026-09-04", 0.0),
+                cap("LIVE", "2026-09-04", 0.0),
+                cap("FUTURE", "2026-10-02", 1.0),
+            ],
+        );
+        let actual =
+            realized_drawdown(&ledger, &captures, today, false, Strategy::ModelShrunk).unwrap();
+        assert_eq!(actual.settled, 4);
+        assert!((actual.peak - 58.32).abs() < 1e-9);
+        assert!((actual.pnl - -6.72).abs() < 1e-9);
+        assert!((actual.drawdown - 65.04).abs() < 1e-9);
+        assert!(drawdown_stand_down_reason(&actual, DEFAULT_MAX_DRAWDOWN).is_some());
+        assert_eq!(
+            realized_week_pnl(&ledger, &captures, today, false, Strategy::ModelShrunk),
+            (0.0, 0)
+        );
+        rows.reverse();
+        write_jsonl(&ledger, &rows);
+        assert_eq!(
+            realized_drawdown(&ledger, &captures, today, false, Strategy::ModelShrunk).unwrap(),
+            actual
+        );
+        assert_eq!(
+            realized_drawdown(
+                &ledger,
+                &captures,
+                d("2026-11-01"),
+                false,
+                Strategy::ModelShrunk
+            )
+            .unwrap()
+            .peak,
+            actual.peak
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawdown_uses_zero_start_and_rounded_fees() {
+        let dir = std::env::temp_dir().join(format!("pilot_drawdown_fees_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let mut row = order_row("YES", "NYC", "2026-09-28", 0.60, 37, true);
+        row.side = "yes".into();
+        row.price = Some(0.40);
+        row.strategy = "market-shape".into();
+        write_jsonl(&ledger, &[row]);
+        write_jsonl(
+            &captures,
+            &[serde_json::json!({
+                "captured_at": "2026-09-27", "target_date": "2026-09-28", "market_id": "YES",
+                "source": "kalshi", "entry_price": 0.5, "model_estimate": null, "outcome": 0.0
+            })],
+        );
+        let result = realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            false,
+            Strategy::MarketShape,
+        )
+        .unwrap();
+        assert_eq!(result.peak, 0.0);
+        assert!((result.pnl + 15.43).abs() < 1e-9); // $14.80 principal + ceil($0.6216) fee
+        assert!(drawdown_stand_down_reason(&result, 15.42).is_some());
+        assert!(drawdown_stand_down_reason(&result, 15.44).is_none());
+        assert!(drawdown_stand_down_reason(&RealizedDrawdown::default(), 0.0).is_none());
+        let at_limit = RealizedDrawdown {
+            pnl: -50.0,
+            peak: 0.0,
+            drawdown: 50.0,
+            settled: 1,
+        };
+        assert!(drawdown_stand_down_reason(&at_limit, 50.0).is_none());
+        assert!(drawdown_stand_down_reason(&at_limit, 49.99).is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawdown_can_recover_on_new_settlements_but_ignores_future_capture_rows() {
+        let dir =
+            std::env::temp_dir().join(format!("pilot_drawdown_recovery_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        write_jsonl(
+            &ledger,
+            &[
+                order_row("LOSS", "NYC", "2026-09-01", 0.60, 100, true),
+                order_row("WIN", "NYC", "2026-09-02", 0.40, 100, true),
+            ],
+        );
+        write_jsonl(
+            &captures,
+            &[
+                serde_json::json!({"captured_at": "2026-09-01", "target_date": "2026-09-01", "market_id": "LOSS", "source": "kalshi", "entry_price": 0.5, "outcome": 1.0}),
+                serde_json::json!({"captured_at": "2026-10-02", "target_date": "2026-09-02", "market_id": "WIN", "source": "kalshi", "entry_price": 0.5, "outcome": 0.0}),
+            ],
+        );
+        let before = realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-10-01"),
+            false,
+            Strategy::ModelShrunk,
+        )
+        .unwrap();
+        assert!((before.drawdown - 61.68).abs() < 1e-9);
+        assert!(drawdown_stand_down_reason(&before, DEFAULT_MAX_DRAWDOWN).is_some());
+        let recovered = realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-10-02"),
+            false,
+            Strategy::ModelShrunk,
+        )
+        .unwrap();
+        assert!((recovered.drawdown - 3.36).abs() < 1e-9);
+        assert!(drawdown_stand_down_reason(&recovered, DEFAULT_MAX_DRAWDOWN).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawdown_live_requires_verified_fills_and_excludes_unfilled_orders() {
+        let dir = std::env::temp_dir().join(format!("pilot_drawdown_live_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let mut intent = order_row("PART", "NYC", "2026-09-28", 0.60, 100, false);
+        intent.order_id = Some("partial".into());
+        let filled = reconciliation_row(
+            &intent,
+            &kalshi_order(&intent, "canceled", 100, 90),
+            &[kalshi_fill(&intent, 10, 58)],
+            Utc::now(),
+        )
+        .unwrap();
+        let mut never = order_row("NEVER", "NYC", "2026-09-28", 0.60, 100, false);
+        never.order_id = Some("never".into());
+        let unfilled = reconciliation_row(
+            &never,
+            &kalshi_order(&never, "canceled", 100, 100),
+            &[],
+            Utc::now(),
+        )
+        .unwrap();
+        write_jsonl(
+            &captures,
+            &[
+                serde_json::json!({"captured_at": "2026-09-27", "target_date": "2026-09-28", "market_id": "PART", "source": "kalshi", "entry_price": 0.5, "outcome": 1.0}),
+                serde_json::json!({"captured_at": "2026-09-27", "target_date": "2026-09-28", "market_id": "NEVER", "source": "kalshi", "entry_price": 0.5, "outcome": 1.0}),
+            ],
+        );
+        write_jsonl(&ledger, std::slice::from_ref(&intent));
+        assert!(realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            true,
+            Strategy::ModelShrunk
+        )
+        .unwrap_err()
+        .contains("unverified"));
+        write_jsonl(&ledger, &[intent, filled, never, unfilled]);
+        let actual = realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            true,
+            Strategy::ModelShrunk,
+        )
+        .unwrap();
+        assert_eq!(actual.settled, 1);
+        assert!((actual.drawdown - 5.98).abs() < 1e-9); // actual $5.80 cost + rounded $0.18 fee
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawdown_rejects_ambiguous_evidence() {
+        let dir =
+            std::env::temp_dir().join(format!("pilot_drawdown_invalid_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        let row = order_row("T", "NYC", "2026-09-28", 0.60, 10, true);
+        let cap = serde_json::json!({"captured_at": "2026-09-27", "target_date": "2026-09-28", "market_id": "T", "source": "kalshi", "entry_price": 0.5, "outcome": 1.0});
+        write_jsonl(&captures, std::slice::from_ref(&cap));
+        write_jsonl(&ledger, &[&row, &row]);
+        assert!(realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            false,
+            Strategy::ModelShrunk
+        )
+        .unwrap_err()
+        .contains("duplicate"));
+        write_jsonl(&ledger, &[row]);
+        let mut conflict = cap.clone();
+        conflict["outcome"] = serde_json::json!(0.0);
+        write_jsonl(&captures, &[cap, conflict]);
+        assert!(realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            false,
+            Strategy::ModelShrunk
+        )
+        .unwrap_err()
+        .contains("conflicting"));
+        std::fs::write(&ledger, "broken-json").unwrap();
+        assert!(realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            false,
+            Strategy::ModelShrunk
+        )
+        .unwrap_err()
+        .contains("invalid drawdown ledger"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
