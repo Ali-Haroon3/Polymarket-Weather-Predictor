@@ -146,20 +146,22 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of canonical captures through 2026-10-01 the default has 81 settled **paper** orders,
-−$82.60 after modeled fees (−6.91%), and has not passed admission. Three September 30 YES losses
-total −$46.82, bringing the decline since September 25 to $141.14. The rolling week is −$141.14
-with rounded fees (−$141.06 in the pilot's legacy approximation). The October 1 primary run
-stood down at its existing −$50 weekly breaker and placed no new orders. This automatic check
-can clear as losses age out; it is not a permanent disable or a latched pause.
-Three paper intents remain open ($44.67 principal). The frozen NO shadow has four prospective
-selections: two settled Seattle wins (+$2.98) and two open orders. The tiny settled sample and
-its degenerate bootstrap interval do not establish alpha. Full-sample one-cent adverse-entry
-sensitivity is −$115.09; admission remains NO-GO at 81/100 settlements and negative ROI.
+As of canonical captures through 2026-10-07 the default has 84 settled **paper** orders,
+−$89.53 after modeled fees (−7.22%), and has not passed admission. The final three October 1
+positions settled for −$6.93 in the October 2 capture; cumulative P&L has not changed since.
+The decline since September 25 is $148.07. No intentions remain open, and the ledger has no
+new decisions since September 30. The October 7 primary run stood down at its existing −$50
+weekly breaker: −$53.75 with rounded fees, or −$53.73 in the Rust approximation. If evidence
+stays unchanged, that rolling check alone would clear October 8 as losses age out; it is not a
+permanent disable or strategy recovery. The frozen NO shadow has four settled wins across three
+target days, +$11.64, and no open selections. One roughly $15 loss would erase that small profit;
+the positive bootstrap interval does not estimate unobserved loss frequency or establish alpha.
+Full-sample one-cent adverse-entry sensitivity is −$122.98; admission remains NO-GO at 84/100
+settlements and negative ROI. Separate unmerged recovery work is excluded from these figures.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.
-See [the latest forward update](reports/2026-10-01-forward-update.md),
+See [the latest forward update](reports/2026-10-07-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -183,17 +185,18 @@ and actual run evidence must be verified separately; the study does not place or
 canonical captures, and late/missing observations cannot be reconstructed afterward.
 The [September 28 activation check](reports/2026-09-28-source-activation.md) records deployment
 and an explicitly off-schedule development snapshot, which remains excluded from the primary
-sample. The latest [hosted-run audit](reports/2026-10-01-hosted-source-study.md) verifies 24
-terminal original runs: sixteen eligible captures and eight jobs correctly skipped for late
-arrival. Eight newly inspected runs supplied six captures and two late skips. Corrected selected
-observations contain zero source/quote overlaps, 194 absence and 46 unknown. At the October 1
-09:15 UTC slot, all 40 source rows for September 30 were preliminary, including the 15 study
-stations (`isOfficial=false`, empty `issueTime`); the evaluator retains them as unknown.
-A separate descriptive check finds all 90 associated markets closed; it does not change that
-primary classification. The [dispatch repair](reports/2026-09-29-source-dispatch.md) merged
-September 29 at 21:41 UTC, triggering jobs ten minutes earlier within unchanged observation
-windows. Its thirteen observed runs yielded ten captures and three late skips; this delivery
-sample does not establish a causal improvement. Missed slots remain missing.
+sample. The latest [October 7 hosted-run audit](reports/2026-10-07-hosted-source-study.md)
+preserves 58 original run artifacts: 36 completed collections and 22 late skips. These are
+operational counts. Current inventory is **unknown** because one GitHub attempt response puts
+its start one second before creation and disagrees with the listing/coordinator creation time.
+Both complete metadata retrievals preserve the discrepancy. Development is **not evaluated**:
+zero evaluated snapshots and all 1,260 checkpoints unknown. This does not mean zero observed
+opportunities. Reserved comparison remains locked; provider timestamps and gates are unchanged.
+The [October 1 audit](reports/2026-10-01-hosted-source-study.md) remains the previous valid,
+dated result: sixteen selected snapshots, zero overlap, 194 absence and 46 selected unknowns.
+Its 24 original jobs comprised sixteen captures and eight late skips. The
+[dispatch repair](reports/2026-09-29-source-dispatch.md) launches jobs ten minutes earlier within
+unchanged observation windows; its historical delivery counts do not establish causal improvement.
 The [offline eligibility helpers](reports/2026-09-25-source-parser-design.md) verify preserved
 bytes, official daily-report identity, rule/clock consistency and displayed depth. Full study
 inventory and fixed-denominator aggregation are implemented in the
