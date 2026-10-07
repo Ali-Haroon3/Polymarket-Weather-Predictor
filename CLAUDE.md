@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Recovery implementation (canonical October 1 evidence)
+
+Read `reports/2026-10-01-strategy-recovery.md` before relying on older performance descriptions
+below. Canonical commit `096fa88` has 81 settled market-shape paper orders, −$82.60 net, NO +$66.10
+and YES −$148.70. The latest three settled target dates lost $97.02, all YES. No recent strategy
+code change caused those settlements; the market-shape rule has been unchanged since September 7.
+
+The pilot adds `--max-drawdown 50`: the full strategy/mode realized curve, grouped by target date
+with modeled rounded fees, starts at $0 and stops new entries above its high-water drawdown cap.
+Current drawdown is $160.94. Passage of time cannot reset it; outstanding settlements can recover
+the curve, so this is not a permanent latch. Existing weekly/admission controls remain active.
+
+`scripts/weather_challenger.py` implements five fixed paper research families under one conservative
+selector. Historical dates are previously inspected development data, not a new holdout. Scale-only
+is the preferred paper candidate; do not promote any family or inherit the parent's admission count.
+The existing workflow saves hashed fresh-date shadow decisions separately from the canonical ledger.
+Run artifacts retain 90 days; first deployed future decisions, not the reconstructed October 1 book,
+begin prospective observations. Source-availability reserved research remains a separate experiment.
+
+New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
+Legacy resolved rows remain missing. Challenger training requires an observed receipt date earlier
+than the decision date, or explicitly labeled target-plus-two-day approximation on legacy rows.
+The original checkout's pre-existing capture/dashboard edits remain untouched in that checkout.
+
 ## Latest audited state (2026-10-01 canonical captures; 2026-10-02 source inventory)
 
 See `reports/2026-10-01-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.

@@ -1,0 +1,1685 @@
+{
+  "freeze": "2026-09-07",
+  "original_specification_commit": "14a1898",
+  "capture_sha256": "5abe243d99b09d1da15a31fdb1da2689e12b13e9b18a17e63fb973a12a39533a",
+  "capture_rows": 10767,
+  "latest_capture": "2026-10-01",
+  "interpretation": {
+    "original_03_all_cells": "Previously specified fit families; flat contracts, unrounded per-contract fees, no ranking or exposure caps.",
+    "pilot_04_top5": "Same families under existing pilot selection and rounded order fees. This combination was not a separately frozen variant.",
+    "limitations": "Capture quotes are not fills; historical settlement publication times are unavailable; replay omits dynamic breakers and account inventory. Day bootstrap does not correct variant selection or serial dependence. One-cent stress holds contracts and modeled fees fixed. No rule promoted."
+  },
+  "market_bias": {
+    "through_freeze": {
+      "uncensored_ladders": 486,
+      "target_days": 58,
+      "realized_minus_market_c": 0.26627953297351675,
+      "day_bootstrap_95_c": [
+        0.18209011029652403,
+        0.35245345684444784
+      ],
+      "standardized_residual_sd": 0.8544069038824363
+    },
+    "after_freeze": {
+      "uncensored_ladders": 294,
+      "target_days": 22,
+      "realized_minus_market_c": -0.001159489178838157,
+      "day_bootstrap_95_c": [
+        -0.1063655968496611,
+        0.09969104777432036
+      ],
+      "standardized_residual_sd": 0.9088097328222503
+    }
+  },
+  "families": {
+    "joint": {
+      "original_03_all_cells": {
+        "through_freeze": {
+          "settled": 765,
+          "target_days": 47,
+          "wins": 459,
+          "cost": 393.69,
+          "net": 55.054671,
+          "fees": 10.255329000000001,
+          "roi": 0.1398426960298712,
+          "bootstrap_95": [
+            0.07485572907483438,
+            0.20351743820420998
+          ],
+          "net_with_1c_adverse_fill": 47.404671,
+          "by_city": {
+            "Atlanta": {
+              "settled": 34,
+              "net": 0.20690399999999984,
+              "roi": 0.011932179930795839
+            },
+            "Austin": {
+              "settled": 70,
+              "net": 7.811667999999999,
+              "roi": 0.23500806257521056
+            },
+            "Boston": {
+              "settled": 30,
+              "net": -0.6723750000000003,
+              "roi": -0.043974820143884916
+            },
+            "Chicago": {
+              "settled": 63,
+              "net": 7.5024169999999994,
+              "roi": 0.2162703084462381
+            },
+            "Dallas": {
+              "settled": 42,
+              "net": 4.375234,
+              "roi": 0.1985133393829401
+            },
+            "Denver": {
+              "settled": 69,
+              "net": 3.022605,
+              "roi": 0.08876960352422908
+            },
+            "Houston": {
+              "settled": 34,
+              "net": 4.130549,
+              "roi": 0.21302470345538937
+            },
+            "LA": {
+              "settled": 78,
+              "net": 6.437213,
+              "roi": 0.14455901639344262
+            },
+            "Miami": {
+              "settled": 63,
+              "net": 5.289682,
+              "roi": 0.16097632379793061
+            },
+            "NYC": {
+              "settled": 72,
+              "net": 0.42181399999999974,
+              "roi": 0.012198207056101786
+            },
+            "Philadelphia": {
+              "settled": 62,
+              "net": -1.9907629999999998,
+              "roi": -0.068293756432247
+            },
+            "Phoenix": {
+              "settled": 37,
+              "net": 0.84727,
+              "roi": 0.04309613428280773
+            },
+            "Seattle": {
+              "settled": 33,
+              "net": 6.1772339999999994,
+              "roi": 0.37620182704019484
+            },
+            "Vegas": {
+              "settled": 40,
+              "net": 9.313378,
+              "roi": 0.4409743371212121
+            },
+            "Washington": {
+              "settled": 38,
+              "net": 2.1818410000000004,
+              "roi": 0.11287330574236941
+            }
+          },
+          "positive_cities": 13,
+          "negative_cities": 2,
+          "positive_days": 33,
+          "negative_days": 14,
+          "worst_leave_one_city_out_net": 45.741293,
+          "worst_leave_one_day_out_net": 47.198739,
+          "by_side": {
+            "yes": {
+              "settled": 453,
+              "net": 32.671949,
+              "cost": 153.69
+            },
+            "no": {
+              "settled": 312,
+              "net": 22.382722,
+              "cost": 240.0
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 350,
+          "target_days": 22,
+          "wins": 174,
+          "cost": 174.68,
+          "net": -5.271678000000002,
+          "fees": 4.591678000000001,
+          "roi": -0.030179058850469443,
+          "bootstrap_95": [
+            -0.11559136459062283,
+            0.056362580447440996
+          ],
+          "net_with_1c_adverse_fill": -8.771678000000001,
+          "by_city": {
+            "Atlanta": {
+              "settled": 22,
+              "net": -5.118037,
+              "roi": -0.5195976649746193
+            },
+            "Austin": {
+              "settled": 21,
+              "net": -0.06539300000000013,
+              "roi": -0.0066932446264073835
+            },
+            "Boston": {
+              "settled": 23,
+              "net": 3.73387,
+              "roi": 0.37564084507042256
+            },
+            "Chicago": {
+              "settled": 27,
+              "net": -2.403112,
+              "roi": -0.17091834992887625
+            },
+            "Dallas": {
+              "settled": 21,
+              "net": -1.915111,
+              "roi": -0.1643872103004292
+            },
+            "Denver": {
+              "settled": 17,
+              "net": 1.52676,
+              "roi": 0.210878453038674
+            },
+            "Houston": {
+              "settled": 20,
+              "net": 0.5938989999999998,
+              "roi": 0.06504917853231104
+            },
+            "LA": {
+              "settled": 29,
+              "net": 2.242506,
+              "roi": 0.14618683181225556
+            },
+            "Miami": {
+              "settled": 29,
+              "net": 0.8845389999999997,
+              "roi": 0.06451779722830049
+            },
+            "NYC": {
+              "settled": 28,
+              "net": 1.055084,
+              "roi": 0.07780855457227137
+            },
+            "Philadelphia": {
+              "settled": 26,
+              "net": 0.11022999999999966,
+              "roi": 0.009535467128027652
+            },
+            "Phoenix": {
+              "settled": 23,
+              "net": -0.5124630000000003,
+              "roi": -0.0419707616707617
+            },
+            "Seattle": {
+              "settled": 19,
+              "net": 1.022292,
+              "roi": 0.07999154929577465
+            },
+            "Vegas": {
+              "settled": 28,
+              "net": -4.225086,
+              "roi": -0.2839439516129032
+            },
+            "Washington": {
+              "settled": 17,
+              "net": -2.201656,
+              "roi": -0.24462844444444443
+            }
+          },
+          "positive_cities": 8,
+          "negative_cities": 7,
+          "positive_days": 11,
+          "negative_days": 11,
+          "worst_leave_one_city_out_net": -9.005548000000003,
+          "worst_leave_one_day_out_net": -8.152657000000001,
+          "by_side": {
+            "yes": {
+              "settled": 219,
+              "net": -3.7084820000000023,
+              "cost": 71.58
+            },
+            "no": {
+              "settled": 131,
+              "net": -1.5631960000000005,
+              "cost": 103.1
+            }
+          }
+        }
+      },
+      "pilot_04_top5": {
+        "through_freeze": {
+          "settled": 189,
+          "target_days": 46,
+          "wins": 117,
+          "cost": 2791.9,
+          "net": 816.3499999999999,
+          "fees": 102.75,
+          "roi": 0.2923994412407321,
+          "bootstrap_95": [
+            0.11080671706419992,
+            0.4778537790815967
+          ],
+          "net_with_1c_adverse_fill": 743.06,
+          "by_city": {
+            "Atlanta": {
+              "settled": 4,
+              "net": 9.979999999999993,
+              "roi": 0.1689234935680432
+            },
+            "Austin": {
+              "settled": 34,
+              "net": 195.14999999999995,
+              "roi": 0.38868307839388133
+            },
+            "Chicago": {
+              "settled": 10,
+              "net": 189.66,
+              "roi": 1.2853947814300235
+            },
+            "Dallas": {
+              "settled": 6,
+              "net": 8.179999999999996,
+              "roi": 0.0927753204037654
+            },
+            "Denver": {
+              "settled": 21,
+              "net": 41.58000000000001,
+              "roi": 0.1339648173207037
+            },
+            "Houston": {
+              "settled": 5,
+              "net": 42.25000000000001,
+              "roi": 0.5695605284443248
+            },
+            "LA": {
+              "settled": 24,
+              "net": 59.93,
+              "roi": 0.16959080876110702
+            },
+            "Miami": {
+              "settled": 24,
+              "net": 218.11999999999998,
+              "roi": 0.6134203273524945
+            },
+            "NYC": {
+              "settled": 19,
+              "net": 105.68999999999998,
+              "roi": 0.3780448545981328
+            },
+            "Philadelphia": {
+              "settled": 16,
+              "net": -131.13,
+              "roi": -0.5531511009870919
+            },
+            "Phoenix": {
+              "settled": 8,
+              "net": -44.54999999999999,
+              "roi": -0.3747476446837146
+            },
+            "Seattle": {
+              "settled": 2,
+              "net": 9.829999999999998,
+              "roi": 0.33030913978494614
+            },
+            "Vegas": {
+              "settled": 14,
+              "net": 125.25,
+              "roi": 0.6065962805114297
+            },
+            "Washington": {
+              "settled": 2,
+              "net": -13.589999999999998,
+              "roi": -0.4568067226890756
+            }
+          },
+          "positive_cities": 11,
+          "negative_cities": 3,
+          "positive_days": 34,
+          "negative_days": 12,
+          "worst_leave_one_city_out_net": 598.2299999999999,
+          "worst_leave_one_day_out_net": 714.6599999999999,
+          "by_side": {
+            "yes": {
+              "settled": 129,
+              "net": 654.3299999999999,
+              "cost": 1913.27
+            },
+            "no": {
+              "settled": 60,
+              "net": 162.02,
+              "cost": 878.63
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 83,
+          "target_days": 21,
+          "wins": 40,
+          "cost": 1226.97,
+          "net": -129.51000000000002,
+          "fees": 45.54,
+          "roi": -0.10555270300007337,
+          "bootstrap_95": [
+            -0.3639287921241313,
+            0.15973685211240826
+          ],
+          "net_with_1c_adverse_fill": -162.58,
+          "by_city": {
+            "Atlanta": {
+              "settled": 6,
+              "net": -75.05,
+              "roi": -0.8476394849785407
+            },
+            "Austin": {
+              "settled": 10,
+              "net": -10.03000000000001,
+              "roi": -0.06768337944530677
+            },
+            "Boston": {
+              "settled": 6,
+              "net": 10.740000000000002,
+              "roi": 0.12068771772109227
+            },
+            "Chicago": {
+              "settled": 4,
+              "net": -62.21,
+              "roi": -1.047835607209028
+            },
+            "Dallas": {
+              "settled": 5,
+              "net": -30.09,
+              "roi": -0.4079446854663774
+            },
+            "Denver": {
+              "settled": 7,
+              "net": 31.349999999999998,
+              "roi": 0.30112381135337624
+            },
+            "LA": {
+              "settled": 6,
+              "net": 38.98,
+              "roi": 0.43802674457804247
+            },
+            "Miami": {
+              "settled": 5,
+              "net": 26.480000000000004,
+              "roi": 0.35557942795756686
+            },
+            "NYC": {
+              "settled": 8,
+              "net": 12.629999999999999,
+              "roi": 0.1067444219066937
+            },
+            "Philadelphia": {
+              "settled": 5,
+              "net": -39.0,
+              "roi": -0.5241935483870968
+            },
+            "Phoenix": {
+              "settled": 8,
+              "net": -18.069999999999997,
+              "roi": -0.1549211248285322
+            },
+            "Seattle": {
+              "settled": 4,
+              "net": 8.42,
+              "roi": 0.1451223715960014
+            },
+            "Vegas": {
+              "settled": 7,
+              "net": -11.010000000000003,
+              "roi": -0.10643851508120653
+            },
+            "Washington": {
+              "settled": 2,
+              "net": -12.650000000000002,
+              "roi": -0.4254961318533468
+            }
+          },
+          "positive_cities": 6,
+          "negative_cities": 8,
+          "positive_days": 9,
+          "negative_days": 12,
+          "worst_leave_one_city_out_net": -168.49,
+          "worst_leave_one_day_out_net": -203.21,
+          "by_side": {
+            "yes": {
+              "settled": 59,
+              "net": -165.46,
+              "cost": 875.13
+            },
+            "no": {
+              "settled": 24,
+              "net": 35.95,
+              "cost": 351.84
+            }
+          }
+        }
+      },
+      "pilot_04_open": 8,
+      "post_freeze_fit_path": {
+        "2026-09-08": [
+          0.3,
+          0.8
+        ],
+        "2026-09-09": [
+          0.3,
+          0.75
+        ],
+        "2026-09-10": [
+          0.3,
+          0.8
+        ],
+        "2026-09-11": [
+          0.3,
+          0.8
+        ],
+        "2026-09-12": [
+          0.3,
+          0.8
+        ],
+        "2026-09-13": [
+          0.2,
+          0.85
+        ],
+        "2026-09-14": [
+          0.2,
+          0.8
+        ],
+        "2026-09-15": [
+          0.2,
+          0.85
+        ],
+        "2026-09-16": [
+          0.2,
+          0.8
+        ],
+        "2026-09-17": [
+          0.3,
+          0.85
+        ],
+        "2026-09-18": [
+          0.2,
+          0.9
+        ],
+        "2026-09-19": [
+          0.2,
+          0.9
+        ],
+        "2026-09-20": [
+          0.2,
+          0.95
+        ],
+        "2026-09-21": [
+          0.1,
+          0.95
+        ],
+        "2026-09-22": [
+          0.1,
+          0.95
+        ],
+        "2026-09-23": [
+          0.1,
+          0.95
+        ],
+        "2026-09-24": [
+          0.1,
+          1.0
+        ],
+        "2026-09-25": [
+          0.0,
+          0.95
+        ],
+        "2026-09-26": [
+          0.0,
+          0.95
+        ],
+        "2026-09-27": [
+          0.0,
+          0.9
+        ],
+        "2026-09-28": [
+          -0.1,
+          0.9
+        ],
+        "2026-09-29": [
+          -0.1,
+          0.9
+        ],
+        "2026-09-30": [
+          -0.1,
+          0.9
+        ],
+        "2026-10-01": [
+          -0.1,
+          0.9
+        ]
+      },
+      "post_brier_delta": {
+        "resolved_ladders": 330,
+        "target_days": 22,
+        "mean_shaped_brier": 0.6788648008037689,
+        "mean_market_normal_brier": 0.6633891232445451,
+        "mean_paired_delta": 0.015475677559223727,
+        "day_bootstrap_95": [
+          -7.399175591679795e-05,
+          0.03175681527403064
+        ],
+        "interpretation": "Sum of squared cell errors per ladder; positive delta means the correction scores worse than the uncorrected fitted market normal."
+      }
+    },
+    "bias_only": {
+      "original_03_all_cells": {
+        "through_freeze": {
+          "settled": 358,
+          "target_days": 45,
+          "wins": 175,
+          "cost": 149.02,
+          "net": 21.628926,
+          "fees": 4.3510740000000006,
+          "roi": 0.14514109515501275,
+          "bootstrap_95": [
+            0.029613997423787043,
+            0.26826583710407237
+          ],
+          "net_with_1c_adverse_fill": 18.048926,
+          "by_city": {
+            "Atlanta": {
+              "settled": 15,
+              "net": -0.8885630000000001,
+              "roi": -0.132423695976155
+            },
+            "Austin": {
+              "settled": 47,
+              "net": 1.0961739999999998,
+              "roi": 0.05996575492341355
+            },
+            "Boston": {
+              "settled": 9,
+              "net": -0.45276400000000017,
+              "roi": -0.19184915254237292
+            },
+            "Chicago": {
+              "settled": 19,
+              "net": -0.9897760000000002,
+              "roi": -0.12722056555269926
+            },
+            "Dallas": {
+              "settled": 16,
+              "net": 1.2274889999999998,
+              "roi": 0.18626540212443093
+            },
+            "Denver": {
+              "settled": 32,
+              "net": 0.3884119999999999,
+              "roi": 0.031733006535947704
+            },
+            "Houston": {
+              "settled": 13,
+              "net": 0.05124399999999993,
+              "roi": 0.006586632390745492
+            },
+            "LA": {
+              "settled": 36,
+              "net": 4.911479,
+              "roi": 0.314234101087652
+            },
+            "Miami": {
+              "settled": 41,
+              "net": 4.731033,
+              "roi": 0.2821128801431127
+            },
+            "NYC": {
+              "settled": 33,
+              "net": -2.213566,
+              "roi": -0.1402766793409379
+            },
+            "Philadelphia": {
+              "settled": 22,
+              "net": 0.679379,
+              "roi": 0.09609321074964638
+            },
+            "Phoenix": {
+              "settled": 22,
+              "net": 4.58464,
+              "roi": 0.451244094488189
+            },
+            "Seattle": {
+              "settled": 11,
+              "net": 2.488238,
+              "roi": 0.5655086363636364
+            },
+            "Vegas": {
+              "settled": 28,
+              "net": 3.8653600000000004,
+              "roi": 0.3029278996865204
+            },
+            "Washington": {
+              "settled": 14,
+              "net": 2.150147,
+              "roi": 0.4565067940552017
+            }
+          },
+          "positive_cities": 11,
+          "negative_cities": 4,
+          "positive_days": 29,
+          "negative_days": 16,
+          "worst_leave_one_city_out_net": 16.717447,
+          "worst_leave_one_day_out_net": 16.217705,
+          "by_side": {
+            "yes": {
+              "settled": 219,
+              "net": 16.233739,
+              "cost": 49.23
+            },
+            "no": {
+              "settled": 139,
+              "net": 5.395186999999999,
+              "cost": 99.79
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 205,
+          "target_days": 22,
+          "wins": 82,
+          "cost": 85.09,
+          "net": -5.518027000000001,
+          "fees": 2.428027,
+          "roi": -0.06484930074039254,
+          "bootstrap_95": [
+            -0.20592169342507646,
+            0.08173426457456308
+          ],
+          "net_with_1c_adverse_fill": -7.568027000000001,
+          "by_city": {
+            "Atlanta": {
+              "settled": 13,
+              "net": -2.190738,
+              "roi": -0.4346702380952381
+            },
+            "Austin": {
+              "settled": 11,
+              "net": 1.3770909999999998,
+              "roi": 0.3945819484240687
+            },
+            "Boston": {
+              "settled": 14,
+              "net": 1.5364069999999999,
+              "roi": 0.3581368298368298
+            },
+            "Chicago": {
+              "settled": 14,
+              "net": -2.467874,
+              "roi": -0.39172603174603177
+            },
+            "Dallas": {
+              "settled": 10,
+              "net": -1.353467,
+              "roi": -0.31846282352941174
+            },
+            "Denver": {
+              "settled": 12,
+              "net": -0.644788,
+              "roi": -0.14328622222222223
+            },
+            "Houston": {
+              "settled": 7,
+              "net": 0.5594330000000001,
+              "roi": 0.23604767932489454
+            },
+            "LA": {
+              "settled": 16,
+              "net": 2.954653,
+              "roi": 0.3783166453265045
+            },
+            "Miami": {
+              "settled": 18,
+              "net": -0.10918000000000004,
+              "roi": -0.015869186046511635
+            },
+            "NYC": {
+              "settled": 17,
+              "net": -1.4192010000000002,
+              "roi": -0.17328461538461543
+            },
+            "Philadelphia": {
+              "settled": 15,
+              "net": 0.6789859999999999,
+              "roi": 0.1315864341085271
+            },
+            "Phoenix": {
+              "settled": 16,
+              "net": -1.913984,
+              "roi": -0.24792538860103627
+            },
+            "Seattle": {
+              "settled": 13,
+              "net": -0.15824100000000002,
+              "roi": -0.01748519337016575
+            },
+            "Vegas": {
+              "settled": 20,
+              "net": -1.544969,
+              "roi": -0.2113500683994528
+            },
+            "Washington": {
+              "settled": 9,
+              "net": -0.8221550000000001,
+              "roi": -0.3011556776556777
+            }
+          },
+          "positive_cities": 5,
+          "negative_cities": 10,
+          "positive_days": 8,
+          "negative_days": 14,
+          "worst_leave_one_city_out_net": -8.47268,
+          "worst_leave_one_day_out_net": -7.9525570000000005,
+          "by_side": {
+            "yes": {
+              "settled": 131,
+              "net": -6.4218980000000006,
+              "cost": 29.900000000000002
+            },
+            "no": {
+              "settled": 74,
+              "net": 0.9038709999999998,
+              "cost": 55.19
+            }
+          }
+        }
+      },
+      "pilot_04_top5": {
+        "through_freeze": {
+          "settled": 151,
+          "target_days": 40,
+          "wins": 68,
+          "cost": 2242.67,
+          "net": 743.0699999999999,
+          "fees": 106.26,
+          "roi": 0.3313327417765431,
+          "bootstrap_95": [
+            -0.0037270008691425134,
+            0.6958054504897683
+          ],
+          "net_with_1c_adverse_fill": 639.43,
+          "by_city": {
+            "Atlanta": {
+              "settled": 5,
+              "net": -25.67000000000001,
+              "roi": -0.34447128287708006
+            },
+            "Austin": {
+              "settled": 26,
+              "net": 202.10999999999996,
+              "roi": 0.5243889782574852
+            },
+            "Boston": {
+              "settled": 2,
+              "net": -31.8,
+              "roi": -1.0617696160267112
+            },
+            "Chicago": {
+              "settled": 6,
+              "net": 2.4599999999999955,
+              "roi": 0.02775897088693292
+            },
+            "Dallas": {
+              "settled": 6,
+              "net": -65.6,
+              "roi": -0.7323880763648541
+            },
+            "Denver": {
+              "settled": 13,
+              "net": 50.41999999999999,
+              "roi": 0.2611758611758611
+            },
+            "Houston": {
+              "settled": 1,
+              "net": 6.910000000000002,
+              "roi": 0.4687924016282227
+            },
+            "LA": {
+              "settled": 19,
+              "net": 0.05000000000000959,
+              "roi": 0.00017725467952357343
+            },
+            "Miami": {
+              "settled": 21,
+              "net": 208.01999999999998,
+              "roi": 0.6681870743929076
+            },
+            "NYC": {
+              "settled": 11,
+              "net": 14.389999999999992,
+              "roi": 0.08828762500766912
+            },
+            "Philadelphia": {
+              "settled": 14,
+              "net": 47.94999999999998,
+              "roi": 0.22977764999041586
+            },
+            "Phoenix": {
+              "settled": 10,
+              "net": 240.03,
+              "roi": 1.6133216830219115
+            },
+            "Seattle": {
+              "settled": 3,
+              "net": 63.25000000000001,
+              "roi": 1.4118303571428572
+            },
+            "Vegas": {
+              "settled": 11,
+              "net": 60.28000000000001,
+              "roi": 0.36882036221243275
+            },
+            "Washington": {
+              "settled": 3,
+              "net": -29.73,
+              "roi": -0.6649519123238649
+            }
+          },
+          "positive_cities": 11,
+          "negative_cities": 4,
+          "positive_days": 21,
+          "negative_days": 19,
+          "worst_leave_one_city_out_net": 503.03999999999996,
+          "worst_leave_one_day_out_net": 548.81,
+          "by_side": {
+            "yes": {
+              "settled": 113,
+              "net": 607.16,
+              "cost": 1685.67
+            },
+            "no": {
+              "settled": 38,
+              "net": 135.91,
+              "cost": 557.0
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 79,
+          "target_days": 21,
+          "wins": 35,
+          "cost": 1172.1000000000001,
+          "net": 266.94999999999993,
+          "fees": 51.95,
+          "roi": 0.22775360464124214,
+          "bootstrap_95": [
+            -0.1970013505528826,
+            0.667699451099527
+          ],
+          "net_with_1c_adverse_fill": 216.64999999999992,
+          "by_city": {
+            "Atlanta": {
+              "settled": 4,
+              "net": -44.629999999999995,
+              "roi": -0.7574677528852681
+            },
+            "Austin": {
+              "settled": 7,
+              "net": 102.26999999999998,
+              "roi": 0.9801610120759054
+            },
+            "Boston": {
+              "settled": 5,
+              "net": 25.730000000000004,
+              "roi": 0.34615902058388276
+            },
+            "Chicago": {
+              "settled": 3,
+              "net": -29.670000000000005,
+              "roi": -0.6740118128123581
+            },
+            "Dallas": {
+              "settled": 4,
+              "net": -33.660000000000004,
+              "roi": -0.56838905775076
+            },
+            "Denver": {
+              "settled": 6,
+              "net": -50.08,
+              "roi": -0.5599910544559992
+            },
+            "Houston": {
+              "settled": 1,
+              "net": 99.13,
+              "roi": 6.63076923076923
+            },
+            "LA": {
+              "settled": 6,
+              "net": 117.91,
+              "roi": 1.3220091938558134
+            },
+            "Miami": {
+              "settled": 10,
+              "net": 97.22999999999999,
+              "roi": 0.6529447317171445
+            },
+            "NYC": {
+              "settled": 3,
+              "net": -7.809999999999995,
+              "roi": -0.17483769867920293
+            },
+            "Philadelphia": {
+              "settled": 5,
+              "net": 126.54999999999998,
+              "roi": 1.7009408602150533
+            },
+            "Phoenix": {
+              "settled": 9,
+              "net": -62.78,
+              "roi": -0.4753179890975167
+            },
+            "Seattle": {
+              "settled": 4,
+              "net": -10.010000000000002,
+              "roi": -0.17055716476401434
+            },
+            "Vegas": {
+              "settled": 10,
+              "net": -50.220000000000006,
+              "roi": -0.336979131718446
+            },
+            "Washington": {
+              "settled": 2,
+              "net": -13.010000000000002,
+              "roi": -0.4348262032085562
+            }
+          },
+          "positive_cities": 6,
+          "negative_cities": 9,
+          "positive_days": 9,
+          "negative_days": 12,
+          "worst_leave_one_city_out_net": 140.39999999999995,
+          "worst_leave_one_day_out_net": 98.31999999999994,
+          "by_side": {
+            "yes": {
+              "settled": 56,
+              "net": 209.74999999999994,
+              "cost": 835.23
+            },
+            "no": {
+              "settled": 23,
+              "net": 57.2,
+              "cost": 336.87
+            }
+          }
+        }
+      },
+      "pilot_04_open": 6,
+      "post_freeze_fit_path": {
+        "2026-09-08": [
+          0.3,
+          1.0
+        ],
+        "2026-09-09": [
+          0.3,
+          1.0
+        ],
+        "2026-09-10": [
+          0.3,
+          1.0
+        ],
+        "2026-09-11": [
+          0.3,
+          1.0
+        ],
+        "2026-09-12": [
+          0.2,
+          1.0
+        ],
+        "2026-09-13": [
+          0.2,
+          1.0
+        ],
+        "2026-09-14": [
+          0.2,
+          1.0
+        ],
+        "2026-09-15": [
+          0.2,
+          1.0
+        ],
+        "2026-09-16": [
+          0.2,
+          1.0
+        ],
+        "2026-09-17": [
+          0.2,
+          1.0
+        ],
+        "2026-09-18": [
+          0.2,
+          1.0
+        ],
+        "2026-09-19": [
+          0.2,
+          1.0
+        ],
+        "2026-09-20": [
+          0.2,
+          1.0
+        ],
+        "2026-09-21": [
+          0.1,
+          1.0
+        ],
+        "2026-09-22": [
+          0.1,
+          1.0
+        ],
+        "2026-09-23": [
+          0.1,
+          1.0
+        ],
+        "2026-09-24": [
+          0.1,
+          1.0
+        ],
+        "2026-09-25": [
+          0.1,
+          1.0
+        ],
+        "2026-09-26": [
+          0.0,
+          1.0
+        ],
+        "2026-09-27": [
+          0.0,
+          1.0
+        ],
+        "2026-09-28": [
+          0.0,
+          1.0
+        ],
+        "2026-09-29": [
+          -0.1,
+          1.0
+        ],
+        "2026-09-30": [
+          -0.1,
+          1.0
+        ],
+        "2026-10-01": [
+          -0.1,
+          1.0
+        ]
+      },
+      "post_brier_delta": {
+        "resolved_ladders": 330,
+        "target_days": 22,
+        "mean_shaped_brier": 0.6740632235826359,
+        "mean_market_normal_brier": 0.6633891232445451,
+        "mean_paired_delta": 0.01067410033809075,
+        "day_bootstrap_95": [
+          0.00194614366717375,
+          0.019652040807177817
+        ],
+        "interpretation": "Sum of squared cell errors per ladder; positive delta means the correction scores worse than the uncorrected fitted market normal."
+      }
+    },
+    "scale_only": {
+      "original_03_all_cells": {
+        "through_freeze": {
+          "settled": 390,
+          "target_days": 42,
+          "wins": 204,
+          "cost": 195.7,
+          "net": 2.717807999999999,
+          "fees": 5.582192000000001,
+          "roi": 0.013887623914154313,
+          "bootstrap_95": [
+            -0.08380283708131701,
+            0.12240864847089775
+          ],
+          "net_with_1c_adverse_fill": -1.182192000000001,
+          "by_city": {
+            "Atlanta": {
+              "settled": 19,
+              "net": 1.9441469999999998,
+              "roi": 0.19858498467824306
+            },
+            "Austin": {
+              "settled": 36,
+              "net": -0.2830820000000003,
+              "roi": -0.015089658848614086
+            },
+            "Boston": {
+              "settled": 15,
+              "net": -0.5493560000000002,
+              "roi": -0.0866492113564669
+            },
+            "Chicago": {
+              "settled": 39,
+              "net": -3.3539630000000002,
+              "roi": -0.17830744284954814
+            },
+            "Dallas": {
+              "settled": 12,
+              "net": 0.34938199999999997,
+              "roi": 0.053916975308641965
+            },
+            "Denver": {
+              "settled": 33,
+              "net": 3.193287,
+              "roi": 0.20857524493794907
+            },
+            "Houston": {
+              "settled": 16,
+              "net": -1.294808,
+              "roi": -0.16064615384615383
+            },
+            "LA": {
+              "settled": 36,
+              "net": 0.7566379999999998,
+              "roi": 0.03651727799227798
+            },
+            "Miami": {
+              "settled": 42,
+              "net": 3.510667,
+              "roi": 0.16037766103243492
+            },
+            "NYC": {
+              "settled": 26,
+              "net": 1.611293,
+              "roi": 0.13416261448792674
+            },
+            "Philadelphia": {
+              "settled": 39,
+              "net": -3.272309,
+              "roi": -0.19606405032953864
+            },
+            "Phoenix": {
+              "settled": 22,
+              "net": 0.4656159999999998,
+              "roi": 0.041498752228163974
+            },
+            "Seattle": {
+              "settled": 19,
+              "net": -0.4578460000000004,
+              "roi": -0.04479902152641883
+            },
+            "Vegas": {
+              "settled": 18,
+              "net": 2.5305729999999995,
+              "roi": 0.22574246208742188
+            },
+            "Washington": {
+              "settled": 18,
+              "net": -2.4324310000000002,
+              "roi": -0.29700012210012217
+            }
+          },
+          "positive_cities": 8,
+          "negative_cities": 7,
+          "positive_days": 20,
+          "negative_days": 22,
+          "worst_leave_one_city_out_net": -0.7928590000000013,
+          "worst_leave_one_day_out_net": -3.783539000000001,
+          "by_side": {
+            "yes": {
+              "settled": 283,
+              "net": -1.4612960000000008,
+              "cost": 110.0
+            },
+            "no": {
+              "settled": 107,
+              "net": 4.179104,
+              "cost": 85.7
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 124,
+          "target_days": 21,
+          "wins": 68,
+          "cost": 63.62,
+          "net": 2.7500219999999995,
+          "fees": 1.6299780000000001,
+          "roi": 0.043225746620559564,
+          "bootstrap_95": [
+            -0.08177388427425031,
+            0.19329191019934194
+          ],
+          "net_with_1c_adverse_fill": 1.5100219999999995,
+          "by_city": {
+            "Atlanta": {
+              "settled": 9,
+              "net": 2.530055,
+              "roi": 0.5816218390804598
+            },
+            "Austin": {
+              "settled": 4,
+              "net": -0.6618660000000001,
+              "roi": -0.41366625
+            },
+            "Boston": {
+              "settled": 8,
+              "net": 0.7309959999999999,
+              "roi": 0.23132784810126578
+            },
+            "Chicago": {
+              "settled": 9,
+              "net": -0.282346,
+              "roi": -0.0678716346153846
+            },
+            "Dallas": {
+              "settled": 6,
+              "net": 0.21064099999999986,
+              "roi": 0.05677654986522907
+            },
+            "Denver": {
+              "settled": 7,
+              "net": -0.546954,
+              "roi": -0.22233902439024392
+            },
+            "Houston": {
+              "settled": 7,
+              "net": 0.902277,
+              "roi": 0.30176488294314385
+            },
+            "LA": {
+              "settled": 12,
+              "net": -1.884374,
+              "roi": -0.329436013986014
+            },
+            "Miami": {
+              "settled": 9,
+              "net": -1.099401,
+              "roi": -0.2783293670886076
+            },
+            "NYC": {
+              "settled": 12,
+              "net": 1.389567,
+              "roi": 0.2154367441860465
+            },
+            "Philadelphia": {
+              "settled": 7,
+              "net": 0.4145439999999999,
+              "roi": 0.11844114285714283
+            },
+            "Phoenix": {
+              "settled": 8,
+              "net": -0.630958,
+              "roi": -0.13897753303964758
+            },
+            "Seattle": {
+              "settled": 11,
+              "net": 0.5706490000000001,
+              "roi": 0.06850528211284515
+            },
+            "Vegas": {
+              "settled": 6,
+              "net": 2.605909,
+              "roi": 0.7872836858006043
+            },
+            "Washington": {
+              "settled": 9,
+              "net": -1.498717,
+              "roi": -0.27805510204081635
+            }
+          },
+          "positive_cities": 8,
+          "negative_cities": 7,
+          "positive_days": 9,
+          "negative_days": 12,
+          "worst_leave_one_city_out_net": 0.1441129999999995,
+          "worst_leave_one_day_out_net": -0.5605450000000003,
+          "by_side": {
+            "yes": {
+              "settled": 85,
+              "net": -0.016173000000000534,
+              "cost": 30.73
+            },
+            "no": {
+              "settled": 39,
+              "net": 2.7661949999999997,
+              "cost": 32.89
+            }
+          }
+        }
+      },
+      "pilot_04_top5": {
+        "through_freeze": {
+          "settled": 147,
+          "target_days": 42,
+          "wins": 82,
+          "cost": 2171.86,
+          "net": 95.52999999999997,
+          "fees": 78.61,
+          "roi": 0.04398533975486448,
+          "bootstrap_95": [
+            -0.11117879472406236,
+            0.20944035266921127
+          ],
+          "net_with_1c_adverse_fill": 41.65999999999997,
+          "by_city": {
+            "Atlanta": {
+              "settled": 3,
+              "net": 24.859999999999992,
+              "roi": 0.5589028776978415
+            },
+            "Austin": {
+              "settled": 19,
+              "net": -10.250000000000018,
+              "roi": -0.03663200028590836
+            },
+            "Boston": {
+              "settled": 2,
+              "net": -31.42,
+              "roi": -1.0515394912985274
+            },
+            "Chicago": {
+              "settled": 8,
+              "net": -27.44,
+              "roi": -0.2319134550371873
+            },
+            "Dallas": {
+              "settled": 5,
+              "net": 4.549999999999999,
+              "roi": 0.06162806447243666
+            },
+            "Denver": {
+              "settled": 19,
+              "net": 33.13000000000001,
+              "roi": 0.11785422076767105
+            },
+            "Houston": {
+              "settled": 4,
+              "net": 31.240000000000002,
+              "roi": 0.5311118667120028
+            },
+            "LA": {
+              "settled": 15,
+              "net": 56.88999999999999,
+              "roi": 0.2571764386781791
+            },
+            "Miami": {
+              "settled": 23,
+              "net": 66.78,
+              "roi": 0.19615215156410634
+            },
+            "NYC": {
+              "settled": 7,
+              "net": 29.8,
+              "roi": 0.28853601859024014
+            },
+            "Philadelphia": {
+              "settled": 16,
+              "net": -48.99999999999999,
+              "roi": -0.20672488714508708
+            },
+            "Phoenix": {
+              "settled": 7,
+              "net": 42.82,
+              "roi": 0.4153652148608013
+            },
+            "Seattle": {
+              "settled": 5,
+              "net": -25.16,
+              "roi": -0.3430129516019087
+            },
+            "Vegas": {
+              "settled": 7,
+              "net": 22.599999999999994,
+              "roi": 0.2186955680278691
+            },
+            "Washington": {
+              "settled": 7,
+              "net": -73.86999999999999,
+              "roi": -0.7112459079530136
+            }
+          },
+          "positive_cities": 9,
+          "negative_cities": 6,
+          "positive_days": 22,
+          "negative_days": 20,
+          "worst_leave_one_city_out_net": 28.74999999999997,
+          "worst_leave_one_day_out_net": 21.049999999999983,
+          "by_side": {
+            "yes": {
+              "settled": 120,
+              "net": -6.0300000000000225,
+              "cost": 1776.82
+            },
+            "no": {
+              "settled": 27,
+              "net": 101.56,
+              "cost": 395.04
+            }
+          }
+        },
+        "after_freeze": {
+          "settled": 61,
+          "target_days": 19,
+          "wins": 37,
+          "cost": 899.0,
+          "net": 92.98999999999998,
+          "fees": 29.01,
+          "roi": 0.10343715239154615,
+          "bootstrap_95": [
+            -0.17604206772173703,
+            0.4510133800033873
+          ],
+          "net_with_1c_adverse_fill": 70.65999999999998,
+          "by_city": {
+            "Atlanta": {
+              "settled": 4,
+              "net": 65.85000000000001,
+              "roi": 1.1191366417403128
+            },
+            "Austin": {
+              "settled": 2,
+              "net": -3.280000000000001,
+              "roi": -0.11202185792349731
+            },
+            "Boston": {
+              "settled": 5,
+              "net": -25.800000000000008,
+              "roi": -0.3501628664495115
+            },
+            "Chicago": {
+              "settled": 4,
+              "net": -0.9100000000000008,
+              "roi": -0.015481456277645472
+            },
+            "Dallas": {
+              "settled": 5,
+              "net": 4.239999999999993,
+              "roi": 0.05768707482993188
+            },
+            "Denver": {
+              "settled": 3,
+              "net": -47.34,
+              "roi": -1.0571683787405093
+            },
+            "Houston": {
+              "settled": 4,
+              "net": -31.939999999999998,
+              "roi": -0.5371678439286915
+            },
+            "LA": {
+              "settled": 3,
+              "net": 31.839999999999996,
+              "roi": 0.7219954648526076
+            },
+            "Miami": {
+              "settled": 5,
+              "net": -48.769999999999996,
+              "roi": -0.6610192464082406
+            },
+            "NYC": {
+              "settled": 5,
+              "net": 30.929999999999996,
+              "roi": 0.4182555780933062
+            },
+            "Philadelphia": {
+              "settled": 6,
+              "net": 105.88,
+              "roi": 1.1904654823476502
+            },
+            "Phoenix": {
+              "settled": 2,
+              "net": 4.05,
+              "roi": 0.1412133891213389
+            },
+            "Seattle": {
+              "settled": 7,
+              "net": -3.969999999999997,
+              "roi": -0.03879226109048268
+            },
+            "Vegas": {
+              "settled": 3,
+              "net": 22.38,
+              "roi": 0.5016812373907196
+            },
+            "Washington": {
+              "settled": 3,
+              "net": -10.17,
+              "roi": -0.22967479674796748
+            }
+          },
+          "positive_cities": 7,
+          "negative_cities": 8,
+          "positive_days": 12,
+          "negative_days": 7,
+          "worst_leave_one_city_out_net": -12.890000000000015,
+          "worst_leave_one_day_out_net": -11.560000000000016,
+          "by_side": {
+            "yes": {
+              "settled": 40,
+              "net": 64.94999999999997,
+              "cost": 592.99
+            },
+            "no": {
+              "settled": 21,
+              "net": 28.04,
+              "cost": 306.01
+            }
+          }
+        }
+      },
+      "pilot_04_open": 8,
+      "post_freeze_fit_path": {
+        "2026-09-08": [
+          0.0,
+          0.9
+        ],
+        "2026-09-09": [
+          0.0,
+          0.85
+        ],
+        "2026-09-10": [
+          0.0,
+          0.9
+        ],
+        "2026-09-11": [
+          0.0,
+          0.85
+        ],
+        "2026-09-12": [
+          0.0,
+          0.85
+        ],
+        "2026-09-13": [
+          0.0,
+          0.85
+        ],
+        "2026-09-14": [
+          0.0,
+          0.85
+        ],
+        "2026-09-15": [
+          0.0,
+          0.85
+        ],
+        "2026-09-16": [
+          0.0,
+          0.85
+        ],
+        "2026-09-17": [
+          0.0,
+          0.9
+        ],
+        "2026-09-18": [
+          0.0,
+          0.9
+        ],
+        "2026-09-19": [
+          0.0,
+          0.95
+        ],
+        "2026-09-20": [
+          0.0,
+          0.95
+        ],
+        "2026-09-21": [
+          0.0,
+          0.95
+        ],
+        "2026-09-22": [
+          0.0,
+          0.95
+        ],
+        "2026-09-23": [
+          0.0,
+          0.95
+        ],
+        "2026-09-24": [
+          0.0,
+          1.0
+        ],
+        "2026-09-25": [
+          0.0,
+          0.95
+        ],
+        "2026-09-26": [
+          0.0,
+          0.95
+        ],
+        "2026-09-27": [
+          0.0,
+          0.9
+        ],
+        "2026-09-28": [
+          0.0,
+          0.9
+        ],
+        "2026-09-29": [
+          0.0,
+          0.9
+        ],
+        "2026-09-30": [
+          0.0,
+          0.9
+        ],
+        "2026-10-01": [
+          0.0,
+          0.9
+        ]
+      },
+      "post_brier_delta": {
+        "resolved_ladders": 330,
+        "target_days": 22,
+        "mean_shaped_brier": 0.6627039782554197,
+        "mean_market_normal_brier": 0.6633891232445451,
+        "mean_paired_delta": -0.0006851449891253937,
+        "day_bootstrap_95": [
+          -0.006788720623391868,
+          0.0043756346685713664
+        ],
+        "interpretation": "Sum of squared cell errors per ladder; positive delta means the correction scores worse than the uncorrected fitted market normal."
+      }
+    }
+  }
+}

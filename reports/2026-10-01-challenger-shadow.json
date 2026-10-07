@@ -1,0 +1,308 @@
+{
+  "mode": "shadow",
+  "latest_capture": "2026-10-01",
+  "capture_rows": 10767,
+  "qualifying_events": 911,
+  "policy_version": "weather-challenger-v1",
+  "forecast_events": 896,
+  "exclusions": {
+    "incoherent_mid_sum": 6
+  },
+  "outcome_availability_sources": {
+    "legacy_target_plus_2": 911
+  },
+  "specification": {
+    "families": [
+      "market_normal",
+      "joint_shape",
+      "bias_only",
+      "scale_only",
+      "weather_blend"
+    ],
+    "history_min": 60,
+    "history_cap": 300,
+    "fee_inclusive_stake": 15.0,
+    "min_price": 0.1,
+    "min_net_edge": 0.04,
+    "max_orders_per_day": 5,
+    "max_positions_per_event": 1,
+    "weather_ridge_intercept": 60,
+    "weather_ridge_slope": 300,
+    "max_weather_weight": 0.25,
+    "weather_scale_fit": "All-event categorical Brier, including tail winners, on the original fixed K grid.",
+    "selection": "Earliest qualifying complete lead>=1 book per city/target; rank by rounded-fee net edge."
+  },
+  "limitations": [
+    "Capture quotes are not execution proof; book depth and order fills are unverified.",
+    "Legacy target+2 outcome availability is an approximation, not observed publication evidence.",
+    "These historical dates were inspected before this study; no untouched holdout is claimed.",
+    "Winning interior bucket midpoints approximate realized temperature; tail winners are excluded from weather mean regression (possible truncation bias), but included in scale calibration.",
+    "Target-day bootstrap does not correct research selection or serial dependence across days.",
+    "Adverse 1c stress keeps ticker/side selection, then resizes and recomputes rounded fees inside $15.",
+    "All fitted families share 60 prior eligible events; no account inventory, dynamic breaker, or live promotion.",
+    "Challenger families have no live-admission authority and cannot inherit another strategy's go-live gate."
+  ],
+  "history_counts": {
+    "2026-10-01": 300
+  },
+  "families": {
+    "market_normal": {
+      "fit_path": {
+        "2026-10-01": {
+          "bias_c": 0.0,
+          "scale": 1.0
+        }
+      },
+      "selected": [
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Boston",
+          "ticker": "KXHIGHTBOS-26OCT02-B81.5",
+          "side": "yes",
+          "price": 0.18999999999999995,
+          "probability": 0.2564636422928389,
+          "edge": 0.05565283148202815,
+          "contracts": 74,
+          "principal": 14.059999999999995,
+          "fee": 0.8,
+          "cost": 14.859999999999996
+        }
+      ]
+    },
+    "joint_shape": {
+      "fit_path": {
+        "2026-10-01": {
+          "bias_c": -0.1,
+          "scale": 0.9
+        }
+      },
+      "selected": [
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Boston",
+          "ticker": "KXHIGHTBOS-26OCT02-B81.5",
+          "side": "yes",
+          "price": 0.18999999999999995,
+          "probability": 0.2847337105268532,
+          "edge": 0.08392289971604244,
+          "contracts": 74,
+          "principal": 14.059999999999995,
+          "fee": 0.8,
+          "cost": 14.859999999999996
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Miami",
+          "ticker": "KXHIGHMIA-26OCT02-B87.5",
+          "side": "yes",
+          "price": 0.37,
+          "probability": 0.4568257731529628,
+          "edge": 0.07024682578454175,
+          "contracts": 38,
+          "principal": 14.06,
+          "fee": 0.63,
+          "cost": 14.690000000000001
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Dallas",
+          "ticker": "KXHIGHTDAL-26OCT02-B77.5",
+          "side": "yes",
+          "price": 0.18000000000000005,
+          "probability": 0.24676961735486824,
+          "edge": 0.05638500197025281,
+          "contracts": 78,
+          "principal": 14.040000000000004,
+          "fee": 0.81,
+          "cost": 14.850000000000005
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Philadelphia",
+          "ticker": "KXHIGHPHIL-26OCT02-B86.5",
+          "side": "yes",
+          "price": 0.4,
+          "probability": 0.4686509326554824,
+          "edge": 0.05179378979833953,
+          "contracts": 35,
+          "principal": 14.0,
+          "fee": 0.59,
+          "cost": 14.59
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Seattle",
+          "ticker": "KXHIGHTSEA-26OCT02-T68",
+          "side": "no",
+          "price": 0.9,
+          "probability": 0.9485762641324109,
+          "edge": 0.041701264132410897,
+          "contracts": 16,
+          "principal": 14.4,
+          "fee": 0.11,
+          "cost": 14.51
+        }
+      ]
+    },
+    "bias_only": {
+      "fit_path": {
+        "2026-10-01": {
+          "bias_c": -0.1,
+          "scale": 1.0
+        }
+      },
+      "selected": [
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Boston",
+          "ticker": "KXHIGHTBOS-26OCT02-B81.5",
+          "side": "yes",
+          "price": 0.18999999999999995,
+          "probability": 0.26974273531525733,
+          "edge": 0.06893192450444657,
+          "contracts": 74,
+          "principal": 14.059999999999995,
+          "fee": 0.8,
+          "cost": 14.859999999999996
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Miami",
+          "ticker": "KXHIGHMIA-26OCT02-B87.5",
+          "side": "yes",
+          "price": 0.37,
+          "probability": 0.43209786850060283,
+          "edge": 0.04551892113218178,
+          "contracts": 38,
+          "principal": 14.06,
+          "fee": 0.63,
+          "cost": 14.690000000000001
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Dallas",
+          "ticker": "KXHIGHTDAL-26OCT02-B77.5",
+          "side": "yes",
+          "price": 0.18000000000000005,
+          "probability": 0.23393806529770927,
+          "edge": 0.043553449913093845,
+          "contracts": 78,
+          "principal": 14.040000000000004,
+          "fee": 0.81,
+          "cost": 14.850000000000005
+        }
+      ]
+    },
+    "scale_only": {
+      "fit_path": {
+        "2026-10-01": {
+          "bias_c": 0.0,
+          "scale": 0.9
+        }
+      },
+      "selected": [
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Boston",
+          "ticker": "KXHIGHTBOS-26OCT02-B81.5",
+          "side": "yes",
+          "price": 0.18999999999999995,
+          "probability": 0.26776444987618275,
+          "edge": 0.066953639065372,
+          "contracts": 74,
+          "principal": 14.059999999999995,
+          "fee": 0.8,
+          "cost": 14.859999999999996
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Seattle",
+          "ticker": "KXHIGHTSEA-26OCT02-T68",
+          "side": "no",
+          "price": 0.9,
+          "probability": 0.959273260829407,
+          "edge": 0.05239826082940698,
+          "contracts": 16,
+          "principal": 14.4,
+          "fee": 0.11,
+          "cost": 14.51
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Dallas",
+          "ticker": "KXHIGHTDAL-26OCT02-B77.5",
+          "side": "yes",
+          "price": 0.18000000000000005,
+          "probability": 0.23372740482622228,
+          "edge": 0.043342789441606855,
+          "contracts": 78,
+          "principal": 14.040000000000004,
+          "fee": 0.81,
+          "cost": 14.850000000000005
+        }
+      ]
+    },
+    "weather_blend": {
+      "fit_path": {
+        "2026-10-01": {
+          "bias_c": 0.0022907887979780684,
+          "weather_weight": 0.024696831674156067,
+          "scale": 0.95,
+          "weather_training_events": 252,
+          "weather_fit_available": true
+        }
+      },
+      "selected": [
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Boston",
+          "ticker": "KXHIGHTBOS-26OCT02-B81.5",
+          "side": "yes",
+          "price": 0.18999999999999995,
+          "probability": 0.2645683504462421,
+          "edge": 0.06375753963543135,
+          "contracts": 74,
+          "principal": 14.059999999999995,
+          "fee": 0.8,
+          "cost": 14.859999999999996
+        },
+        {
+          "run_at": "2026-10-01",
+          "target_date": "2026-10-02",
+          "city": "Seattle",
+          "ticker": "KXHIGHTSEA-26OCT02-T68",
+          "side": "no",
+          "price": 0.9,
+          "probability": 0.9502462157957248,
+          "edge": 0.04337121579572475,
+          "contracts": 16,
+          "principal": 14.4,
+          "fee": 0.11,
+          "cost": 14.51
+        }
+      ]
+    }
+  },
+  "required_capture_date": "2026-10-01",
+  "capture_sha256": "5abe243d99b09d1da15a31fdb1da2689e12b13e9b18a17e63fb973a12a39533a",
+  "policy_code_sha256": {
+    "weather_challenger.py": "6a1ec856d03ed5fa9895115efd75128c609cdf68e0a5bca4903d79b43f4da5b3",
+    "market_shape_alpha.py": "2c309132a39db89c55dda8daeab995a5dde12f0cfdde3f6a20056129aecf12e7",
+    "go_live_gate.py": "061692e86b19748c878458e3ed303cc563f854fb77b871ec269958e01d396da4"
+  },
+  "policy_sha256": "d7509940235a42ab998357cf067b868bd3689e27e7686a069299ac24d2a95df1",
+  "artifact_note": "Reconstructed October 1 development snapshot, not deployed prospective evidence; do not execute stale quotes."
+}
