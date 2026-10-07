@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Recovery implementation (canonical October 1 evidence)
+## Recovery implementation (deployed October 7; historical study dated October 1)
 
 Read `reports/2026-10-01-strategy-recovery.md` before relying on older performance descriptions
 below. Canonical commit `096fa88` has 81 settled market-shape paper orders, −$82.60 net, NO +$66.10
@@ -11,7 +11,10 @@ code change caused those settlements; the market-shape rule has been unchanged s
 
 The pilot adds `--max-drawdown 50`: the full strategy/mode realized curve, grouped by target date
 with modeled rounded fees, starts at $0 and stops new entries above its high-water drawdown cap.
-Current drawdown is $160.94. Passage of time cannot reset it; outstanding settlements can recover
+October 7 drawdown is $167.87. PR #55 merged at `7b1096f` on October 7, 18:18:23 UTC.
+A network-denied dry run on October 7 inputs verified stand-down; no hosted post-deployment run
+is claimed yet. Missing captures intentionally block new orders when historical orders require
+drawdown reconstruction. Passage of time cannot reset it; outstanding settlements can recover
 the curve, so this is not a permanent latch. Existing weekly/admission controls remain active.
 
 `scripts/weather_challenger.py` implements five fixed paper research families under one conservative
@@ -26,28 +29,30 @@ Legacy resolved rows remain missing. Challenger training requires an observed re
 than the decision date, or explicitly labeled target-plus-two-day approximation on legacy rows.
 The original checkout's pre-existing capture/dashboard edits remain untouched in that checkout.
 
-## Latest audited state (2026-10-01 canonical captures; 2026-10-02 source inventory)
+## Latest audited state (2026-10-07 canonical captures and source inventory)
 
-See `reports/2026-10-01-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
-The market-shape ledger has 81 settled PAPER orders, −$82.60 net (−6.91%); no live orders are recorded.
-October 1 reflected September 30 YES losses: Austin −$15.80, Chicago −$15.43 and NYC −$15.59.
-The decline is $46.82 since the previous capture and $141.14 since September 25.
+See `reports/2026-10-07-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+The market-shape ledger has 84 settled PAPER orders, −$89.53 net (−7.22%); no live orders are recorded.
+October 2 reflected October 1 Philadelphia NO +$5.78, Austin NO +$2.88 and Boston YES −$15.59:
+−$6.93 combined. Cumulative P&L is unchanged October 2–7; October 6's daily increment was $0.00.
+The decline from the September 25 balance of +$58.54 is $148.07.
 The original roughly −$40 reading was September 22 cumulative −$42.75, not September 27.
-Historical selected NO is +$66.10 on 23; YES is −$148.70 on 58. Do not promote this exploratory side split.
+Historical selected NO is +$74.76 on 25; YES is −$164.29 on 59. Do not promote this exploratory side split.
 The September 21 replacement replay lost $9.55 on 57; its dated result remains in
 `reports/2026-09-21-alpha-audit.md`. A rank-first, NO-only-without-replacement shadow is frozen
-after the September 21 capture. It now has FOUR prospective selections: two settled Seattle NO
-wins totaling +$2.98 and two open October 1 NO orders (Philadelphia and Austin, $29.85 principal).
-Both settled wins have identical 16×$0.90 economics; the resulting degenerate bootstrap interval
-is not robust uncertainty evidence or validated alpha. The scorer's shadow section counts settlements.
-The rolling weekly result is −$141.06 under the pilot's legacy estimate, or −$141.14 with rounded
-fees on 13 settlements. A September 23 winner worth +$46.32 aged out; the new losses add −$46.82.
-The October 1 primary run stood down at the existing −$50 breaker and placed no new orders.
-This is an automatic rolling check, not a latched human pause or permanent disable; it can clear
-as losses age out. No override was applied. Three paper intents remain open ($44.67 principal):
-October 1 Philadelphia/Austin NO plus Boston YES.
-Admission remains NO-GO at 81/100 settled and negative ROI. Alpha remains unproven
-(day CI −32.18% to +21.16%). The unchanged one-cent same-contract sensitivity is −$115.09.
+after the September 21 capture. All FOUR prospective selections are settled wins, totaling
++$11.64 on $58.65 principal, with no open selections. They span three cities and three target
+days: Seattle September 26/27 and Philadelphia/Austin October 1. Shadow ROI is +19.85%, with
+day-bootstrap interval +10.35% to +29.01%. Resampling three winning day groups cannot estimate
+unobserved loss frequency; one roughly $15 loss would erase the sample profit. No promotion.
+The rolling weekly result is −$53.73 under the pilot's legacy estimate, or −$53.75 with rounded
+fees on six settlements. The October 7 primary run stood down at the existing −$50 breaker
+and placed no new orders. This is a rolling check, not a latched pause or permanent disable.
+With unchanged evidence, October 8's window would contain only October 1's −$6.93 rounded
+(−$6.919335 Rust), so this breaker alone would clear through aging. That is not strategy recovery
+or a verified future run. No override was applied. Zero intentions or principal remain open.
+Admission remains NO-GO at 84/100 settled and negative ROI. Alpha remains unproven
+(day CI −31.14% to +20.18%). The unchanged one-cent same-contract sensitivity is −$122.98.
 Earlier reports preserve the dated loss readings.
 The Rust pilot now embeds `go_live_gate.py` and enforces it before every live run can place NEW orders
 (Python 3 required, fail closed). Reconciliation/expiry management precedes admission and breakers.
@@ -83,15 +88,18 @@ The September 22 same-day full-ladder snapshot found no net-positive basket at $
 eleven sides lacked a quote. The later September 23-target screen in
 `reports/2026-09-22-next-day-basket-audit.md` found no positive basket across 23 quoted sides,
 with seven sides missing quotes. Neither snapshot is a claim about all possible alpha.
-Latest canonical daily commit is 096fa885 (October 1), compared with fccf316 (September 30).
-All 720 captured rule hashes verify. Captures total 10,767; the ledger's 7,985 dry rows remain
-byte-for-byte unchanged. Existing capture identities are preserved, with no known outcome
-revisions or field loss. The primary October 1 workflow had PILOT_LIVE empty and stood down
-at the weekly breaker; its three open orders remain the final count. The backup skipped the
-remaining steps because today's capture was already committed; it did not rerun the pilot.
-The separate original checkout's September 30 uncommitted capture and dashboard remain intact
-and excluded from this canonical audit. Their preservation does not establish an October 1
-local capture. See `reports/2026-10-01-forward-update.md` and the September 30 preservation record.
+Latest canonical daily commit is 2ccd75e (October 7), compared with 096fa885 (October 1).
+All 1,260 captured rule hashes verify. Captures total 11,335, adding 540 Kalshi and 28 Polymarket
+rows; the ledger's 7,985 dry rows are unchanged in every intervening daily commit. The original
+10,767-row prefix has 227 null-to-binary outcome updates, separate from appended-row outcomes.
+Existing capture identities are preserved, with no known-label revisions or field loss.
+The October 7 primary workflow had PILOT_LIVE empty and stood down at the weekly breaker;
+the backup skipped remaining steps because the capture was already committed, without rerunning
+the pilot. Repository variables PILOT_LIVE, PILOT_DISABLE and KALSHI_BASE_URL are currently unset.
+The original checkout's dirty capture (10,946 rows, latest October 3) and dashboard remain intact
+and excluded; their hashes are in `reports/2026-10-07-forward-update.md`. PR #55 deployed after
+the scored canonical capture, without changing its capture or ledger bytes. Its challenger
+research remains separate from the original pilot and cannot inherit its admission sample.
 The source check in `reports/2026-09-24-weather-source-reconciliation.md` matches all 15
 September 23 daily maxima to winning contract buckets (90 outcomes agree). In the earlier
 incomplete hourly snapshot, 11/15 rounded hourly maxima differ from the later daily values.
@@ -107,9 +115,16 @@ The separate `scripts/weather_source_capture.py` collector preserves exact publi
 responses with receipt times and hashes into new research directories; it does not write canonical
 captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
 PR #50 deployed its separate research workflow at dccd89d on September 28, 04:33 UTC.
-The latest `reports/2026-10-01-hosted-source-study.md` verifies 24 terminal original runs:
-sixteen eligible captures and eight late jobs correctly skipped with no source requests.
-Eight newly inspected runs supplied six captures and two guarded late skips.
+The latest `reports/2026-10-07-hosted-source-study.md` preserves 58 original run artifacts:
+36 completed collections and 22 late skips. These are operational counts, not evaluated snapshots.
+GitHub attempt metadata for run 37470401551 reports creation 13:23:24/start 13:23:23 UTC,
+while listing/coordinator report creation/start 13:23:23. Both complete retrievals preserve the
+same contradiction. The frozen validator returns unknown/run_timestamp_order_invalid;
+development is not evaluated, all 1,260 checkpoints remain unknown, and reserved remains locked.
+Do not edit timestamps, omit the run, infer zero opportunities, or bypass inventory for counts.
+All 58 ZIPs, 4,754 extracted files and 4,392 response bodies pass integrity checks; these checks
+do not establish official reports, executable quotes or alpha. October 1's 24-run valid inventory
+and corrected 0/194/1,066 totals remain historical, not the current aggregate.
 The collector itself is also usable on demand. Engineering targets before September 26 are
 excluded; development targets September 26–October 9 and reserved targets October 10–23 are
 fixed in the protocol. A reserved availability sample is not automatically an untouched strategy
@@ -160,8 +175,8 @@ the October 10 00:00 UTC freeze. The earliest reserved release remains October 2
 with fresh complete metadata and all attempts terminal required.
 The `reports/2026-09-29-source-dispatch.md` repair merged at d0abc05 on September 29, 21:41:35 UTC;
 verified metadata is in `reports/2026-09-29-source-dispatch-deployment.json`. Cron launches now use
-minute05 while nominal minute15 slots and all ±15-minute gates remain unchanged. Thirteen
-observed runs under that repair yielded ten captures and three late skips. This sample is not
+minute05 while nominal minute15 slots and all ±15-minute gates remain unchanged. Through the
+October 1 audit, thirteen runs under that repair yielded ten captures and three late skips. This sample is not
 a causal estimate of repair effectiveness.
 Preserve old/new duplicates and select the earliest invocation even if it failed. Never backfill missed slots.
 The new preserved client asset supplies verified

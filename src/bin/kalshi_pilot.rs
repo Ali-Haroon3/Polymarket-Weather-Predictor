@@ -1568,6 +1568,8 @@ struct RealizedDrawdown {
 /// Target-day totals are the finest trustworthy ordering: captures do not retain settlement
 /// publication timestamps, so ledger order must not manufacture intraday peaks. Unresolved
 /// and current/future target days do not contribute. Known days never age out.
+/// Missing captures fail closed when matching historical orders exist; only an empty matching
+/// history can return zero drawdown without outcome evidence.
 ///
 /// Fees match the audit's conservative whole-cent, per-order taker estimate. Live prices and
 /// quantities require verified fills; fees remain modeled, including the existing limitation
@@ -2358,6 +2360,44 @@ mod tests {
         .unwrap();
         assert_eq!(actual.settled, 1);
         assert!((actual.drawdown - 5.98).abs() < 1e-9); // actual $5.80 cost + rounded $0.18 fee
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawdown_requires_captures_only_when_matching_history_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "pilot_drawdown_missing_captures_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("missing-captures.jsonl");
+        let row = order_row("T", "NYC", "2026-09-28", 0.60, 10, true);
+        write_jsonl(&ledger, &[row]);
+        assert!(!captures.exists());
+
+        // The ledger has an order, but none belongs to the requested strategy.
+        assert_eq!(
+            realized_drawdown(
+                &ledger,
+                &captures,
+                d("2026-09-29"),
+                false,
+                Strategy::MarketShape,
+            )
+            .unwrap(),
+            RealizedDrawdown::default()
+        );
+        assert!(realized_drawdown(
+            &ledger,
+            &captures,
+            d("2026-09-29"),
+            false,
+            Strategy::ModelShrunk,
+        )
+        .unwrap_err()
+        .contains("cannot read drawdown outcomes"));
+        assert!(!captures.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
