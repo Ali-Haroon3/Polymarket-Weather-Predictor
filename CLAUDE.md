@@ -27,9 +27,10 @@ The registration in `reports/2026-10-07-challenger-preregistration.md` and its J
 scale_only as the sole primary, capture dates October 8–December 6 inclusive, and the exclusive
 outcome-receipt cutoff December 22 00:00 UTC. No early success, extension, replacement family,
 version pooling or inference from missing artifacts is permitted. Other families are descriptive.
-An offline saved-selection scorer is still required and must be committed and synthetically tested
-before inspecting prospective performance. Do not rerun study-mode selection to manufacture the
-sample. Exact evidence, costs, 100-order/30-target-day/two-negative-day minima, stationary-bootstrap
+The offline saved-selection scorer is `scripts/weather_challenger_forward.py`; its evidence format
+and usage are in `reports/2026-10-07-challenger-scorer.md`. Commit and synthetically test it before
+inspecting prospective performance. Do not rerun study-mode selection to manufacture the sample.
+Exact evidence, costs, 100-order/30-target-day/two-negative-day minima, stationary-bootstrap
 and risk conditions are in the registration; passing never grants live authority.
 
 New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
