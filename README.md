@@ -7,6 +7,38 @@ A Rust port of the full Polymarket Weather Prediction System, including:
 - End-to-end backtesting engine
 - Polymarket API client and live trader scaffolding
 
+## Strategy recovery (October 7 deployment; October 1 candidate study)
+
+The active pilot is **Kalshi**, despite the repository's name. Its canonical paper ledger
+has 84 settlements and **−$89.53 after modeled fees**, unchanged since October 2. The existing strategy did not change
+during the recent loss period. Older dashboard profits included phantom fills; later losses
+also reflect a disappearing market-temperature bias. See the
+[recovery analysis](reports/2026-10-01-strategy-recovery.md) for the evidence and replacements.
+
+The pilot now also stops new entries when realized drawdown exceeds `--max-drawdown 50`.
+This uses the full strategy/mode history, so losses cannot disappear by aging out of a weekly
+window. [PR #55](https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/pull/55) deployed
+this guard on October 7 at 18:18 UTC. A network-denied dry run verified stand-down at $167.87
+drawdown. Missing outcome files also block new orders when historical orders require that
+calculation. Reconciliation and the enforced live-admission gate remain active; hosted operation
+of the new guard and challenger artifacts still needs the next scheduled run.
+
+Five fixed challenger families can be compared with the existing captured books and weather
+forecasts. They have a separate paper-only selector: exact ladders, delayed outcome availability,
+integer $15 budgets including modeled fees, one position per city/day, and five orders per run.
+Scale-only calibration is the preferred candidate for further paper observation; its historical
+profit does not establish future returns. No challenger can place orders or inherit admission.
+
+```bash
+python3 scripts/weather_challenger.py --output research-output/weather-study.json
+python3 scripts/weather_challenger.py --mode shadow --output research-output/weather-shadow.json
+```
+
+The existing daily capture workflow preserves fresh challenger decisions as separate run artifacts
+for 90 days. These artifacts begin prospective evidence only after deployment. The initial local
+October 1 reconstruction is development evidence. Capture records now retain first observed outcome
+receipt times; older resolved rows remain unknown rather than receiving fabricated timestamps.
+
 ## Project Layout
 
 - `src/data_pipeline/`: weather fetchers, aggregation, processing
@@ -157,7 +189,8 @@ permanent disable or strategy recovery. The frozen NO shadow has four settled wi
 target days, +$11.64, and no open selections. One roughly $15 loss would erase that small profit;
 the positive bootstrap interval does not estimate unobserved loss frequency or establish alpha.
 Full-sample one-cent adverse-entry sensitivity is −$122.98; admission remains NO-GO at 84/100
-settlements and negative ROI. Separate unmerged recovery work is excluded from these figures.
+settlements and negative ROI. These paper figures use the canonical pre-deployment input; the
+new full-history drawdown guard prevents calendar aging alone from restarting this losing pilot.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.

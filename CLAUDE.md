@@ -2,7 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Latest audited state (2026-10-07 canonical captures; source inventory dated below)
+## Recovery implementation (deployed October 7; historical study dated October 1)
+
+Read `reports/2026-10-01-strategy-recovery.md` before relying on older performance descriptions
+below. Canonical commit `096fa88` has 81 settled market-shape paper orders, −$82.60 net, NO +$66.10
+and YES −$148.70. The latest three settled target dates lost $97.02, all YES. No recent strategy
+code change caused those settlements; the market-shape rule has been unchanged since September 7.
+
+The pilot adds `--max-drawdown 50`: the full strategy/mode realized curve, grouped by target date
+with modeled rounded fees, starts at $0 and stops new entries above its high-water drawdown cap.
+October 7 drawdown is $167.87. PR #55 merged at `7b1096f` on October 7, 18:18:23 UTC.
+A network-denied dry run on October 7 inputs verified stand-down; no hosted post-deployment run
+is claimed yet. Missing captures intentionally block new orders when historical orders require
+drawdown reconstruction. Passage of time cannot reset it; outstanding settlements can recover
+the curve, so this is not a permanent latch. Existing weekly/admission controls remain active.
+
+`scripts/weather_challenger.py` implements five fixed paper research families under one conservative
+selector. Historical dates are previously inspected development data, not a new holdout. Scale-only
+is the preferred paper candidate; do not promote any family or inherit the parent's admission count.
+The existing workflow saves hashed fresh-date shadow decisions separately from the canonical ledger.
+Run artifacts retain 90 days; first deployed future decisions, not the reconstructed October 1 book,
+begin prospective observations. Source-availability reserved research remains a separate experiment.
+
+New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
+Legacy resolved rows remain missing. Challenger training requires an observed receipt date earlier
+than the decision date, or explicitly labeled target-plus-two-day approximation on legacy rows.
+The original checkout's pre-existing capture/dashboard edits remain untouched in that checkout.
+
+## Latest audited state (2026-10-07 canonical captures and source inventory)
 
 See `reports/2026-10-07-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
 The market-shape ledger has 84 settled PAPER orders, −$89.53 net (−7.22%); no live orders are recorded.
@@ -70,9 +97,9 @@ The October 7 primary workflow had PILOT_LIVE empty and stood down at the weekly
 the backup skipped remaining steps because the capture was already committed, without rerunning
 the pilot. Repository variables PILOT_LIVE, PILOT_DISABLE and KALSHI_BASE_URL are currently unset.
 The original checkout's dirty capture (10,946 rows, latest October 3) and dashboard remain intact
-and excluded; their hashes are in `reports/2026-10-07-forward-update.md`. Separate draft PR #55
-recovery/drawdown work is unmerged and not deployed in this canonical revision; do not mix its
-code or scoring with this audit.
+and excluded; their hashes are in `reports/2026-10-07-forward-update.md`. PR #55 deployed after
+the scored canonical capture, without changing its capture or ledger bytes. Its challenger
+research remains separate from the original pilot and cannot inherit its admission sample.
 The source check in `reports/2026-09-24-weather-source-reconciliation.md` matches all 15
 September 23 daily maxima to winning contract buckets (90 outcomes agree). In the earlier
 incomplete hourly snapshot, 11/15 rounded hourly maxima differ from the later daily values.
