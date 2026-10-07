@@ -23,6 +23,14 @@ is the preferred paper candidate; do not promote any family or inherit the paren
 The existing workflow saves hashed fresh-date shadow decisions separately from the canonical ledger.
 Run artifacts retain 90 days; first deployed future decisions, not the reconstructed October 1 book,
 begin prospective observations. Source-availability reserved research remains a separate experiment.
+The registration in `reports/2026-10-07-challenger-preregistration.md` and its JSON fixes
+scale_only as the sole primary, capture dates October 8–December 6 inclusive, and the exclusive
+outcome-receipt cutoff December 22 00:00 UTC. No early success, extension, replacement family,
+version pooling or inference from missing artifacts is permitted. Other families are descriptive.
+An offline saved-selection scorer is still required and must be committed and synthetically tested
+before inspecting prospective performance. Do not rerun study-mode selection to manufacture the
+sample. Exact evidence, costs, 100-order/30-target-day/two-negative-day minima, stationary-bootstrap
+and risk conditions are in the registration; passing never grants live authority.
 
 New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
 Legacy resolved rows remain missing. Challenger training requires an observed receipt date earlier

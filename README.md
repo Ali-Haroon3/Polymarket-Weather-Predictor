@@ -28,6 +28,11 @@ forecasts. They have a separate paper-only selector: exact ladders, delayed outc
 integer $15 budgets including modeled fees, one position per city/day, and five orders per run.
 Scale-only calibration is the preferred candidate for further paper observation; its historical
 profit does not establish future returns. No challenger can place orders or inherit admission.
+The [prospective registration](reports/2026-10-07-challenger-preregistration.md) fixes scale-only
+as the sole primary family for October 8–December 6 captures, with final assessment no earlier
+than December 22 UTC. It requires complete saved decisions, fixed cost/uncertainty/risk criteria
+and a separate offline scorer before prospective performance inspection. That scorer is not yet
+implemented. Passing would meet paper-research criteria only; the other four families remain descriptive.
 
 ```bash
 python3 scripts/weather_challenger.py --output research-output/weather-study.json
