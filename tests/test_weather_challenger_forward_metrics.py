@@ -314,6 +314,20 @@ class VerdictTests(unittest.TestCase):
         self.assertGreater(result["metrics"]["bootstrap"]["roi_95"][0], 0)
         self.assertEqual(result["metrics"]["strictly_negative_target_days"], 0)
 
+    def test_minimum_order_and_traded_day_boundaries(self):
+        for days, count, expected in ((30, 100, "meets_preregistered_paper_research_criteria"),
+                                      (30, 99, "insufficient_sample_or_tail_evidence"),
+                                      (29, 100, "insufficient_sample_or_tail_evidence")):
+            with self.subTest(days=days, count=count):
+                saved = [order(day, city) for day in range(days) for city in ("A", "B", "C")]
+                saved.extend(order(day, "D") for day in range(count - len(saved)))
+                rows = [receipt(o, win=(dt.date.fromisoformat(o["run_at"]) - metrics.START).days not in (20, 24))
+                        for o in saved]
+                result = metrics.assess(PROTOCOL, saved, rows, FINAL)
+                self.assertEqual(result["metrics"]["settled_orders"], count)
+                self.assertEqual(result["metrics"]["target_dates_with_orders"], days)
+                self.assertEqual(result["verdict"], expected)
+
     def test_no_orders_are_insufficient_and_not_a_positive_zero_risk_result(self):
         result = metrics.assess(PROTOCOL, [], [], FINAL)
         self.assertEqual(result["verdict"], "insufficient_sample_or_tail_evidence")
