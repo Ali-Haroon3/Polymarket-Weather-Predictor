@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "protocol_id": "weather-challenger-forward-20261007-v1",
+  "scope": "Prospective paper research only; no trading or live-admission authority.",
+  "decision_policy": {
+    "policy_version": "weather-challenger-v1",
+    "policy_sha256": "d7509940235a42ab998357cf067b868bd3689e27e7686a069299ac24d2a95df1",
+    "policy_code_sha256": {
+      "weather_challenger.py": "6a1ec856d03ed5fa9895115efd75128c609cdf68e0a5bca4903d79b43f4da5b3",
+      "market_shape_alpha.py": "2c309132a39db89c55dda8daeab995a5dde12f0cfdde3f6a20056129aecf12e7",
+      "go_live_gate.py": "061692e86b19748c878458e3ed303cc563f854fb77b871ec269958e01d396da4"
+    },
+    "specification": {
+      "families": [
+        "market_normal",
+        "joint_shape",
+        "bias_only",
+        "scale_only",
+        "weather_blend"
+      ],
+      "history_min": 60,
+      "history_cap": 300,
+      "fee_inclusive_stake": 15.0,
+      "min_price": 0.1,
+      "min_net_edge": 0.04,
+      "max_orders_per_day": 5,
+      "max_positions_per_event": 1,
+      "weather_ridge_intercept": 60,
+      "weather_ridge_slope": 300,
+      "max_weather_weight": 0.25,
+      "weather_scale_fit": "All-event categorical Brier, including tail winners, on the original fixed K grid.",
+      "selection": "Earliest qualifying complete lead>=1 book per city/target; rank by rounded-fee net edge."
+    },
+    "reviewed_base_commit": "269b42de66e13a42e787920ef584ecaf49997f4c"
+  },
+  "primary_family": "scale_only",
+  "descriptive_families": [
+    "market_normal",
+    "joint_shape",
+    "bias_only",
+    "weather_blend"
+  ],
+  "calendar": {
+    "capture_date_from": "2026-10-08",
+    "capture_date_through": "2026-12-06",
+    "capture_days": 60,
+    "outcome_receipt_cutoff_exclusive": "2026-12-22T00:00:00Z",
+    "earliest_final_assessment": "2026-12-22T00:00:00Z",
+    "early_success_allowed": false,
+    "adaptive_extension_allowed": false,
+    "registration_commit_deadline_exclusive": "2026-10-08T00:00:00Z"
+  },
+  "evidence": {
+    "repository": "Ali-Haroon3/Polymarket-Weather-Predictor",
+    "workflow_path": ".github/workflows/daily-capture.yml",
+    "event": "schedule",
+    "run_attempt": 1,
+    "artifact_name": "weather-recovery-{run_id}-1",
+    "artifact_member": "weather-shadow.json",
+    "expected_mode": "shadow",
+    "require_all_60_days": true,
+    "zero_order_day_requires_valid_artifact": true,
+    "complete_metadata_inventory_required": true,
+    "required_metadata": "All paginated scheduled-run listings covering the capture window, every listed original attempt, and all artifact-list pages for each original run; preserve exact raw bytes and headers/receipts, including failed runs and missing/expired artifacts.",
+    "artifact_publication_bound": "max(artifact.created_at, artifact.updated_at, original_attempt.updated_at); original attempt must be terminal. Bound and run creation must be on the artifact capture UTC date, and bound must precede every selected target date at 00:00 UTC.",
+    "duplicate_rule": "Same-date valid candidate artifacts must agree exactly in latest_capture, required_capture_date, capture_sha256, policy hashes, specification and every family selected list. Keep all evidence, count earliest publication bound then lowest run id once. Any conflicting candidate artifact or earlier possibly-produced but unavailable decision makes that date unknown. Never replace an unknown decision with a later successful attempt.",
+    "guard_skip_rule": "An original attempt with no candidate artifact can be excluded as a harmless duplicate only when preserved jobs/step evidence proves recovery_shadow was skipped because the daily capture guard already succeeded and a complete same-date candidate artifact exists. Other missing candidate artifacts remain unknown.",
+    "input_linkage": "Archive exact captured input bytes matching capture_sha256, decision ZIP and GitHub digest when supplied, member digest, raw run/attempt/artifact metadata and retrieval receipts; missing or conflicting linkage prevents a complete verdict.",
+    "metadata_consistency": "Require repository, workflow, run/attempt identity and artifact bindings to agree. Treat created/start/update timestamps as separately named provider fields; no equality of listing created_at and attempt created_at is presumed. Preserve discrepancies; all evidence must still unambiguously satisfy the same-day publication and before-target bounds.",
+    "no_local_or_manual_reconstruction": true,
+    "no_historical_or_other_strategy_pooling": true,
+    "policy_change": "Any changed decision-policy hash makes the original study incomplete; retain all old artifacts and register a new future study without pooling or moving these dates."
+  },
+  "settlement": {
+    "source": "kalshi",
+    "identity": [
+      "ticker",
+      "target_date",
+      "city"
+    ],
+    "outcome_values": [
+      0,
+      1
+    ],
+    "require_outcome_observed_at": true,
+    "require_receipt_after_artifact_publication_bound": true,
+    "legacy_clock_fallback_allowed": false,
+    "unresolved_at_cutoff": "inconclusive; retain full cost and show worst-case exposure separately, never drop the selection",
+    "conflicting_outcomes": "inconclusive; preserve all versions, never choose the profitable one",
+    "post_cutoff_updates": "retain as labeled sensitivity only; cannot rescue or replace the fixed-cutoff primary result",
+    "receipt_is_not_exchange_settlement_time": true
+  },
+  "accounting": {
+    "order_budget_including_fee": 15.0,
+    "integer_contracts": true,
+    "fee": "ceil(100 * 0.07 * contracts * price * (1-price) - 1e-9) / 100",
+    "net": "contracts * win_indicator - saved fee-inclusive cost",
+    "roi": "sum(net) / sum(saved fee-inclusive cost)",
+    "stress": "Keep saved ticker and side; increase paid price by 0.01, resize with unchanged size_order inside 15 including recalculated rounded fee. Any unpriceable primary stress order prevents a passing stress criterion.",
+    "baseline_or_stress_reselection_allowed": false,
+    "fees_are_modeled_not_verified_actual": true
+  },
+  "inference": {
+    "group": "all primary selections sharing target_date, across all cities",
+    "calendar_grid": "Inclusive minimum through maximum target_date of all saved primary selections, defined without outcomes; zero groups only on internal calendar dates without selections; unresolved selections still define endpoints.",
+    "bootstrap": "circular stationary bootstrap of joint (daily net, daily fee-inclusive cost) pairs",
+    "restart_probability": 0.14285714285714285,
+    "mean_block_length_days": 7,
+    "draws": 20000,
+    "seed": 20261007,
+    "draw_algorithm": "Use Python random.Random(seed). Each replicate starts with randrange(N); for each remaining observation call random(): if less than 1/7 restart at randrange(N), otherwise advance index modulo N. Stop after N observations. Retain every replicate.",
+    "zero_cost_draw_roi": 0.0,
+    "quantiles": "Sort all 20000 ROI draws; central 95% endpoints are zero-based indices floor(20000*0.025)=500 and floor(20000*0.975)=19500. Report zero-cost draw count.",
+    "source": "https://www.tandfonline.com/doi/abs/10.1080/01621459.1994.10476870",
+    "assumptions": "Approximate inference under weak dependence and stationarity; no finite-sample coverage guarantee, no correction for unseen loss states or regime change."
+  },
+  "final_criteria": {
+    "minimum_settled_orders": 100,
+    "minimum_distinct_target_dates_with_orders": 30,
+    "minimum_strictly_negative_target_day_groups": 2,
+    "minimum_information_note": "Conservative administrative minima, not a power calculation or statistical guarantee. Fewer than two negative groups is insufficient tail evidence, even if all observed outcomes win.",
+    "net_strictly_positive": true,
+    "roi_bootstrap_lower_2_5_percent_strictly_positive": true,
+    "stress_net_strictly_positive": true,
+    "net_without_best_city_strictly_positive": true,
+    "require_multiple_cities": true,
+    "maximum_observed_target_day_drawdown": 50.0,
+    "drawdown_definition": "Aggregate net by target date on the complete calendar grid; start cumulative and peak at zero, update peak=max(peak,cumulative), and report max(peak-cumulative). This is observed research risk compatibility, not account-loss protection or replay of the running pilot guard.",
+    "all_criteria_required": true
+  },
+  "verdicts": {
+    "before_cutoff": "pending; no final success, even if interim metrics pass",
+    "invalid_or_incomplete_evidence": "inconclusive",
+    "insufficient_minimum_information": "insufficient_sample_or_tail_evidence",
+    "complete_but_any_performance_or_risk_criterion_fails": "does_not_meet_preregistered_paper_research_criteria",
+    "complete_and_all_criteria_pass": "meets_preregistered_paper_research_criteria",
+    "live_authorization": false
+  },
+  "implementation": {
+    "require_scorer_commit_and_synthetic_tests_before_prospective_performance_inspection": true,
+    "must_settle_saved_selections_without_refit_or_rerank": true,
+    "offline_scorer_status_at_registration": "not yet implemented"
+  },
+  "source_study_separation": "Does not change the September 25 source-study protocol, October 10 freeze, reserved Oct10-23 embargo or Oct24 release gate. Source-study reserved observations are never inputs to this evaluation."
+}
