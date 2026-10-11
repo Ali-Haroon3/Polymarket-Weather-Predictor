@@ -11,10 +11,10 @@ code change caused those settlements; the market-shape rule has been unchanged s
 
 The pilot adds `--max-drawdown 50`: the full strategy/mode realized curve, grouped by target date
 with modeled rounded fees, starts at $0 and stops new entries above its high-water drawdown cap.
-October 7 drawdown is $167.87. PR #55 merged at `7b1096f` on October 7, 18:18:23 UTC.
-A network-denied dry run on October 7 inputs verified stand-down; no hosted post-deployment run
-is claimed yet. Missing captures intentionally block new orders when historical orders require
-drawdown reconstruction. Passage of time cannot reset it; outstanding settlements can recover
+October 11 drawdown remains $167.87. PR #55 merged at `7b1096f` on October 7, 18:18:23 UTC.
+All four October 8–11 primary hosted runs verified stand-down, with no new pilot entries or
+P&L changes. See `reports/2026-10-11-forward-update.md`. Missing captures block new orders when
+historical orders require drawdown reconstruction. Passage of time cannot reset it; outstanding settlements can recover
 the curve, so this is not a permanent latch. Existing weekly/admission controls remain active.
 
 `scripts/weather_challenger.py` implements five fixed paper research families under one conservative
@@ -28,22 +28,28 @@ scale_only as the sole primary, capture dates October 8–December 6 inclusive, 
 outcome-receipt cutoff December 22 00:00 UTC. No early success, extension, replacement family,
 version pooling or inference from missing artifacts is permitted. Other families are descriptive.
 The offline saved-selection scorer is `scripts/weather_challenger_forward.py`; its evidence format
-and usage are in `reports/2026-10-07-challenger-scorer.md`. Commit and synthetically test it before
-inspecting prospective performance. Do not rerun study-mode selection to manufacture the sample.
+and usage are in `reports/2026-10-07-challenger-scorer.md`. PR #58 committed and synthetically tested
+it before the first prospective assessment on October 11. Do not rerun study-mode selection to
+manufacture the sample.
 Exact evidence, costs, 100-order/30-target-day/two-negative-day minima, stationary-bootstrap
 and risk conditions are in the registration; passing never grants live authority.
+
+October 8–11 decision evidence is valid; the frozen verdict remains pending. Ten primary selections
+have two settlements (one win, one loss), −$2.44 net including modeled fees, and eight unresolved
+with $118.75 fee-inclusive paper cost. Full-sample net, ROI, bootstrap and drawdown remain null.
+Keep this evidence separate from the original pilot and the source-availability experiment.
 
 New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
 Legacy resolved rows remain missing. Challenger training requires an observed receipt date earlier
 than the decision date, or explicitly labeled target-plus-two-day approximation on legacy rows.
 The original checkout's pre-existing capture/dashboard edits remain untouched in that checkout.
 
-## Latest audited state (2026-10-07 canonical captures and source inventory)
+## Latest audited state (2026-10-11 canonical captures and operational evidence)
 
-See `reports/2026-10-07-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
+See `reports/2026-10-11-forward-update.md` and reproduce with `scripts/pilot_alpha_audit.py`.
 The market-shape ledger has 84 settled PAPER orders, −$89.53 net (−7.22%); no live orders are recorded.
 October 2 reflected October 1 Philadelphia NO +$5.78, Austin NO +$2.88 and Boston YES −$15.59:
-−$6.93 combined. Cumulative P&L is unchanged October 2–7; October 6's daily increment was $0.00.
+−$6.93 combined. Cumulative P&L is unchanged October 2–11; each October 8–11 increment was $0.00.
 The decline from the September 25 balance of +$58.54 is $148.07.
 The original roughly −$40 reading was September 22 cumulative −$42.75, not September 27.
 Historical selected NO is +$74.76 on 25; YES is −$164.29 on 59. Do not promote this exploratory side split.
@@ -54,12 +60,12 @@ after the September 21 capture. All FOUR prospective selections are settled wins
 days: Seattle September 26/27 and Philadelphia/Austin October 1. Shadow ROI is +19.85%, with
 day-bootstrap interval +10.35% to +29.01%. Resampling three winning day groups cannot estimate
 unobserved loss frequency; one roughly $15 loss would erase the sample profit. No promotion.
-The rolling weekly result is −$53.73 under the pilot's legacy estimate, or −$53.75 with rounded
+The October 7 rolling weekly result was −$53.73 under the pilot's legacy estimate, or −$53.75 with rounded
 fees on six settlements. The October 7 primary run stood down at the existing −$50 breaker
 and placed no new orders. This is a rolling check, not a latched pause or permanent disable.
-With unchanged evidence, October 8's window would contain only October 1's −$6.93 rounded
-(−$6.919335 Rust), so this breaker alone would clear through aging. That is not strategy recovery
-or a verified future run. No override was applied. Zero intentions or principal remain open.
+October 8's hosted weekly window contained only October 1's approximately −$6.92 Rust result,
+so the weekly breaker alone cleared through aging. The full-history $167.87 drawdown instead
+blocked new entries that day and October 9–11. No override was applied. Zero pilot intentions remain open.
 Admission remains NO-GO at 84/100 settled and negative ROI. Alpha remains unproven
 (day CI −31.14% to +20.18%). The unchanged one-cent same-contract sensitivity is −$122.98.
 Earlier reports preserve the dated loss readings.
@@ -97,14 +103,15 @@ The September 22 same-day full-ladder snapshot found no net-positive basket at $
 eleven sides lacked a quote. The later September 23-target screen in
 `reports/2026-09-22-next-day-basket-audit.md` found no positive basket across 23 quoted sides,
 with seven sides missing quotes. Neither snapshot is a claim about all possible alpha.
-Latest canonical daily commit is 2ccd75e (October 7), compared with 096fa885 (October 1).
-All 1,260 captured rule hashes verify. Captures total 11,335, adding 540 Kalshi and 28 Polymarket
+Latest canonical daily commit is 15440665 (October 11), with 11,706 capture rows and unchanged
+7,985-row paper ledger. The earlier October 7 comparison of 2ccd75e with 096fa885 (October 1)
+verified all 1,260 captured rule hashes. That dated capture had 11,335 rows, adding 540 Kalshi and 28 Polymarket
 rows; the ledger's 7,985 dry rows are unchanged in every intervening daily commit. The original
 10,767-row prefix has 227 null-to-binary outcome updates, separate from appended-row outcomes.
 Existing capture identities are preserved, with no known-label revisions or field loss.
-The October 7 primary workflow had PILOT_LIVE empty and stood down at the weekly breaker;
-the backup skipped remaining steps because the capture was already committed, without rerunning
-the pilot. Repository variables PILOT_LIVE, PILOT_DISABLE and KALSHI_BASE_URL are currently unset.
+The October 8–11 primary workflows had PILOT_LIVE empty and stood down at the full-history guard;
+each backup skipped remaining steps because the capture was already committed, without rerunning
+the pilot or challenger. Repository variables PILOT_LIVE, PILOT_DISABLE and KALSHI_BASE_URL were unset at this audit.
 The original checkout's dirty capture (10,946 rows, latest October 3) and dashboard remain intact
 and excluded; their hashes are in `reports/2026-10-07-forward-update.md`. PR #55 deployed after
 the scored canonical capture, without changing its capture or ledger bytes. Its challenger
@@ -124,7 +131,7 @@ The separate `scripts/weather_source_capture.py` collector preserves exact publi
 responses with receipt times and hashes into new research directories; it does not write canonical
 captures or place orders. Read `reports/2026-09-25-source-collection-protocol.md` before use.
 PR #50 deployed its separate research workflow at dccd89d on September 28, 04:33 UTC.
-The latest `reports/2026-10-07-hosted-source-study.md` preserves 58 original run artifacts:
+The dated `reports/2026-10-07-hosted-source-study.md` preserves 58 original run artifacts:
 36 completed collections and 22 late skips. These are operational counts, not evaluated snapshots.
 GitHub attempt metadata for run 37470401551 reports creation 13:23:24/start 13:23:23 UTC,
 while listing/coordinator report creation/start 13:23:23. Both complete retrievals preserve the
@@ -134,6 +141,14 @@ Do not edit timestamps, omit the run, infer zero opportunities, or bypass invent
 All 58 ZIPs, 4,754 extracted files and 4,392 response bodies pass integrity checks; these checks
 do not establish official reports, executable quotes or alpha. October 1's 24-run valid inventory
 and corrected 0/194/1,066 totals remain historical, not the current aggregate.
+The October 11 operational audit lists 83 original scheduled runs and preserves 24 new ZIPs
+beyond the 59 already retained: 20 complete collections and four late skips. Source/quote members
+remain unread; no full inventory/evaluation was rerun. Run 37888372249 has a second creation/start
+contradiction: attempt creation 05:23:50 versus start/listing/coordinator creation 05:23:49 UTC
+on October 9. Nine source protocol/code/workflow files match their pre-freeze October 9 commit.
+Reserved comparison remains embargoed until October 24 09:30 UTC plus valid terminal inventory.
+No source trading candidate was found committed to main before the October 10 freeze. The separate
+scale-only registration does not create one retroactively. Do not relax frozen evidence rules.
 The collector itself is also usable on demand. Engineering targets before September 26 are
 excluded; development targets September 26–October 9 and reserved targets October 10–23 are
 fixed in the protocol. A reserved availability sample is not automatically an untouched strategy

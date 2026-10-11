@@ -1,0 +1,804 @@
+{
+  "alpha_validated": false,
+  "canonical_commit": "15440665ca4d65c2aeb658e594df3fd2ad3ff780",
+  "challenger": {
+    "artifact_count": 4,
+    "assessed_at_utc": "2026-10-11T21:47:59.852506+00:00",
+    "assessment": {
+      "bytes": 119637,
+      "path": "data/raw/challenger-forward-20261011-assessment.json",
+      "sha256": "68ffb54330a009db31d8a61158038ecce013e872d301ff4f58a0413d2338769a"
+    },
+    "capture_git_provenance": {
+      "captures": [
+        {
+          "bytes": 12302287,
+          "capture_date": "2026-10-11",
+          "commit": "15440665ca4d65c2aeb658e594df3fd2ad3ff780",
+          "path": "captures-2026-10-11-15440665ca4d.jsonl",
+          "sha256": "3bcb43e261a9ebbc7b0a68a0288de86e99d5a058f0c58da7e6aa7d5792d50205"
+        },
+        {
+          "bytes": 12082910,
+          "capture_date": "2026-10-10",
+          "commit": "4ae556ed99e21226dada28a24488b155b177f7fd",
+          "path": "captures-2026-10-10-4ae556ed99e2.jsonl",
+          "sha256": "5fa6685243bac89f842f92cafade69b422f87f2cf431a2b032ebe71a59d28d18"
+        },
+        {
+          "bytes": 11871681,
+          "capture_date": "2026-10-09",
+          "commit": "2dfb1ff4e230b19305556bb6c06b915af5f8ef5e",
+          "path": "captures-2026-10-09-2dfb1ff4e230.jsonl",
+          "sha256": "eefbd279b5ec94f36e6019f6845b3fbfb84129a002b14efbf77cfcdb53ffb132"
+        },
+        {
+          "bytes": 11659463,
+          "capture_date": "2026-10-08",
+          "commit": "a1d5a27ded75add5f1192a2924cb65bf1547d056",
+          "path": "captures-2026-10-08-a1d5a27ded75.jsonl",
+          "sha256": "ae9488d00aabcbbe48b67967ab9d83152490172bb74af40076fdfdebf465e247"
+        }
+      ],
+      "outcomes": {
+        "bytes": 12302287,
+        "commit": "15440665ca4d65c2aeb658e594df3fd2ad3ff780",
+        "path": "outcomes-current.jsonl",
+        "sha256": "3bcb43e261a9ebbc7b0a68a0288de86e99d5a058f0c58da7e6aa7d5792d50205"
+      }
+    },
+    "collection_scope": "37 authenticated GET requests with preserved headers and exact bytes; no retries, no market queries, no source-study bodies, no model refit or order submission.",
+    "complete_evidence": false,
+    "days": [
+      {
+        "artifact_id": 11558762381,
+        "candidate_run_ids": [
+          37796559005
+        ],
+        "capture_date": "2026-10-08",
+        "capture_sha256": "ae9488d00aabcbbe48b67967ab9d83152490172bb74af40076fdfdebf465e247",
+        "date": "2026-10-08",
+        "guard_skipped_run_ids": [
+          37802096209
+        ],
+        "member_sha256": "d124665bfed6185a3b54ee00748add64d5528889002feee6e13a903aac838e7c",
+        "orders": 1,
+        "publication_bound": "2026-10-08T14:58:12Z",
+        "run_id": 37796559005,
+        "state": "valid"
+      },
+      {
+        "artifact_id": 11624034171,
+        "candidate_run_ids": [
+          37948041385
+        ],
+        "capture_date": "2026-10-09",
+        "capture_sha256": "eefbd279b5ec94f36e6019f6845b3fbfb84129a002b14efbf77cfcdb53ffb132",
+        "date": "2026-10-09",
+        "guard_skipped_run_ids": [
+          37952673730
+        ],
+        "member_sha256": "3425f0e88bfc2656650d86461236fa5b11aff9044b960d6562da2eb3d5e155b9",
+        "orders": 1,
+        "publication_bound": "2026-10-09T14:58:40Z",
+        "run_id": 37948041385,
+        "state": "valid"
+      },
+      {
+        "artifact_id": 11674040102,
+        "candidate_run_ids": [
+          38061414178
+        ],
+        "capture_date": "2026-10-10",
+        "capture_sha256": "5fa6685243bac89f842f92cafade69b422f87f2cf431a2b032ebe71a59d28d18",
+        "date": "2026-10-10",
+        "guard_skipped_run_ids": [
+          38064061095
+        ],
+        "member_sha256": "a66feaf9138965e30797e4f8ab4885f80f4d76f219ebfd772fe6c1ec2bcfd0cb",
+        "orders": 3,
+        "publication_bound": "2026-10-10T14:55:02Z",
+        "run_id": 38061414178,
+        "state": "valid"
+      },
+      {
+        "artifact_id": 11706576019,
+        "candidate_run_ids": [
+          38149064655
+        ],
+        "capture_date": "2026-10-11",
+        "capture_sha256": "3bcb43e261a9ebbc7b0a68a0288de86e99d5a058f0c58da7e6aa7d5792d50205",
+        "date": "2026-10-11",
+        "guard_skipped_run_ids": [
+          38151753680
+        ],
+        "member_sha256": "8153f14a20e86f3db6c00dbb8bcc457d9bfb76ab8dc900905c2e978c897d55f4",
+        "orders": 5,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_id": 38149064655,
+        "state": "valid"
+      }
+    ],
+    "errors": [],
+    "evidence": {
+      "bytes": 31131,
+      "path": "data/raw/challenger-forward-20261011-evidence/inventory.json",
+      "sha256": "f201dc1b923802e5c3ec62c82e91a8ccc9a36d2afcaacbbc259610707bf41fc0"
+    },
+    "head": "15440665ca4d65c2aeb658e594df3fd2ad3ff780",
+    "independent_settled_accounting": {
+      "cost": "29.44000000000000196",
+      "net": "-2.44000000000000196"
+    },
+    "live_authorization": false,
+    "metrics": {
+      "accounting_complete": false,
+      "accounting_scope": "economically validated orders; invalid saved orders have unknown exposure",
+      "best_city": "Dallas",
+      "bootstrap": null,
+      "by_city": {
+        "Atlanta": {
+          "cost": 14.920000000000002,
+          "net": -14.920000000000002
+        },
+        "Dallas": {
+          "cost": 14.520000000000001,
+          "net": 12.479999999999999
+        }
+      },
+      "by_city_scope": "settled orders only",
+      "calendar_grid_complete": true,
+      "calendar_groups": [
+        {
+          "cost": 14.520000000000001,
+          "fees": 0.48,
+          "invalid_orders": 0,
+          "net": 12.479999999999999,
+          "orders": 1,
+          "settled_cost": 14.520000000000001,
+          "settled_fees": 0.48,
+          "settled_net": 12.479999999999999,
+          "target_date": "2026-10-09",
+          "unresolved": 0,
+          "unresolved_cost": 0.0
+        },
+        {
+          "cost": 14.920000000000002,
+          "fees": 0.71,
+          "invalid_orders": 0,
+          "net": -14.920000000000002,
+          "orders": 1,
+          "settled_cost": 14.920000000000002,
+          "settled_fees": 0.71,
+          "settled_net": -14.920000000000002,
+          "target_date": "2026-10-10",
+          "unresolved": 0,
+          "unresolved_cost": 0.0
+        },
+        {
+          "cost": 44.68,
+          "fees": 1.0,
+          "invalid_orders": 0,
+          "net": null,
+          "orders": 3,
+          "settled_cost": 0.0,
+          "settled_fees": 0.0,
+          "settled_net": 0.0,
+          "target_date": "2026-10-11",
+          "unresolved": 3,
+          "unresolved_cost": 44.68
+        },
+        {
+          "cost": 74.07000000000001,
+          "fees": 2.52,
+          "invalid_orders": 0,
+          "net": null,
+          "orders": 5,
+          "settled_cost": 0.0,
+          "settled_fees": 0.0,
+          "settled_net": 0.0,
+          "target_date": "2026-10-12",
+          "unresolved": 5,
+          "unresolved_cost": 74.07000000000001
+        }
+      ],
+      "cost": 148.19,
+      "decimal_totals": {
+        "cost": "148.190000000000006",
+        "fees": "4.71",
+        "settled_cost": "29.440000000000003",
+        "settled_fees": "1.19",
+        "settled_net": "-2.440000000000003",
+        "unresolved_cost": "118.750000000000003"
+      },
+      "exposure_complete": true,
+      "fees": 4.71,
+      "invalid_orders": 0,
+      "maximum_observed_target_day_drawdown": null,
+      "net": null,
+      "net_if_all_unresolved_lose": -121.19000000000001,
+      "net_without_best_city": null,
+      "roi": null,
+      "settled_cost": 29.44,
+      "settled_fees": 1.19,
+      "settled_net": -2.440000000000003,
+      "settled_orders": 2,
+      "stress_1c": {
+        "cost": 29.59,
+        "fees": 1.18,
+        "net": -2.590000000000001,
+        "priceable_orders": 2,
+        "unpriceable_orders": 0
+      },
+      "strictly_negative_target_days": null,
+      "target_dates_with_orders": 4,
+      "unresolved_cost": 118.75,
+      "unresolved_orders": 8,
+      "unresolved_worst_case_net": -118.75,
+      "validated_orders": 10,
+      "wins": 1
+    },
+    "orders": [
+      {
+        "city": "Dallas",
+        "contracts": 27,
+        "cost": 14.520000000000001,
+        "fee": 0.48,
+        "net": 12.479999999999999,
+        "outcome": 1,
+        "outcome_receipts": [
+          "2026-10-10T14:54:38.194052932Z"
+        ],
+        "price": 0.52,
+        "publication_bound": "2026-10-08T14:58:12Z",
+        "run_at": "2026-10-08",
+        "side": "yes",
+        "state": "settled",
+        "target_date": "2026-10-09",
+        "ticker": "KXHIGHTDAL-26OCT09-B90.5"
+      },
+      {
+        "city": "Atlanta",
+        "contracts": 49,
+        "cost": 14.920000000000002,
+        "fee": 0.71,
+        "net": -14.920000000000002,
+        "outcome": 0,
+        "outcome_receipts": [
+          "2026-10-11T14:55:28.374605375Z"
+        ],
+        "price": 0.29000000000000004,
+        "publication_bound": "2026-10-09T14:58:40Z",
+        "run_at": "2026-10-09",
+        "side": "yes",
+        "state": "settled",
+        "target_date": "2026-10-10",
+        "ticker": "KXHIGHTATL-26OCT10-B69.5"
+      },
+      {
+        "city": "Phoenix",
+        "contracts": 88,
+        "cost": 14.910000000000002,
+        "fee": 0.83,
+        "net": null,
+        "outcome": null,
+        "price": 0.16000000000000003,
+        "publication_bound": "2026-10-10T14:55:02Z",
+        "run_at": "2026-10-10",
+        "side": "yes",
+        "state": "unresolved",
+        "target_date": "2026-10-11",
+        "ticker": "KXHIGHTPHX-26OCT11-B85.5"
+      },
+      {
+        "city": "Denver",
+        "contracts": 16,
+        "cost": 14.959999999999999,
+        "fee": 0.08,
+        "net": null,
+        "outcome": null,
+        "price": 0.9299999999999999,
+        "publication_bound": "2026-10-10T14:55:02Z",
+        "run_at": "2026-10-10",
+        "side": "no",
+        "state": "unresolved",
+        "target_date": "2026-10-11",
+        "ticker": "KXHIGHDEN-26OCT11-T78"
+      },
+      {
+        "city": "Austin",
+        "contracts": 16,
+        "cost": 14.81,
+        "fee": 0.09,
+        "net": null,
+        "outcome": null,
+        "price": 0.92,
+        "publication_bound": "2026-10-10T14:55:02Z",
+        "run_at": "2026-10-10",
+        "side": "no",
+        "state": "unresolved",
+        "target_date": "2026-10-11",
+        "ticker": "KXHIGHAUS-26OCT11-B96.5"
+      },
+      {
+        "city": "Phoenix",
+        "contracts": 51,
+        "cost": 15.000000000000002,
+        "fee": 0.72,
+        "net": null,
+        "outcome": null,
+        "price": 0.28,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_at": "2026-10-11",
+        "side": "yes",
+        "state": "unresolved",
+        "target_date": "2026-10-12",
+        "ticker": "KXHIGHTPHX-26OCT12-B82.5"
+      },
+      {
+        "city": "Atlanta",
+        "contracts": 37,
+        "cost": 14.68,
+        "fee": 0.62,
+        "net": null,
+        "outcome": null,
+        "price": 0.38,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_at": "2026-10-11",
+        "side": "yes",
+        "state": "unresolved",
+        "target_date": "2026-10-12",
+        "ticker": "KXHIGHTATL-26OCT12-B83.5"
+      },
+      {
+        "city": "Miami",
+        "contracts": 29,
+        "cost": 14.719999999999999,
+        "fee": 0.51,
+        "net": null,
+        "outcome": null,
+        "price": 0.49,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_at": "2026-10-11",
+        "side": "yes",
+        "state": "unresolved",
+        "target_date": "2026-10-12",
+        "ticker": "KXHIGHMIA-26OCT12-B90.5"
+      },
+      {
+        "city": "NYC",
+        "contracts": 34,
+        "cost": 14.860000000000001,
+        "fee": 0.58,
+        "net": null,
+        "outcome": null,
+        "price": 0.42000000000000004,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_at": "2026-10-11",
+        "side": "yes",
+        "state": "unresolved",
+        "target_date": "2026-10-12",
+        "ticker": "KXHIGHNY-26OCT12-B71.5"
+      },
+      {
+        "city": "Chicago",
+        "contracts": 16,
+        "cost": 14.81,
+        "fee": 0.09,
+        "net": null,
+        "outcome": null,
+        "price": 0.92,
+        "publication_bound": "2026-10-11T14:56:09Z",
+        "run_at": "2026-10-11",
+        "side": "no",
+        "state": "unresolved",
+        "target_date": "2026-10-12",
+        "ticker": "KXHIGHCHI-26OCT12-T84"
+      }
+    ],
+    "provenance_state": "valid",
+    "registration_sha256": "624762fa748ff93577cd68238a40382f785dca479d6d97f90455c55b6d525194",
+    "run_count": 8,
+    "verdict": "pending"
+  },
+  "challenger_assessed_at_utc": "2026-10-11T21:47:59.852506+00:00",
+  "evidence_bundles": [
+    {
+      "bytes": 8403281,
+      "files": 158,
+      "path": "reports/2026-10-11-challenger-evidence.json.gz",
+      "sha256": "5a94492a56b5bf969a21c0da421201ef1599054e50b6ffbfd3df51eb7c866008"
+    },
+    {
+      "bytes": 125861,
+      "files": 34,
+      "path": "reports/2026-10-11-pilot-guard-evidence.json.gz",
+      "sha256": "7b5164fffcb1948fb859b7837d0ca79891c25b54976bbd739524029822203f6d"
+    },
+    {
+      "bytes": 4701405,
+      "files": 226,
+      "path": "reports/2026-10-11-source-operational-evidence.json.gz",
+      "sha256": "4aaef07af6291e30ae34ef6c74b92b7cf97627e9d93bd29269a2798ba2159513"
+    }
+  ],
+  "hosted_pilot_guard": [
+    {
+      "backup_skip_verified": false,
+      "capture_step": "success",
+      "challenger_step": "success",
+      "conclusion": "success",
+      "created_at": "2026-10-08T14:56:06Z",
+      "date": "2026-10-08",
+      "guard_verified": true,
+      "log_lines": [
+        "2026-10-08T14:57:54.0759815Z Realized drawdown: $167.87 from $+78.34 peak; net $-89.53 over 84 settled dry-run market-shape orders (modeled fees)",
+        "2026-10-08T14:57:54.1088788Z STAND DOWN: realized drawdown $167.87 from $+78.34 peak breaches the $50.00 limit; this history does not reset when old losses leave the weekly window. No new orders this run. Review the strategy and its risk limits before changing any breaker override.",
+        "2026-10-08T14:57:54.1089954Z Trailing-7-day realized PnL: $-6.92 over 3 settled dry-run market-shape orders"
+      ],
+      "pilot_live_environment_empty": true,
+      "pilot_step": "success",
+      "run_id": 37796559005
+    },
+    {
+      "backup_skip_verified": true,
+      "capture_step": "skipped",
+      "challenger_step": "skipped",
+      "conclusion": "success",
+      "created_at": "2026-10-08T15:36:04Z",
+      "date": "2026-10-08",
+      "guard_verified": false,
+      "log_lines": [
+        "2026-10-08T15:36:13.3715343Z ##[notice]captures for 2026-10-08 already committed \u2014 standing down"
+      ],
+      "pilot_live_environment_empty": false,
+      "pilot_step": "skipped",
+      "run_id": 37802096209
+    },
+    {
+      "backup_skip_verified": false,
+      "capture_step": "success",
+      "challenger_step": "success",
+      "conclusion": "success",
+      "created_at": "2026-10-09T14:57:15Z",
+      "date": "2026-10-09",
+      "guard_verified": true,
+      "log_lines": [
+        "2026-10-09T14:58:31.9522459Z Realized drawdown: $167.87 from $+78.34 peak; net $-89.53 over 84 settled dry-run market-shape orders (modeled fees)",
+        "2026-10-09T14:58:31.9855513Z STAND DOWN: realized drawdown $167.87 from $+78.34 peak breaches the $50.00 limit; this history does not reset when old losses leave the weekly window. No new orders this run. Review the strategy and its risk limits before changing any breaker override."
+      ],
+      "pilot_live_environment_empty": true,
+      "pilot_step": "success",
+      "run_id": 37948041385
+    },
+    {
+      "backup_skip_verified": true,
+      "capture_step": "skipped",
+      "challenger_step": "skipped",
+      "conclusion": "success",
+      "created_at": "2026-10-09T15:33:53Z",
+      "date": "2026-10-09",
+      "guard_verified": false,
+      "log_lines": [
+        "2026-10-09T15:34:01.4027934Z ##[notice]captures for 2026-10-09 already committed \u2014 standing down"
+      ],
+      "pilot_live_environment_empty": false,
+      "pilot_step": "skipped",
+      "run_id": 37952673730
+    },
+    {
+      "backup_skip_verified": false,
+      "capture_step": "success",
+      "challenger_step": "success",
+      "conclusion": "success",
+      "created_at": "2026-10-10T14:53:35Z",
+      "date": "2026-10-10",
+      "guard_verified": true,
+      "log_lines": [
+        "2026-10-10T14:54:54.9411564Z Realized drawdown: $167.87 from $+78.34 peak; net $-89.53 over 84 settled dry-run market-shape orders (modeled fees)",
+        "2026-10-10T14:54:54.9744409Z STAND DOWN: realized drawdown $167.87 from $+78.34 peak breaches the $50.00 limit; this history does not reset when old losses leave the weekly window. No new orders this run. Review the strategy and its risk limits before changing any breaker override."
+      ],
+      "pilot_live_environment_empty": true,
+      "pilot_step": "success",
+      "run_id": 38061414178
+    },
+    {
+      "backup_skip_verified": true,
+      "capture_step": "skipped",
+      "challenger_step": "skipped",
+      "conclusion": "success",
+      "created_at": "2026-10-10T15:32:58Z",
+      "date": "2026-10-10",
+      "guard_verified": false,
+      "log_lines": [
+        "2026-10-10T15:33:04.7235500Z ##[notice]captures for 2026-10-10 already committed \u2014 standing down"
+      ],
+      "pilot_live_environment_empty": false,
+      "pilot_step": "skipped",
+      "run_id": 38064061095
+    },
+    {
+      "backup_skip_verified": false,
+      "capture_step": "success",
+      "challenger_step": "success",
+      "conclusion": "success",
+      "created_at": "2026-10-11T14:54:12Z",
+      "date": "2026-10-11",
+      "guard_verified": true,
+      "log_lines": [
+        "2026-10-11T14:55:59.8874292Z Realized drawdown: $167.87 from $+78.34 peak; net $-89.53 over 84 settled dry-run market-shape orders (modeled fees)",
+        "2026-10-11T14:55:59.9210670Z STAND DOWN: realized drawdown $167.87 from $+78.34 peak breaches the $50.00 limit; this history does not reset when old losses leave the weekly window. No new orders this run. Review the strategy and its risk limits before changing any breaker override."
+      ],
+      "pilot_live_environment_empty": true,
+      "pilot_step": "success",
+      "run_id": 38149064655
+    },
+    {
+      "backup_skip_verified": true,
+      "capture_step": "skipped",
+      "challenger_step": "skipped",
+      "conclusion": "success",
+      "created_at": "2026-10-11T15:33:13Z",
+      "date": "2026-10-11",
+      "guard_verified": false,
+      "log_lines": [
+        "2026-10-11T15:33:21.9869187Z ##[notice]captures for 2026-10-11 already committed \u2014 standing down"
+      ],
+      "pilot_live_environment_empty": false,
+      "pilot_step": "skipped",
+      "run_id": 38151753680
+    }
+  ],
+  "live_authorization": false,
+  "pilot_cost_definition": "principal; modeled fees are a separate field; pilot ROI denominator is principal",
+  "pilot_daily_accounting": [
+    {
+      "capture_rows": 11335,
+      "capture_sha256": "9a14f1c19d06dccd6e141a376be354b2fc5dd00b4857eb8ed1866e663c5f4f11",
+      "commit": "61445d89fbdc6e04a2784dfc5bf08bd8a7fb77fc",
+      "current_drawdown": 167.87,
+      "latest_capture": "2026-10-07",
+      "latest_order_run": "2026-09-30T14:59:32.425657791Z",
+      "ledger_mode_counts": {
+        "paper": 7985
+      },
+      "ledger_rows": 7985,
+      "ledger_sha256": "8945f1bcf8d87c07cf4bd2f3e495c360ecdb441bab106518043751588655b2e8",
+      "net_change_from_prior": null,
+      "open": 0,
+      "peak": 78.34,
+      "summary": {
+        "bootstrap_95": [
+          -0.3114335986053044,
+          0.20178099049427814
+        ],
+        "cost": 1240.69,
+        "fees": 45.84,
+        "net": -89.53000000000003,
+        "net_with_1c_adverse_fill": -122.98000000000003,
+        "roi": -0.07216145854323,
+        "settled": 84,
+        "target_days": 22,
+        "wins": 43
+      },
+      "unfilled": 0
+    },
+    {
+      "capture_rows": 11426,
+      "capture_sha256": "ae9488d00aabcbbe48b67967ab9d83152490172bb74af40076fdfdebf465e247",
+      "commit": "a1d5a27ded75add5f1192a2924cb65bf1547d056",
+      "current_drawdown": 167.87,
+      "latest_capture": "2026-10-08",
+      "latest_order_run": "2026-09-30T14:59:32.425657791Z",
+      "ledger_mode_counts": {
+        "paper": 7985
+      },
+      "ledger_rows": 7985,
+      "ledger_sha256": "8945f1bcf8d87c07cf4bd2f3e495c360ecdb441bab106518043751588655b2e8",
+      "net_change_from_prior": 0.0,
+      "open": 0,
+      "peak": 78.34,
+      "summary": {
+        "bootstrap_95": [
+          -0.3114335986053044,
+          0.20178099049427814
+        ],
+        "cost": 1240.69,
+        "fees": 45.84,
+        "net": -89.53000000000003,
+        "net_with_1c_adverse_fill": -122.98000000000003,
+        "roi": -0.07216145854323,
+        "settled": 84,
+        "target_days": 22,
+        "wins": 43
+      },
+      "unfilled": 0
+    },
+    {
+      "capture_rows": 11517,
+      "capture_sha256": "eefbd279b5ec94f36e6019f6845b3fbfb84129a002b14efbf77cfcdb53ffb132",
+      "commit": "2dfb1ff4e230b19305556bb6c06b915af5f8ef5e",
+      "current_drawdown": 167.87,
+      "latest_capture": "2026-10-09",
+      "latest_order_run": "2026-09-30T14:59:32.425657791Z",
+      "ledger_mode_counts": {
+        "paper": 7985
+      },
+      "ledger_rows": 7985,
+      "ledger_sha256": "8945f1bcf8d87c07cf4bd2f3e495c360ecdb441bab106518043751588655b2e8",
+      "net_change_from_prior": 0.0,
+      "open": 0,
+      "peak": 78.34,
+      "summary": {
+        "bootstrap_95": [
+          -0.3114335986053044,
+          0.20178099049427814
+        ],
+        "cost": 1240.69,
+        "fees": 45.84,
+        "net": -89.53000000000003,
+        "net_with_1c_adverse_fill": -122.98000000000003,
+        "roi": -0.07216145854323,
+        "settled": 84,
+        "target_days": 22,
+        "wins": 43
+      },
+      "unfilled": 0
+    },
+    {
+      "capture_rows": 11607,
+      "capture_sha256": "5fa6685243bac89f842f92cafade69b422f87f2cf431a2b032ebe71a59d28d18",
+      "commit": "4ae556ed99e21226dada28a24488b155b177f7fd",
+      "current_drawdown": 167.87,
+      "latest_capture": "2026-10-10",
+      "latest_order_run": "2026-09-30T14:59:32.425657791Z",
+      "ledger_mode_counts": {
+        "paper": 7985
+      },
+      "ledger_rows": 7985,
+      "ledger_sha256": "8945f1bcf8d87c07cf4bd2f3e495c360ecdb441bab106518043751588655b2e8",
+      "net_change_from_prior": 0.0,
+      "open": 0,
+      "peak": 78.34,
+      "summary": {
+        "bootstrap_95": [
+          -0.3114335986053044,
+          0.20178099049427814
+        ],
+        "cost": 1240.69,
+        "fees": 45.84,
+        "net": -89.53000000000003,
+        "net_with_1c_adverse_fill": -122.98000000000003,
+        "roi": -0.07216145854323,
+        "settled": 84,
+        "target_days": 22,
+        "wins": 43
+      },
+      "unfilled": 0
+    },
+    {
+      "capture_rows": 11706,
+      "capture_sha256": "3bcb43e261a9ebbc7b0a68a0288de86e99d5a058f0c58da7e6aa7d5792d50205",
+      "commit": "15440665ca4d65c2aeb658e594df3fd2ad3ff780",
+      "current_drawdown": 167.87,
+      "latest_capture": "2026-10-11",
+      "latest_order_run": "2026-09-30T14:59:32.425657791Z",
+      "ledger_mode_counts": {
+        "paper": 7985
+      },
+      "ledger_rows": 7985,
+      "ledger_sha256": "8945f1bcf8d87c07cf4bd2f3e495c360ecdb441bab106518043751588655b2e8",
+      "net_change_from_prior": 0.0,
+      "open": 0,
+      "peak": 78.34,
+      "summary": {
+        "bootstrap_95": [
+          -0.3114335986053044,
+          0.20178099049427814
+        ],
+        "cost": 1240.69,
+        "fees": 45.84,
+        "net": -89.53000000000003,
+        "net_with_1c_adverse_fill": -122.98000000000003,
+        "roi": -0.07216145854323,
+        "settled": 84,
+        "target_days": 22,
+        "wins": 43
+      },
+      "unfilled": 0
+    }
+  ],
+  "schema_version": 1,
+  "source_operational": {
+    "complete_collections": 20,
+    "existing_blocker": {
+      "attempt_created_at": "2026-10-06T13:23:24Z",
+      "attempt_run_started_at": "2026-10-06T13:23:23Z",
+      "attempt_sha256": "ba66742a2dda383eed29125e36b41eb2c9d8a17673ddbd5c24a419065b5e7e5e",
+      "listing_created_at": "2026-10-06T13:23:23Z",
+      "run_id": 37470401551
+    },
+    "late_skips": 4,
+    "new_archives": 24,
+    "new_metadata_discrepancies": [
+      {
+        "attempt": {
+          "created_at": "2026-10-08T13:25:41Z",
+          "run_started_at": "2026-10-08T13:25:41Z",
+          "updated_at": "2026-10-08T13:26:57Z"
+        },
+        "attempt_sha256": "a43e3b060e9a2f7feeddbb6591d6440789ba8f31dc9ad4883e720f381cdfdff7",
+        "coordinator_run_metadata": {
+          "created_at": "2026-10-08T13:25:41Z",
+          "event": "schedule",
+          "head_sha": "61445d89fbdc6e04a2784dfc5bf08bd8a7fb77fc",
+          "html_url": "https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/actions/runs/37784255922",
+          "id": 37784255922,
+          "run_attempt": 1,
+          "run_started_at": "2026-10-08T13:25:41Z"
+        },
+        "listing": {
+          "created_at": "2026-10-08T13:25:41Z",
+          "run_started_at": "2026-10-08T13:25:41Z",
+          "updated_at": "2026-10-08T13:26:56Z"
+        },
+        "run_id": 37784255922
+      },
+      {
+        "attempt": {
+          "created_at": "2026-10-08T17:18:53Z",
+          "run_started_at": "2026-10-08T17:18:53Z",
+          "updated_at": "2026-10-08T17:20:32Z"
+        },
+        "attempt_sha256": "b0ffa7d227bf6b934643a6162934a3da073106b25957e6d99a1b4c5dfbb099dc",
+        "coordinator_run_metadata": {
+          "created_at": "2026-10-08T17:18:53Z",
+          "event": "schedule",
+          "head_sha": "a1d5a27ded75add5f1192a2924cb65bf1547d056",
+          "html_url": "https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/actions/runs/37815590931",
+          "id": 37815590931,
+          "run_attempt": 1,
+          "run_started_at": "2026-10-08T17:18:53Z"
+        },
+        "listing": {
+          "created_at": "2026-10-08T17:18:53Z",
+          "run_started_at": "2026-10-08T17:18:53Z",
+          "updated_at": "2026-10-08T17:20:31Z"
+        },
+        "run_id": 37815590931
+      },
+      {
+        "attempt": {
+          "created_at": "2026-10-09T05:23:50Z",
+          "run_started_at": "2026-10-09T05:23:49Z",
+          "updated_at": "2026-10-09T05:25:03Z"
+        },
+        "attempt_sha256": "2e86a25a8b8d10e2ec2c32d614592432e05c8308dda7169a05fee6ee420fc758",
+        "coordinator_run_metadata": {
+          "created_at": "2026-10-09T05:23:49Z",
+          "event": "schedule",
+          "head_sha": "a1d5a27ded75add5f1192a2924cb65bf1547d056",
+          "html_url": "https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/actions/runs/37888372249",
+          "id": 37888372249,
+          "run_attempt": 1,
+          "run_started_at": "2026-10-09T05:23:49Z"
+        },
+        "listing": {
+          "created_at": "2026-10-09T05:23:49Z",
+          "run_started_at": "2026-10-09T05:23:49Z",
+          "updated_at": "2026-10-09T05:25:03Z"
+        },
+        "run_id": 37888372249
+      }
+    ],
+    "previous_development_unknown_checkpoints": 1260,
+    "previous_development_verdict": "not_evaluated",
+    "requires_valid_terminal_inventory": true,
+    "reserved_comparison_release_not_before_utc": "2026-10-24T09:30:00Z",
+    "reserved_results_inspected": false,
+    "scheduled_runs_listed": 83,
+    "scope": "24 new original archives; not a complete study inventory or availability/strategy evaluation",
+    "source_trading_candidate_found_frozen_before_oct10": false,
+    "zip_bytes": 4082213
+  }
+}
