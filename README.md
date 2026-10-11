@@ -7,7 +7,7 @@ A Rust port of the full Polymarket Weather Prediction System, including:
 - End-to-end backtesting engine
 - Polymarket API client and live trader scaffolding
 
-## Strategy recovery (October 7 deployment; October 1 candidate study)
+## Strategy recovery (October 11 audit; October 1 candidate study)
 
 The active pilot is **Kalshi**, despite the repository's name. Its canonical paper ledger
 has 84 settlements and **−$89.53 after modeled fees**, unchanged since October 2. The existing strategy did not change
@@ -18,10 +18,10 @@ also reflect a disappearing market-temperature bias. See the
 The pilot now also stops new entries when realized drawdown exceeds `--max-drawdown 50`.
 This uses the full strategy/mode history, so losses cannot disappear by aging out of a weekly
 window. [PR #55](https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/pull/55) deployed
-this guard on October 7 at 18:18 UTC. A network-denied dry run verified stand-down at $167.87
-drawdown. Missing outcome files also block new orders when historical orders require that
-calculation. Reconciliation and the enforced live-admission gate remain active; hosted operation
-of the new guard and challenger artifacts still needs the next scheduled run.
+this guard on October 7 at 18:18 UTC. The [October 11 audit](reports/2026-10-11-forward-update.md)
+confirms all four October 8–11 primary hosted runs stood down at $167.87 drawdown, with no new
+pilot entries or P&L changes. Missing outcome files also block new orders when historical orders
+require that calculation. Reconciliation and the enforced live-admission gate remain active.
 
 Five fixed challenger families can be compared with the existing captured books and weather
 forecasts. They have a separate paper-only selector: exact ladders, delayed outcome availability,
@@ -35,6 +35,11 @@ and a separate offline scorer before prospective performance inspection. The
 [saved-evidence scorer](reports/2026-10-07-challenger-scorer.md) validates archived decisions and
 scores their original selections without refitting or reranking. Passing would meet paper-research
 criteria only; the other four families remain descriptive.
+
+The first four prospective capture dates have valid saved evidence: ten scale-only selections,
+two settled (one win, one loss) for **−$2.44 after modeled fees**, and eight unresolved with
+**$118.75 fee-inclusive paper cost**. Full-sample net, ROI and uncertainty remain unavailable;
+the frozen verdict is **pending**. These selections are separate from the original pilot ledger.
 
 ```bash
 python3 scripts/weather_challenger.py --output research-output/weather-study.json
@@ -185,23 +190,23 @@ driver: dry by default, and live when the repository variable `PILOT_LIVE` is `1
 `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` secrets are set, and the `KALSHI_BASE_URL` variable
 names the production host. `PILOT_DISABLE=1` is the kill switch in either driver.
 
-As of canonical captures through 2026-10-07 the default has 84 settled **paper** orders,
+As of canonical captures through 2026-10-11 the default has 84 settled **paper** orders,
 −$89.53 after modeled fees (−7.22%), and has not passed admission. The final three October 1
 positions settled for −$6.93 in the October 2 capture; cumulative P&L has not changed since.
 The decline since September 25 is $148.07. No intentions remain open, and the ledger has no
 new decisions since September 30. The October 7 primary run stood down at its existing −$50
-weekly breaker: −$53.75 with rounded fees, or −$53.73 in the Rust approximation. If evidence
-stays unchanged, that rolling check alone would clear October 8 as losses age out; it is not a
+weekly breaker: −$53.75 with rounded fees, or −$53.73 in the Rust approximation. That rolling
+check alone cleared October 8 as losses aged out; it is not a
 permanent disable or strategy recovery. The frozen NO shadow has four settled wins across three
 target days, +$11.64, and no open selections. One roughly $15 loss would erase that small profit;
 the positive bootstrap interval does not estimate unobserved loss frequency or establish alpha.
 Full-sample one-cent adverse-entry sensitivity is −$122.98; admission remains NO-GO at 84/100
-settlements and negative ROI. These paper figures use the canonical pre-deployment input; the
-new full-history drawdown guard prevents calendar aging alone from restarting this losing pilot.
+settlements and negative ROI. October 8–11 hosted logs verify that the full-history drawdown guard
+prevented calendar aging alone from restarting this losing pilot.
 The [fee sensitivity check](reports/2026-09-28-fee-sensitivity.md) finds that account-precision
 assumptions change the September 25–27 decline by only $0.0216 under a single-fill comparison; frozen
 accounting is unchanged. Fee rounding does not explain the losses.
-See [the latest forward update](reports/2026-10-07-forward-update.md),
+See [the latest forward update](reports/2026-10-11-forward-update.md),
 [the daily-source reconciliation](reports/2026-09-24-weather-source-reconciliation.md),
 [the original loss audit](reports/2026-09-21-alpha-audit.md) and
 [independent validation](reports/2026-09-21-alpha-validation.md). No trading rule is promoted
@@ -225,13 +230,15 @@ and actual run evidence must be verified separately; the study does not place or
 canonical captures, and late/missing observations cannot be reconstructed afterward.
 The [September 28 activation check](reports/2026-09-28-source-activation.md) records deployment
 and an explicitly off-schedule development snapshot, which remains excluded from the primary
-sample. The latest [October 7 hosted-run audit](reports/2026-10-07-hosted-source-study.md)
-preserves 58 original run artifacts: 36 completed collections and 22 late skips. These are
-operational counts. Current inventory is **unknown** because one GitHub attempt response puts
-its start one second before creation and disagrees with the listing/coordinator creation time.
-Both complete metadata retrievals preserve the discrepancy. Development is **not evaluated**:
-zero evaluated snapshots and all 1,260 checkpoints unknown. This does not mean zero observed
-opportunities. Reserved comparison remains locked; provider timestamps and gates are unchanged.
+sample. The [October 11 operational audit](reports/2026-10-11-forward-update.md) lists 83 original
+scheduled runs and preserves 24 new archives beyond the 59 already retained: 20 complete
+collections and four late skips. These are operational counts, not evaluated snapshots.
+The [October 7 evaluation](reports/2026-10-07-hosted-source-study.md) remains **not evaluated**:
+all 1,260 development checkpoints are unknown. Its contradictory GitHub creation/start fields
+persist, and a second run has the same contradiction. No full evaluation was rerun. Reserved
+source/quote members remain unopened and comparison is locked until October 24 at 09:30 UTC
+plus a valid terminal inventory. No source trading candidate was found frozen before October 10;
+reserved availability alone cannot establish independent strategy validation.
 The [October 1 audit](reports/2026-10-01-hosted-source-study.md) remains the previous valid,
 dated result: sixteen selected snapshots, zero overlap, 194 absence and 46 selected unknowns.
 Its 24 original jobs comprised sixteen captures and eight late skips. The
