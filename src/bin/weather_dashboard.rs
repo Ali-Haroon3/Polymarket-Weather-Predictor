@@ -114,7 +114,11 @@ fn run() -> Result<(), String> {
         market_shape: args.market_shape,
         kalshi_fees: args.kalshi_fees,
     };
-    let html = render_dashboard(&evals, &captures, &sp);
+    let pilot = load_pilot_readout(&args.ledger, &args.captures);
+    if let Err(error) = &pilot {
+        eprintln!("pilot accounting unavailable: {error}");
+    }
+    let html = render_dashboard(&evals, &captures, &sp, &pilot);
 
     std::fs::write(&args.output, html)
         .map_err(|e| format!("failed writing {}: {e}", args.output.display()))?;
@@ -944,7 +948,7 @@ fn market_shape_readout(captures: &[Capture]) -> String {
         .count();
     match fit_shape(&hist) {
         Some(p) => format!(
-            "<p class=\"muted\" style=\"font-size:11px\"><b>Market shape as of {as_of}:</b> the Kalshi ladder is re-priced at Normal(μ {:+.1} °C, σ × {:.2}) — b, k fitted by cell Brier over the {} most recent resolved complete ladders (cap {}; {} complete Kalshi ladders captured in all). b &gt; 0 says the market runs cold against the NWS CLI settlement; k &lt; 1 says its tails are over-priced. This is exactly the fit the pilot trades tomorrow.</p>",
+            "<p class=\"muted\" style=\"font-size:11px\"><b>Market shape as of {as_of}:</b> the Kalshi ladder is re-priced at Normal(μ {:+.1} °C, σ × {:.2}) — b, k fitted by cell Brier over the {} most recent resolved complete ladders (cap {}; {} complete Kalshi ladders captured in all). b &gt; 0 indicates a cold market bias against recorded venue outcomes; k &lt; 1 narrows the fitted tails. This research fit does not authorize pilot entries; admission and risk guards apply separately.</p>",
             p.bias_c, p.sigma_scale, hist.len(), HIST_CAP, complete
         ),
         None => format!(
@@ -1101,10 +1105,100 @@ fn load_captures(path: &PathBuf) -> Vec<Capture> {
 
 // ── HTML ─────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, serde::Deserialize)]
+struct PilotModeReadout {
+    settled: usize,
+    wins: usize,
+    fees: f64,
+    net: Option<f64>,
+    open: usize,
+    unfilled: usize,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PilotReadout {
+    schema_version: u32,
+    strategy: String,
+    latest_capture: String,
+    gate_passed: bool,
+    unverified_live_orders: usize,
+    paper: PilotModeReadout,
+    live: PilotModeReadout,
+}
+
+/// Reuse the frozen accounting implementation without depending on the working
+/// directory for Python imports. Missing evidence never becomes zero profit.
+fn load_pilot_readout(ledger: &PathBuf, captures: &PathBuf) -> Result<PilotReadout, String> {
+    let output = std::process::Command::new("python3")
+        .arg("-c")
+        .arg("import sys, types\ngate = types.ModuleType('go_live_gate')\nexec(compile(sys.argv.pop(1), 'go_live_gate.py', 'exec'), gate.__dict__)\nsys.modules['go_live_gate'] = gate\nexec(compile(sys.argv.pop(1), 'pilot_dashboard.py', 'exec'))")
+        .arg(include_str!("../../scripts/go_live_gate.py"))
+        .arg(include_str!("../../scripts/pilot_dashboard.py"))
+        .arg("--ledger")
+        .arg(ledger)
+        .arg("--captures")
+        .arg(captures)
+        .output()
+        .map_err(|e| format!("cannot run Python accounting: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let result: PilotReadout = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("invalid accounting readout: {e}"))?;
+    if result.schema_version != 1 || result.strategy != "market-shape" {
+        return Err("unsupported pilot accounting schema or strategy".into());
+    }
+    Ok(result)
+}
+
+fn render_pilot(readout: &Result<PilotReadout, String>) -> String {
+    let mut s = String::from("<section class=\"panel\" aria-labelledby=\"pilot-title\"><h2 id=\"pilot-title\">Original Kalshi pilot — recorded ledger</h2>");
+    let Ok(r) = readout else {
+        s.push_str("<p class=\"miss\">Pilot accounting unavailable.</p><p>Ledger or capture evidence could not be read and verified. No pilot profit or admission result is shown. The hypothetical replays below cannot substitute for this readout.</p></section>");
+        return s;
+    };
+    s.push_str(&format!("<p>Capture data through <b>{}</b>. Paper intentions use recorded entry prices and modeled fees; they do not establish actual fills or account returns.</p><div class=\"cards\">", esc(&r.latest_capture)));
+    s.push_str(&card(
+        "Cumulative paper P&L",
+        &r.paper
+            .net
+            .map(usd_signed)
+            .unwrap_or_else(|| "Unavailable".into()),
+        &if r.paper.settled == 0 {
+            "No settled paper orders recorded".into()
+        } else {
+            format!("after ${:.2} modeled fees", r.paper.fees)
+        },
+    ));
+    s.push_str(&card(
+        "Settled paper orders",
+        &r.paper.settled.to_string(),
+        &format!("{} wins · market-shape strategy", r.paper.wins),
+    ));
+    s.push_str(&card(
+        "Open paper intentions",
+        &r.paper.open.to_string(),
+        "excluded from settled P&L",
+    ));
+    s.push_str(&card(
+        "Admission gate",
+        if r.gate_passed { "PASS" } else { "NO-GO" },
+        "gate result only; live setting and risk guards also apply",
+    ));
+    s.push_str("</div>");
+    match r.live.net {
+        Some(net) => s.push_str(&format!("<p>Reconciled live ledger: {} across {} settled orders, after ${:.2} modeled fees. This is a ledger estimate, not an account balance.</p>", usd_signed(net), r.live.settled, r.live.fees)),
+        None => s.push_str("<p>No reconciled settled live fills recorded in this ledger.</p>"),
+    }
+    s.push_str(&format!("<p class=\"muted\">Market-shape live ledger: {} unresolved orders; {} confirmed unfilled. Across all ledger strategies, {} live orders await verified fill or expiry evidence. Separate challenger selections are excluded from this pilot readout.</p></section>", r.live.open, r.live.unfilled, r.unverified_live_orders));
+    s
+}
+
 fn render_dashboard(
     evals: &[MarketEvaluation],
     captures: &[Capture],
     sp: &StrategyParams,
+    pilot: &Result<PilotReadout, String>,
 ) -> String {
     let all: Vec<&MarketEvaluation> = evals.iter().collect();
     let total = all.len();
@@ -1119,6 +1213,7 @@ fn render_dashboard(
 
     let mut s = String::new();
     s.push_str(HEAD);
+    s.push_str(&render_pilot(pilot));
 
     // summary cards
     s.push_str("<div class=\"cards\">");
@@ -1273,7 +1368,7 @@ fn render_dashboard(
 /// yet, it still shows the open book — the positions (and Kelly stakes) the strategy would take today.
 fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
     let mut s = String::new();
-    s.push_str("<div class=\"panel\"><h2>Forward trading strategy (real entry prices)</h2>");
+    s.push_str("<div class=\"panel\"><h2>Hypothetical strategy replay — captured prices</h2><p>Research simulation with hypothetical sizing. These results are separate from the recorded pilot ledger above and do not establish fills or actual profit.</p>");
     let filters = {
         let mut f = Vec::new();
         if let Some(cap) = sp.max_edge {
@@ -1319,13 +1414,18 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
         }
     };
     s.push_str(&format!(
-        "<p class=\"muted\">Rule: trade when the edge at the EXECUTABLE price (BUY fills at the ask, SELL at the bid; last trade only when no book was captured) ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of bankroll), compound a ${:.0} bankroll. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code> / <code>--sell-only</code> / <code>--raw-edge</code>.</p>",
+        "<p class=\"muted\">Replay rule: select when estimated edge at the captured price (BUY uses the ask, SELL the bid; last trade only when no book was captured) ≥ {:.0}%, size at {:.2}× Kelly (cap {:.0}% of simulated bankroll), compound a hypothetical ${:.0} bankroll. Quote availability does not guarantee execution. Filters: {}. Override with <code>--edge-threshold</code> / <code>--kelly-fraction</code> / <code>--bankroll</code> / <code>--max-edge</code> / <code>--no-sell-buckets</code> / <code>--sell-only</code> / <code>--raw-edge</code>.</p>",
         sp.edge_threshold * 100.0,
         sp.kelly_fraction,
         sp.max_position_pct * 100.0,
         sp.bankroll,
         esc(&filters),
     ));
+    s.push_str(if sp.kalshi_fees {
+        "<p class=\"muted\">Headline replay includes modeled Kalshi fees; it does not model all venue costs or slippage.</p>"
+    } else {
+        "<p class=\"muted\">Headline replay excludes trading fees and slippage. Fee treatment of comparison rows is stated separately.</p>"
+    });
     s.push_str("<p class=\"muted\" style=\"font-size:11px\">Day-of (lead 0) trades are skipped by default: out-of-sample the market's intraday information beats the daemon's morning snapshot there decisively (Brier 0.050 vs 0.071). At lead ≥ 1 the model and market are at Brier parity in the ≥ 10¢ book — the tradeable edge is λ-shrunk selection within healthy segments, not global sharpness. <code>--trade-day-of</code> re-enables.</p>");
 
     if captures.is_empty() {
@@ -1350,12 +1450,12 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             &format!("{resolved} resolved · {} pending", captured - resolved),
         ),
         card(
-            "Settled trades",
+            "Settled replay selections",
             &a.n.to_string(),
             "cleared the edge filter"
         ),
         card(
-            "Cumulative PnL",
+            "Simulated cumulative P&L",
             &usd_signed(a.pnl),
             &format!("{:+.1}% on capital risked", a.roi() * 100.0),
         ),
@@ -1375,7 +1475,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
             ),
         ),
         card(
-            "Bankroll",
+            "Simulated bankroll",
             &format!("${:.0}", final_bankroll),
             &format!("{growth:+.1}% from ${:.0}", sp.bankroll),
         ),
@@ -1778,7 +1878,7 @@ fn render_strategy(captures: &[Capture], sp: &StrategyParams) -> String {
                 default_fwd,
             ));
         }
-        s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">The first five columns are ALL-TIME (every settled capture since late June) and therefore diluted by history — a config doing badly lately keeps a good headline for a while. The last three are the promotion-decision view: each row's record on trades whose target date is strictly AFTER the date the row was frozen into the tracker (so its rule cannot have been tuned on them), beside the default replayed on the identical window. A candidate earns promotion by leading its own forward column, not the all-time one; all-time leads are in-sample for any rule chosen by inspecting this same sample. The shrunk-edge rows are additionally walk-forward in λ (each date trades on a λ fitted only from earlier resolutions).</p>");
+        s.push_str("</tbody></table><p class=\"muted\" style=\"font-size:11px\">The first five columns are ALL-TIME (every settled capture since late June) and therefore diluted by history — a config doing badly lately keeps a good headline for a while. The last three show each frozen comparison window: each row's record on trades whose target date is strictly AFTER the date the row was frozen into the tracker (so its rule cannot have been tuned on them), beside the default replayed on the identical window. Leading a comparison column does not establish alpha or authorize promotion; all-time leads are in-sample for any rule chosen by inspecting this same sample. The shrunk-edge rows are additionally walk-forward in λ (each date trades on a λ fitted only from earlier resolutions).</p>");
         s.push_str(&market_shape_readout(captures));
 
         // Edge-shrinkage diagnostics: how much of its claimed edge does the model actually realize,
@@ -2397,7 +2497,7 @@ code{background:#1c222d;padding:1px 6px;border-radius:4px;font-size:12px}
 a{color:#5b8def}
 </style></head><body><div class="wrap">
 <h1>Weather Market Dashboard</h1>
-<p class="tag">Calibrated daily-high model vs real resolved Polymarket weather markets</p>"#;
+<p class="tag">Recorded pilot results and hypothetical weather-market replays</p>"#;
 
 const FOOT: &str = r#"<p class="muted" style="margin-top:32px">Generated by <code>weather_dashboard</code> · model = posterior-predictive daily-high (degC), bucket-priced round-half-up.</p>
 </div></body></html>"#;
@@ -2408,6 +2508,7 @@ struct Args {
     output: PathBuf,
     cache_dir: PathBuf,
     captures: PathBuf,
+    ledger: PathBuf,
     lookback_days: i64,
     refresh: bool,
     forecast: bool,
@@ -2473,6 +2574,10 @@ impl Args {
                 .get("--captures")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data/captures.jsonl")),
+            ledger: map
+                .get("--ledger")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data/pilot_trades.jsonl")),
             lookback_days: map
                 .get("--lookback-days")
                 .and_then(|v| v.parse().ok())
@@ -2542,6 +2647,7 @@ impl Args {
 
 fn usage() -> String {
     "usage: cargo run --bin weather_dashboard -- [--markets <path.csv>] [--output dashboard.html] \
+     [--captures data/captures.jsonl] [--ledger data/pilot_trades.jsonl] \
      [--cache-dir data/weather_cache] [--lookback-days 45] [--refresh] \
      [--forecast] [--forecast-cache-dir data/forecast_cache] \
      [--edge-threshold 0.10] [--kelly-fraction 0.25] [--max-position-pct 0.10] [--bankroll 100000] \
@@ -2554,6 +2660,42 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pilot_unavailable_does_not_imply_zero_profit_or_admission() {
+        let html = render_pilot(&Err("missing ledger".into()));
+        assert!(html.contains("Pilot accounting unavailable"));
+        assert!(!html.contains("$0.00"));
+        assert!(!html.contains("PASS"));
+    }
+
+    #[test]
+    fn embedded_pilot_accounting_uses_requested_inputs_and_rejects_bad_evidence() {
+        let dir = std::env::temp_dir().join(format!(
+            "weather-dashboard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let ledger = dir.join("ledger.jsonl");
+        let captures = dir.join("captures.jsonl");
+        std::fs::write(&ledger, "").unwrap();
+        std::fs::write(&captures, "{\"source\":\"kalshi\",\"captured_at\":\"2026-10-11\",\"target_date\":\"2026-10-12\",\"market_id\":\"TEST\",\"outcome\":null}\n").unwrap();
+        let result = load_pilot_readout(&ledger, &captures).unwrap();
+        assert_eq!(result.latest_capture, "2026-10-11");
+        assert_eq!(result.paper.settled, 0);
+        assert_eq!(result.paper.net, None);
+        assert_eq!(result.live.net, None);
+        assert!(!result.gate_passed);
+        std::fs::write(&captures, "invalid JSON\n").unwrap();
+        assert!(load_pilot_readout(&ledger, &captures).is_err());
+        std::fs::remove_file(&ledger).unwrap();
+        assert!(load_pilot_readout(&ledger, &captures).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn cap(date: &str, city: &str, price: f64, est: Option<f64>, outcome: Option<f64>) -> Capture {
         let target: NaiveDate = date.parse().unwrap();
