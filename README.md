@@ -15,6 +15,12 @@ during the recent loss period. Older dashboard profits included phantom fills; l
 also reflect a disappearing market-temperature bias. See the
 [recovery analysis](reports/2026-10-01-strategy-recovery.md) for the evidence and replacements.
 
+The dashboard leads with recorded pilot accounting, separating paper intentions from reconciled
+live fills. Its hypothetical replay panels use separate labels and disclose fee assumptions.
+The readout reuses the unchanged admission accounting through `scripts/pilot_dashboard.py`;
+Python 3 is required. Missing or invalid evidence displays “unavailable,” not zero profit.
+Custom dashboard inputs use `--ledger` together with `--captures`.
+
 The pilot now also stops new entries when realized drawdown exceeds `--max-drawdown 50`.
 This uses the full strategy/mode history, so losses cannot disappear by aging out of a weekly
 window. [PR #55](https://github.com/Ali-Haroon3/Polymarket-Weather-Predictor/pull/55) deployed

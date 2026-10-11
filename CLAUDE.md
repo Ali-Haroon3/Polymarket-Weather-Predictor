@@ -39,6 +39,12 @@ have two settlements (one win, one loss), −$2.44 net including modeled fees, a
 with $118.75 fee-inclusive paper cost. Full-sample net, ROI, bootstrap and drawdown remain null.
 Keep this evidence separate from the original pilot and the source-availability experiment.
 
+The dashboard's first panel uses `scripts/pilot_dashboard.py`, embedding that read-only wrapper
+and the unchanged `go_live_gate.py` in the Rust binary. It partitions settled paper and reconciled
+live results, excludes unreconciled live intentions from profit, and shows unavailable for missing
+or invalid evidence. Python 3 is required. Replay cards are hypothetical and cannot substitute
+for the ledger panel. Do not change frozen gate bytes when editing this presentation.
+
 New capture resolutions retain `outcome_observed_at` as receipt time, not exchange settlement time.
 Legacy resolved rows remain missing. Challenger training requires an observed receipt date earlier
 than the decision date, or explicitly labeled target-plus-two-day approximation on legacy rows.
