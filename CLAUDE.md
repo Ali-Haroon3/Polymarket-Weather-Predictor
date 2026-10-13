@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Favorite-longshot study (October 12)
+
+Read `reports/2026-10-12-favorite-longshot-study.md`. Kalshi weather YES contracts priced under 50¢
+are overpriced for takers, and favorites at or above 50¢ are underpriced. This is consistent with
+Bürgi, Deng & Whelan (CEPR DP20631). The pilot's whole YES loss sits under 50¢: −$170.51 on 52
+orders, against +$6.22 on 7 at or above 50¢.
+
+The parameter-free rule "buy YES at ask ≥ 0.50, $15 including fee" made +10.3% on 235 in-sample
+orders. On a preregistered pre-July-5 holdout of 49,912 markets priced from the public trade tape,
+it made **+6.95% on 509 orders over 256 days**, +4.5% with every entry 1¢ worse. That verdict is
+CONSISTENT, not CONFIRMED: the day-bootstrap interval is −2.6% to +16.5%. The tape proxy read
++14.6% where captured quotes read +10.3% over the same period, so the holdout may be about 4
+points high.
+
+A second preregistered replication ran on 85 untouched Kalshi daily high/low series: 37,654
+markets. It is **CONFIRMED** at **+10.0% on 741 orders**, +7.5% under 1¢ stress, with a
+day-bootstrap 95% interval of +1.3% to +18.7%.
+
+A frozen forward paper test covers capture dates October 13–December 11 and is scored once by
+December 22. Do not move the threshold, add filters or slice cities to rescue it.
+
+Resting longshot offers earn about $0 on the trade tape, because adverse selection eats the
+spread. Every challenger family lost on October 2–11 captures.
+
+Correction: the `--max-drawdown` guard is a de facto permanent latch. With zero open orders,
+nothing can settle to shrink the $167.87 drawdown, so the market-shape sample stays at 84/100
+until a human clears it. Statements below that call it "not a permanent latch" are inaccurate.
+
 ## Recovery implementation (deployed October 7; historical study dated October 1)
 
 Read `reports/2026-10-01-strategy-recovery.md` before relying on older performance descriptions
