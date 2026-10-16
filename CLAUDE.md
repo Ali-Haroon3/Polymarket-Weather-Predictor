@@ -18,7 +18,8 @@ points high.
 
 A second preregistered replication ran on 85 untouched Kalshi daily high/low series: 37,654
 markets. It is **CONFIRMED** at **+10.0% on 741 orders**, +7.5% under 1¢ stress, with a
-day-bootstrap 95% interval of +1.3% to +18.7%.
+day-bootstrap 95% interval of +1.3% to +18.7%. The October 16 re-pull with block trades excluded
+(`reports/2026-10-16-favorite-longshot-blockfix.md`) gave identical trades, orders and P&L for both tests.
 
 A frozen forward paper test covers capture dates October 13–December 11 and is scored once by
 December 22. Do not move the threshold, add filters or slice cities to rescue it.
@@ -28,7 +29,7 @@ spread. Every challenger family lost on October 2–11 captures.
 
 Correction: the `--max-drawdown` guard is a de facto permanent latch. With zero open orders,
 nothing can settle to shrink the $167.87 drawdown, so the market-shape sample stays at 84/100
-until a human clears it. Statements below that call it "not a permanent latch" are inaccurate.
+until a human clears it. The dated October 1 strategy-recovery report's "not a permanent latch" wording is inaccurate.
 
 ## Recovery implementation (deployed October 7; historical study dated October 1)
 
@@ -42,8 +43,9 @@ with modeled rounded fees, starts at $0 and stops new entries above its high-wat
 October 11 drawdown remains $167.87. PR #55 merged at `7b1096f` on October 7, 18:18:23 UTC.
 All four October 8–11 primary hosted runs verified stand-down, with no new pilot entries or
 P&L changes. See `reports/2026-10-11-forward-update.md`. Missing captures block new orders when
-historical orders require drawdown reconstruction. Passage of time cannot reset it; outstanding settlements can recover
-the curve, so this is not a permanent latch. Existing weekly/admission controls remain active.
+historical orders require drawdown reconstruction. Passage of time cannot reset it. Outstanding settlements can
+recover the curve only while orders are open. With zero open orders, the state since October 2, it is a de facto
+latch until a human clears it. Existing weekly/admission controls remain active.
 
 `scripts/weather_challenger.py` implements five fixed paper research families under one conservative
 selector. Historical dates are previously inspected development data, not a new holdout. Scale-only

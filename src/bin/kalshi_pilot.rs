@@ -34,8 +34,9 @@
 //! losses — a rail that can stand a strategy down for trades it never made measures nothing.
 //! The additional `--max-drawdown` breaker (default $50) compares cumulative realized net
 //! after modeled fees with its target-day high-water mark, separately per strategy and mode.
-//! Time alone cannot clear it. Later settlements can recover the current drawdown; it is not
-//! a permanently latched pause. Reconciliation still precedes all new-order breakers.
+//! Time alone cannot clear it. Settlements of orders still open can recover the drawdown, but
+//! once it trips with nothing open no settlement can arrive, so in practice it latches until a
+//! human clears it. Reconciliation still precedes all new-order breakers.
 //! Correlated exposure is capped per (city, target day) via
 //! `--max-city-exposure` — N bucket markets on one city-day are one weather bet, not N
 //! independent bets.

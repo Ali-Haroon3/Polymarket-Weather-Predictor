@@ -146,7 +146,8 @@ def _tape(row):
     for path in ("markets/trades", "historical/trades"):  # recent markets, then archived ones
         trades, cursor = [], None
         while True:
-            params = dict(ticker=row["market_id"], limit=1000, min_ts=min_ts, **({"cursor": cursor} if cursor else {}))
+            params = dict(ticker=row["market_id"], limit=1000, min_ts=min_ts, is_block_trade="false",
+                          **({"cursor": cursor} if cursor else {}))
             page = _get(path, params)
             trades += page.get("trades", [])
             cursor = page.get("cursor")
@@ -192,7 +193,7 @@ def _window(market):
     for path in paths:  # archived markets live under /historical; recent ones under /markets
         trades, cursor = [], None
         while True:
-            page = _get(path, dict(ticker=market["ticker"], limit=1000, min_ts=t - 6 * 3600,
+            page = _get(path, dict(ticker=market["ticker"], limit=1000, min_ts=t - 6 * 3600, is_block_trade="false",
                                    max_ts=t + 2 * 3600, **({"cursor": cursor} if cursor else {})))
             trades += page.get("trades", [])
             cursor = page.get("cursor")
@@ -264,6 +265,9 @@ def holdout_trades(tape_path):
     for line in open(tape_path):
         m = json.loads(line)
         t = decision_ts(m["target"])
+        # Equal timestamps are one taker order sweeping several levels; the API lists them in no fixed
+        # order (Oct 15 check: 10,469 ascending, 10,288 descending, 13,192 mixed groups). A YES taker
+        # fills the cheapest ask first, so (time, price) is execution order.
         yes = sorted((dt.datetime.fromisoformat(x["ts"].replace("Z", "+00:00")).timestamp(), x["yes"])
                      for x in m["trades"] if x["side"] == "yes")
         before = [p for ts, p in yes if t - 6 * 3600 <= ts < t]
@@ -295,6 +299,8 @@ def maker_sim(rows, tape_path, post_hour=15.5, stake=15.0):
             continue
         b, a = r["best_bid"], r["best_ask"]
         t0 = dt.datetime.fromisoformat(r["captured_at"][:10] + "T00:00:00+00:00") + dt.timedelta(hours=post_hour)
+        if len(r["captured_at"]) > 10:  # never rest an order before the quote it is based on existed
+            t0 = max(t0, dt.datetime.fromisoformat(r["captured_at"].replace("Z", "+00:00")))
         trades = sorted(((dt.datetime.fromisoformat(t["ts"].replace("Z", "+00:00")), t) for t in tape["trades"]),
                         key=lambda pair: pair[0])
         for side in ("sell_yes", "buy_yes"):
