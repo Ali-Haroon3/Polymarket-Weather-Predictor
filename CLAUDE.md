@@ -24,6 +24,14 @@ day-bootstrap 95% interval of +1.3% to +18.7%. The October 16 re-pull with block
 A frozen forward paper test covers capture dates October 13–December 11 and is scored once by
 December 22. Do not move the threshold, add filters or slice cities to rescue it.
 
+Since October 20 the pilot has `--strategy favorite`, which is the same rule run as orders:
+lead-1 only, YES at ask 0.50–0.99, no fitted parameters. Its drawdown and weekly-loss breakers
+are scoped to that strategy, and the model's λ floor does not apply. The daily workflow runs it
+DRY in its own step, with no credentials, to build the go-live gate's paper sample. Live admission
+fails closed: the frozen `go_live_gate.py` has no structural entry for `favorite`, and its bytes
+are hash-pinned by the scale-only registration until December 22. Extending the gate is a
+deliberate post-December-22 change, and never a reason to edit the frozen file early.
+
 Resting longshot offers earn about $0 on the trade tape, because adverse selection eats the
 spread. Every challenger family lost on October 2–11 captures.
 

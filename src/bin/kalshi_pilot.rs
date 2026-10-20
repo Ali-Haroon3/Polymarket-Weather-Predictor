@@ -112,6 +112,14 @@
 //! at least `TRAILING_MIN_TRADES` trades — "has the edge stopped realizing lately", the same
 //! question the λ floor asked of the model. The go-live gate scores each strategy's orders as
 //! its own sample (`scripts/go_live_gate.py --strategy`).
+//!
+//! **`--strategy favorite` (paper since 2026-10-20) is the favorite-longshot rule from
+//! `reports/2026-10-12-favorite-longshot-study.md`:** buy YES at the ask on every lead-1 market
+//! whose ask is in [0.50, 0.99). It has no fitted parameter, model or forecast. Its breakers are
+//! its own strategy-scoped drawdown and weekly-loss checks; the model's λ floor does not apply.
+//! It cannot go live yet: the frozen `go_live_gate.py` (hash-pinned by the scale-only challenger
+//! registration until 2026-12-22) has no structural entry for it, so `--live` admission fails
+//! closed. The daily workflow runs it dry to build the gate's 100-order paper sample.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -144,6 +152,12 @@ const DEFAULT_MAX_EXPOSURE: f64 = 200.0;
 const DEFAULT_STAKE: f64 = 15.0;
 /// Max new orders per run — a runaway-model backstop on top of the exposure cap.
 const DEFAULT_MAX_ORDERS: usize = 5;
+/// The favorite rule has no ranking signal, and its forward test takes every qualifying market
+/// (about 5 a day, 7 at most so far), so its per-run cap sits above that.
+const FAVORITE_MAX_ORDERS: usize = 20;
+/// The favorite rule's YES-ask band, identical to `scripts/favorite_longshot_study.py`.
+const FAVORITE_MIN_ASK: f64 = 0.50;
+const FAVORITE_MAX_ASK: f64 = 0.99;
 /// Shrunk edge must exceed threshold + fee + this buffer before an order is placed.
 const DEFAULT_FEE_BUFFER: f64 = 0.01;
 /// Stand down when the fitted λ of the TRADED segment (px ≥ 0.10) drops below this: at λ < 0.2
@@ -285,6 +299,7 @@ fn default_source() -> String {
 enum Strategy {
     MarketShape,
     ModelShrunk,
+    Favorite,
 }
 
 impl Strategy {
@@ -292,6 +307,7 @@ impl Strategy {
         match self {
             Strategy::MarketShape => "market-shape",
             Strategy::ModelShrunk => "model-shrunk",
+            Strategy::Favorite => "favorite",
         }
     }
 }
@@ -341,8 +357,9 @@ fn parse_args() -> PilotConfig {
     let strategy = match val("--strategy").as_deref() {
         None | Some("market-shape") => Strategy::MarketShape,
         Some("model-shrunk") => Strategy::ModelShrunk,
+        Some("favorite") => Strategy::Favorite,
         Some(other) => {
-            eprintln!("unknown --strategy '{other}' (market-shape | model-shrunk)");
+            eprintln!("unknown --strategy '{other}' (market-shape | model-shrunk | favorite)");
             std::process::exit(2);
         }
     };
@@ -358,7 +375,10 @@ fn parse_args() -> PilotConfig {
         max_exposure: fval("--max-exposure", DEFAULT_MAX_EXPOSURE),
         max_orders: val("--max-orders")
             .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_MAX_ORDERS),
+            .unwrap_or(match strategy {
+                Strategy::Favorite => FAVORITE_MAX_ORDERS,
+                _ => DEFAULT_MAX_ORDERS,
+            }),
         // 0.10 since 2026-08-17, matching the dashboard's promoted default: with shrunk edges a
         // 10% floor led its forward A/B window at both checkpoints (+32.7% vs +15.0%, n=77, at
         // promotion). The old source, config::backtest_params().edge_threshold (0.05), still
@@ -370,6 +390,7 @@ fn parse_args() -> PilotConfig {
             match strategy {
                 Strategy::MarketShape => DEFAULT_EDGE_THRESHOLD,
                 Strategy::ModelShrunk => 0.10,
+                Strategy::Favorite => 0.0, // unused: the favorite rule has no edge estimate
             },
         ),
         fee_buffer: fval("--fee-buffer", DEFAULT_FEE_BUFFER),
@@ -538,21 +559,27 @@ async fn run() -> Result<(), String> {
             cfg.strategy.as_str(),
         );
     }
-    let reason = drawdown_stand_down_reason(&drawdown, cfg.max_drawdown).or_else(|| match &shape {
-        Some(sr) => shape_stand_down_reason(
-            sr,
-            cfg.min_trailing_roi,
-            week_pnl,
-            week_settled,
-            cfg.max_weekly_loss,
-        ),
-        None => stand_down_reason(
-            lambda_traded,
-            cfg.lambda_floor,
-            week_pnl,
-            week_settled,
-            cfg.max_weekly_loss,
-        ),
+    let reason = drawdown_stand_down_reason(&drawdown, cfg.max_drawdown).or_else(|| {
+        match (cfg.strategy, &shape) {
+            (Strategy::MarketShape, Some(sr)) => shape_stand_down_reason(
+                sr,
+                cfg.min_trailing_roi,
+                week_pnl,
+                week_settled,
+                cfg.max_weekly_loss,
+            ),
+            // The model's λ floor says nothing about a rule that never consults the model.
+            (Strategy::Favorite, _) => {
+                weekly_loss_reason(week_pnl, week_settled, cfg.max_weekly_loss)
+            }
+            _ => stand_down_reason(
+                lambda_traded,
+                cfg.lambda_floor,
+                week_pnl,
+                week_settled,
+                cfg.max_weekly_loss,
+            ),
+        }
     });
     if let Some(reason) = reason {
         eprintln!(
@@ -693,6 +720,12 @@ async fn run() -> Result<(), String> {
                 };
                 (None, shape_est, 1.0, d)
             }
+            Strategy::Favorite => (
+                None,
+                None,
+                1.0,
+                decide_favorite(today, r.target_date, r.best_ask),
+            ),
         };
         decided.push((r, d, est, shape_est, candidate_lambda));
     }
@@ -726,7 +759,7 @@ async fn run() -> Result<(), String> {
                         let seg_lambda = fit.lambda_seg("kalshi", lambda_segment(yes_price));
                         (seg_lambda < cfg.lambda_floor).then_some("skip_segment_lambda_floor")
                     }),
-                Strategy::MarketShape => None,
+                Strategy::MarketShape | Strategy::Favorite => None,
             };
             if let Some(reason) = model_guard {
                 row.decision = reason.into();
@@ -916,6 +949,27 @@ enum LadderProb {
     Incomplete,
     /// The cell's re-shaped probability.
     Prob(f64),
+}
+
+/// The favorite-longshot rule for one market: buy YES at the ask on a lead-1 market whose ask is
+/// in [FAVORITE_MIN_ASK, FAVORITE_MAX_ASK). No edge is estimated; the ledger's edge fields stay empty.
+fn decide_favorite(today: NaiveDate, target: NaiveDate, yes_ask: Option<f64>) -> Decision {
+    if (target - today).num_days() != 1 {
+        return Decision::Skip("skip_not_lead1"); // the rule was tested on lead-1 quotes only
+    }
+    let Some(ask) = yes_ask.filter(|a| *a > 0.0 && *a < 1.0) else {
+        return Decision::Skip("skip_no_ask");
+    };
+    if !(FAVORITE_MIN_ASK..FAVORITE_MAX_ASK).contains(&ask) {
+        return Decision::Skip("skip_not_favorite");
+    }
+    Decision::Order {
+        side: OrderSide::Yes,
+        price: ask,
+        yes_price: ask,
+        claimed: 0.0,
+        shrunk: 0.0,
+    }
 }
 
 /// The market-shape strategy's decision for one market: its ladder's re-shaped probability
@@ -1156,13 +1210,7 @@ fn shape_stand_down_reason(
             min_trailing_roi * 100.0
         ));
     }
-    if week_settled > 0 && week_pnl < -max_weekly_loss {
-        return Some(format!(
-            "trailing-7-day realized PnL ${week_pnl:+.2} breaches the −${max_weekly_loss:.2} \
-             weekly loss breaker"
-        ));
-    }
-    None
+    weekly_loss_reason(week_pnl, week_settled, max_weekly_loss)
 }
 
 /// The same observations keyed two ways. One pass, two `ShrinkageFit`s: identical venue folds,
@@ -1316,13 +1364,16 @@ fn stand_down_reason(
              realizes too little of its claimed edge to be worth trading"
         ));
     }
-    if week_settled > 0 && week_pnl < -max_weekly_loss {
-        return Some(format!(
+    weekly_loss_reason(week_pnl, week_settled, max_weekly_loss)
+}
+
+fn weekly_loss_reason(week_pnl: f64, week_settled: usize, max_weekly_loss: f64) -> Option<String> {
+    (week_settled > 0 && week_pnl < -max_weekly_loss).then(|| {
+        format!(
             "trailing-7-day realized PnL ${week_pnl:+.2} breaches the −${max_weekly_loss:.2} \
              weekly loss breaker"
-        ));
-    }
-    None
+        )
+    })
 }
 
 /// Unix-seconds expiry for a live order placed at `now`: `ttl_mins` ≤ 0 means good-till-
@@ -1900,6 +1951,10 @@ fn ledger_row(
             Some(*claimed),
             Some(*shrunk),
         ),
+    };
+    let (claimed, shrunk) = match strategy {
+        Strategy::Favorite => (None, None), // no edge is estimated; don't log a fake 0
+        _ => (claimed, shrunk),
     };
     LedgerRow {
         run_at: Utc::now(),
@@ -3022,6 +3077,37 @@ mod tests {
         let exp = open_city_exposure(&ledger, today, true);
         let nyc = exp[&("NYC".to_string(), d("2026-09-10"))];
         assert!((nyc - 10.0).abs() < 1e-9, "got {nyc}");
+    }
+
+    #[test]
+    fn favorite_buys_yes_at_ask_in_band_on_lead1_only() {
+        let (today, lead1, lead0) = (d("2026-10-20"), d("2026-10-21"), d("2026-10-20"));
+        match decide_favorite(today, lead1, Some(0.50)) {
+            Decision::Order { side, price, .. } => {
+                assert_eq!(side, OrderSide::Yes);
+                assert!((price - 0.50).abs() < 1e-9);
+            }
+            other => panic!("expected a YES order at the 50c boundary, got {other:?}"),
+        }
+        assert_eq!(
+            decide_favorite(today, lead1, Some(0.49)),
+            Decision::Skip("skip_not_favorite")
+        );
+        assert_eq!(
+            decide_favorite(today, lead1, Some(0.99)),
+            Decision::Skip("skip_not_favorite")
+        );
+        assert_eq!(
+            decide_favorite(today, lead1, None),
+            Decision::Skip("skip_no_ask")
+        );
+        assert_eq!(
+            decide_favorite(today, lead0, Some(0.60)),
+            Decision::Skip("skip_not_lead1")
+        );
+        // The weekly breaker still applies to it; the model's λ floor does not exist for it.
+        assert!(weekly_loss_reason(-50.01, 3, 50.0).is_some());
+        assert!(weekly_loss_reason(-49.99, 3, 50.0).is_none());
     }
 
     #[test]
