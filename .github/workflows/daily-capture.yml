@@ -134,6 +134,17 @@ jobs:
             ./target/release/kalshi_pilot
           fi
 
+      - name: Kalshi pilot (favorite, paper only)
+        if: steps.guard.outputs.already != 'true'
+        # Paper sample for the favorite-longshot rule (reports/2026-10-12-favorite-longshot-study.md):
+        # buy YES at the ask on every lead-1 market asking 0.50-0.99. ALWAYS dry: no --live and no
+        # credentials, whatever PILOT_LIVE says. The frozen go-live gate does not know this strategy,
+        # so live admission fails closed until the gate is deliberately extended after 2026-12-22.
+        continue-on-error: true
+        env:
+          PILOT_DISABLE: ${{ vars.PILOT_DISABLE }}
+        run: ./target/release/kalshi_pilot --strategy favorite
+
       - name: Render dashboard
         if: steps.guard.outputs.already != 'true'
         run: ./target/release/weather_dashboard --output dashboard.html
