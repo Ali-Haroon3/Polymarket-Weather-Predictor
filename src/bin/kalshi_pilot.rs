@@ -117,9 +117,11 @@
 //! `reports/2026-10-12-favorite-longshot-study.md`:** buy YES at the ask on every lead-1 market
 //! whose ask is in [0.50, 0.99). It has no fitted parameter, model or forecast. Its breakers are
 //! its own strategy-scoped drawdown and weekly-loss checks; the model's λ floor does not apply.
-//! It cannot go live yet: the frozen `go_live_gate.py` (hash-pinned by the scale-only challenger
-//! registration until 2026-12-22) has no structural entry for it, so `--live` admission fails
-//! closed. The daily workflow runs it dry to build the gate's 100-order paper sample.
+//! It defaults to $5 orders and a $100 drawdown stop. Paper runs log its drawdown and weekly stops
+//! instead of obeying them (no money at risk; obeying froze the paper sample after four days).
+//! Live admission runs `scripts/favorite_gate.py`: the frozen `go_live_gate.py` imported unchanged
+//! (it is hash-pinned by the scale-only registration) plus favorite's structural entry, so
+//! `--live` places nothing until 100 favorite orders have settled with positive ROI after fees.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -155,6 +157,11 @@ const DEFAULT_MAX_ORDERS: usize = 5;
 /// The favorite rule has no ranking signal, and its forward test takes every qualifying market
 /// (about 5 a day, 7 at most so far), so its per-run cap sits above that.
 const FAVORITE_MAX_ORDERS: usize = 20;
+/// Favorite sizing: $5 orders with a $100 drawdown stop. At $15 orders the rule's worst
+/// drawdowns were $145 in-sample, $160 on the holdout and $297 on the replication, i.e. about
+/// $48-99 at $5, so $100 holds the historical worst instead of tripping on normal variance.
+const FAVORITE_STAKE: f64 = 5.0;
+const FAVORITE_MAX_DRAWDOWN: f64 = 100.0;
 /// The favorite rule's YES-ask band, identical to `scripts/favorite_longshot_study.py`.
 const FAVORITE_MIN_ASK: f64 = 0.50;
 const FAVORITE_MAX_ASK: f64 = 0.99;
@@ -353,7 +360,6 @@ fn parse_args() -> PilotConfig {
     let flag = |name: &str| args.iter().any(|a| a == name);
     let val = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
     let fval = |name: &str, d: f64| val(name).and_then(|v| v.parse().ok()).unwrap_or(d);
-    let stake = fval("--stake", DEFAULT_STAKE);
     let strategy = match val("--strategy").as_deref() {
         None | Some("market-shape") => Strategy::MarketShape,
         Some("model-shrunk") => Strategy::ModelShrunk,
@@ -363,6 +369,15 @@ fn parse_args() -> PilotConfig {
             std::process::exit(2);
         }
     };
+    let favorite = strategy == Strategy::Favorite;
+    let stake = fval(
+        "--stake",
+        if favorite {
+            FAVORITE_STAKE
+        } else {
+            DEFAULT_STAKE
+        },
+    );
     PilotConfig {
         live: flag("--live"),
         strategy,
@@ -396,7 +411,14 @@ fn parse_args() -> PilotConfig {
         fee_buffer: fval("--fee-buffer", DEFAULT_FEE_BUFFER),
         lambda_floor: fval("--lambda-floor", DEFAULT_LAMBDA_FLOOR),
         max_weekly_loss: fval("--max-weekly-loss", DEFAULT_MAX_WEEKLY_LOSS),
-        max_drawdown: fval("--max-drawdown", DEFAULT_MAX_DRAWDOWN),
+        max_drawdown: fval(
+            "--max-drawdown",
+            if favorite {
+                FAVORITE_MAX_DRAWDOWN
+            } else {
+                DEFAULT_MAX_DRAWDOWN
+            },
+        ),
         max_city_exposure: fval("--max-city-exposure", DEFAULT_CITY_EXPOSURE_STAKES * stake),
         order_ttl_mins: val("--order-ttl-mins")
             .and_then(|v| v.parse().ok())
@@ -417,9 +439,19 @@ fn enforce_go_live_gate(
     ledger_path: &std::path::Path,
     captures_path: &std::path::Path,
 ) -> Result<(), String> {
-    let status = std::process::Command::new("python3")
-        .arg("-c")
-        .arg(include_str!("../../scripts/go_live_gate.py"))
+    let mut cmd = std::process::Command::new("python3");
+    match strategy {
+        // go_live_gate.py is hash-pinned by the scale-only registration; favorite_gate.py imports
+        // it unchanged and only registers favorite's structural entry. Missing file fails closed.
+        Strategy::Favorite => cmd.arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/favorite_gate.py"
+        )),
+        _ => cmd
+            .arg("-c")
+            .arg(include_str!("../../scripts/go_live_gate.py")),
+    };
+    let status = cmd
         .arg("--enforce")
         .arg("--strategy")
         .arg(strategy.as_str())
@@ -582,11 +614,17 @@ async fn run() -> Result<(), String> {
         }
     });
     if let Some(reason) = reason {
-        eprintln!(
-            "STAND DOWN: {reason}. No new orders this run. Review the strategy and its \
-             risk limits before changing any breaker override."
-        );
-        return Ok(());
+        if !cfg.live && cfg.strategy == Strategy::Favorite {
+            // No money is at risk in paper, and stopping here would freeze the sample right after
+            // a losing streak, so the go-live gate could never see its 100 orders. Live obeys it.
+            println!("PAPER: a live run would stand down here ({reason}); paper keeps trading.");
+        } else {
+            eprintln!(
+                "STAND DOWN: {reason}. No new orders this run. Review the strategy and its \
+                 risk limits before changing any breaker override."
+            );
+            return Ok(());
+        }
     }
 
     let (balance, positions, resting) = match &trader {
@@ -2165,6 +2203,30 @@ mod tests {
         assert!(enforce_go_live_gate(Strategy::MarketShape, &ledger, &captures).is_ok());
         // Another strategy cannot inherit this sample; malformed input cannot bypass admission.
         assert!(enforce_go_live_gate(Strategy::ModelShrunk, &ledger, &captures).is_err());
+        assert!(enforce_go_live_gate(Strategy::Favorite, &ledger, &captures).is_err());
+
+        // Favorite runs its own wrapper gate over the same frozen rules: 100 settled YES wins pass.
+        let (fav_ledger, fav_captures) =
+            (dir.join("fav_ledger.jsonl"), dir.join("fav_captures.jsonl"));
+        let mut fav_rows = Vec::new();
+        let mut fav_outcomes = Vec::new();
+        for i in 0..100 {
+            let ticker = format!("FAV-{i}");
+            let mut row = order_row(&ticker, "NYC", "2026-10-21", 0.60, 10, true);
+            row.strategy = "favorite".into();
+            row.side = "yes".into();
+            row.price = Some(0.60);
+            row.no_price = None;
+            fav_rows.push(row);
+            fav_outcomes.push(serde_json::json!({
+                "market_id": ticker, "target_date": "2026-10-21", "source": "kalshi", "outcome": 1
+            }));
+        }
+        write_jsonl(&fav_ledger, &fav_rows[..99]);
+        write_jsonl(&fav_captures, &fav_outcomes);
+        assert!(enforce_go_live_gate(Strategy::Favorite, &fav_ledger, &fav_captures).is_err());
+        write_jsonl(&fav_ledger, &fav_rows);
+        assert!(enforce_go_live_gate(Strategy::Favorite, &fav_ledger, &fav_captures).is_ok());
         std::fs::write(&captures, "invalid JSON").unwrap();
         assert!(enforce_go_live_gate(Strategy::MarketShape, &ledger, &captures).is_err());
         std::fs::remove_dir_all(dir).unwrap();
