@@ -80,7 +80,9 @@ jobs:
         # Readout stays non-blocking for paper data collection. The pilot independently
         # enforces this same scorer before every --live run can place new orders.
         continue-on-error: true
-        run: python3 scripts/go_live_gate.py
+        run: |
+          python3 scripts/go_live_gate.py
+          python3 scripts/favorite_gate.py --strategy favorite
 
       - name: Prospective alpha attribution
         if: steps.guard.outputs.already != 'true'
@@ -134,16 +136,28 @@ jobs:
             ./target/release/kalshi_pilot
           fi
 
-      - name: Kalshi pilot (favorite, paper only)
+      - name: Kalshi pilot (favorite)
         if: steps.guard.outputs.already != 'true'
-        # Paper sample for the favorite-longshot rule (reports/2026-10-12-favorite-longshot-study.md):
-        # buy YES at the ask on every lead-1 market asking 0.50-0.99. ALWAYS dry: no --live and no
-        # credentials, whatever PILOT_LIVE says. The frozen go-live gate does not know this strategy,
-        # so live admission fails closed until the gate is deliberately extended after 2026-12-22.
+        # The favorite-longshot rule (reports/2026-10-12-favorite-longshot-study.md): buy YES at the
+        # ask on every lead-1 market asking 0.50-0.99, $5 orders, $100 drawdown stop. Dry unless the
+        # repository variable PILOT_LIVE_FAVORITE is 1 (separate from PILOT_LIVE, which arms the
+        # market-shape step). A live run first passes scripts/favorite_gate.py (100 settled favorite
+        # orders, ROI > 0 after fees, no city > 1/3 of losses, verified fills) or places nothing.
+        # Real money also needs the Kalshi secrets and KALSHI_BASE_URL pointed at production.
         continue-on-error: true
         env:
+          PILOT_LIVE_FAVORITE: ${{ vars.PILOT_LIVE_FAVORITE }}
           PILOT_DISABLE: ${{ vars.PILOT_DISABLE }}
-        run: ./target/release/kalshi_pilot --strategy favorite
+          KALSHI_BASE_URL: ${{ vars.KALSHI_BASE_URL }}
+          KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
+          KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+        run: |
+          if [ "$PILOT_LIVE_FAVORITE" = "1" ]; then
+            echo "::warning::PILOT_LIVE_FAVORITE=1 — placing REAL favorite limit orders against ${KALSHI_BASE_URL:-<code default: demo host>}"
+            ./target/release/kalshi_pilot --live --strategy favorite
+          else
+            ./target/release/kalshi_pilot --strategy favorite
+          fi
 
       - name: Render dashboard
         if: steps.guard.outputs.already != 'true'

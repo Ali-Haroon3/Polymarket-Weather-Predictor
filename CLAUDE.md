@@ -26,11 +26,21 @@ December 22. Do not move the threshold, add filters or slice cities to rescue it
 
 Since October 20 the pilot has `--strategy favorite`, which is the same rule run as orders:
 lead-1 only, YES at ask 0.50–0.99, no fitted parameters. Its drawdown and weekly-loss breakers
-are scoped to that strategy, and the model's λ floor does not apply. The daily workflow runs it
-DRY in its own step, with no credentials, to build the go-live gate's paper sample. Live admission
-fails closed: the frozen `go_live_gate.py` has no structural entry for `favorite`, and its bytes
-are hash-pinned by the scale-only registration until December 22. Extending the gate is a
-deliberate post-December-22 change, and never a reason to edit the frozen file early.
+are scoped to that strategy, and the model's λ floor does not apply.
+
+Since October 26 it defaults to $5 orders and a $100 drawdown stop. At $15 orders the rule's
+worst drawdowns were $145–297, so the old $50 stop could never hold normal variance. On October
+24 the paper pilot hit that $50 stop at −$70.84 after 39 settled orders on four losing days
+(October 20–23), and latched. Paper runs now log the favorite stops instead of obeying them, so
+the sample cannot freeze after a losing streak. Live runs obey them.
+
+Live admission goes through `scripts/favorite_gate.py`, which imports the frozen
+`go_live_gate.py` unchanged (its bytes stay hash-pinned by the scale-only registration) and only
+registers favorite's structural entry. It needs 100 settled favorite orders, ROI above 0 after
+fees, no city carrying more than a third of losses, and verified fills. The workflow's favorite
+step stays dry unless the repository variable `PILOT_LIVE_FAVORITE` is 1. Real money also needs
+the Kalshi secrets and `KALSHI_BASE_URL` pointed at production; arming those is the account
+owner's action. Never edit `go_live_gate.py` before the scale-only trial ends.
 
 Resting longshot offers earn about $0 on the trade tape, because adverse selection eats the
 spread. Every challenger family lost on October 2–11 captures.
