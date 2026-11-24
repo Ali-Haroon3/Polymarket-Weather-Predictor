@@ -1,180 +1,47 @@
-# Daily forward capture in the cloud — replaces the laptop launchd agent so data accrues even when
-# the machine is closed. Stays near the 15:00 UTC capture time used to fit the per-(city, lead)
-# sigma tables in src/stations.rs. Kalshi opens tomorrow's daily highs at 10:00 Eastern
-# (14:00 UTC in summer, 15:00 UTC in winter). Run after the latest opening with a buffer and
-# avoid the top-of-hour GitHub Actions rush. Capture and dashboard touch only anonymous APIs.
-# The kalshi_pilot step is the canonical driver in both modes: dry by default (ledger-only dedupe
-# without credentials, with paper decisions feeding the go-live gate), and live only when the
-# repository variable PILOT_LIVE is "1" AND the KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM
-# secrets are set. The trade host comes from the KALSHI_BASE_URL variable (unset ⇒ the code's
-# demo default), so real money needs two explicit settings in the GitHub UI: PILOT_LIVE=1 and
-# KALSHI_BASE_URL=https://api.elections.kalshi.com. Neither is a code change, and flipping
-# PILOT_LIVE back (or setting the PILOT_DISABLE variable to 1) stands the pilot down next morning.
 name: daily-capture
 
 on:
-  schedule:
-    # Primary, then a backup 17 minutes later. On 2026-08-26 GitHub delivered the schedule five
-    # times in twenty minutes and gave none of them a runner (two startup_failure, two failure,
-    # one cancelled) — that day captured nothing, and a capture gap is PERMANENT: Polymarket
-    # purges price history shortly after a market resolves, so a missed day can never be
-    # backfilled. The backup stands down when the day is already committed (see the guard step),
-    # so the normal cost is one cheap checkout. 15:27 is still inside the drift this workflow has
-    # always tolerated (the Jul 13 run fired at 16:01), so a rescued day is priced at essentially
-    # the geometry the sigma/bias tables were fitted at.
-    - cron: "10 15 * * *"
-    - cron: "27 15 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: daily-capture
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  capture:
+  verify-favorite:
+    name: Verify Favorite paper orders from main
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Stand down if today is already captured
-        id: guard
-        # Asks the DATA, not the workflow's own run history: a scheduled run is pinned to the SHA
-        # at trigger time, so fast-forward to the branch tip first — that also lands every later
-        # step on the newest main instead of racing the commit step against it. The primary run
-        # normally finds nothing here; the backup finds today's rows and skips the rest.
-        run: |
-          git fetch --quiet origin main
-          git reset --quiet --hard origin/main
-          today=$(date -u +%F)
-          if grep -q "\"captured_at\":\"$today\"" data/captures.jsonl; then
-            echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::captures for $today already committed — standing down"
-          else
-            echo "already=false" >> "$GITHUB_OUTPUT"
-            echo "no captures for $today yet — proceeding"
-          fi
-
-      - uses: Swatinem/rust-cache@v2
-        if: steps.guard.outputs.already != 'true'
-
-      - name: Build
-        if: steps.guard.outputs.already != 'true'
-        run: cargo build --release --bin capture_prices --bin weather_dashboard --bin kalshi_pilot
-
-      - name: Capture prices
-        if: steps.guard.outputs.already != 'true'
-        # Tolerate transient fetch failures (same contract as scripts/daily_capture.sh): the
-        # dashboard still re-renders from the last-good captures.jsonl.
-        continue-on-error: true
-        run: ./target/release/capture_prices
-
-      - name: Go-live gate readout
-        if: steps.guard.outputs.already != 'true'
-        # The decision rule (scripts/go_live_gate.py) scored on the ledger as of this morning,
-        # printed into every run's log so the verdict travels with the data it was read from.
-        # Readout stays non-blocking for paper data collection. The pilot independently
-        # enforces this same scorer before every --live run can place new orders.
-        continue-on-error: true
-        run: |
-          python3 scripts/go_live_gate.py
-          python3 scripts/favorite_gate.py --strategy favorite
-
-      - name: Prospective alpha attribution
-        if: steps.guard.outputs.already != 'true'
-        continue-on-error: true
-        run: python3 scripts/pilot_alpha_audit.py
-
-      - name: Recovery challenger paper signals
-        id: recovery_shadow
-        if: steps.guard.outputs.already != 'true'
-        # Five fixed, separately named research families. No orders or canonical ledger writes;
-        # preserve decisions before their outcomes arrive, even when the parent pilot stands down.
-        continue-on-error: true
-        run: python3 scripts/weather_challenger.py --mode shadow --require-capture-date "$(date -u +%F)" --output research-output/weather-shadow.json
-
-      - name: Preserve recovery challenger decisions
-        if: always() && steps.recovery_shadow.outcome == 'success'
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
         with:
-          name: weather-recovery-${{ github.run_id }}-${{ github.run_attempt }}
-          path: research-output/weather-shadow.json
-          if-no-files-found: error
-          retention-days: 90
+          ref: 8c0dfa287889c0d013459286a8b8f1fd419bfd7e
+          persist-credentials: false
 
-      - name: Kalshi pilot
-        if: steps.guard.outputs.already != 'true'
-        # Runs after capture (fresh fits and outcomes); tolerates failure so a pilot hiccup can't
-        # block the dashboard. Since 2026-09-07 the pilot's default strategy is MARKET SHAPE
-        # (backtesting::market_shape: the Kalshi ladder's own implied distribution, re-shaped by a
-        # walk-forward bias and sharpening, traded on both sides) — no forecast is fetched, so
-        # this step is fast. Dry by default: every intended order and skip is appended to
-        # data/pilot_trades.jsonl — the go-live gate's evidence. With PILOT_LIVE=1 the SAME code
-        # path places real limit orders (TTL-bounded, see the pilot's docs), reconciles earlier
-        # ones into `fill`/`unfilled` rows, and the commit step below carries the ledger home.
-        # One mode per day: the ledger dedupe is mode-scoped, so a dry run must not precede a
-        # live one on the same morning. The 15:27 backup re-executes this step only when the
-        # primary left no captures for today; a credentialed pilot then dedupes against Kalshi's
-        # own resting orders and positions, so a lost commit cannot double-order.
-        continue-on-error: true
-        env:
-          PILOT_LIVE: ${{ vars.PILOT_LIVE }}
-          PILOT_DISABLE: ${{ vars.PILOT_DISABLE }}
-          KALSHI_BASE_URL: ${{ vars.KALSHI_BASE_URL }}
-          KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
-          KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+      - name: Build deployed pilot
         run: |
-          if [ "$PILOT_LIVE" = "1" ]; then
-            echo "::warning::PILOT_LIVE=1 — placing REAL limit orders against ${KALSHI_BASE_URL:-<code default: demo host>}"
-            ./target/release/kalshi_pilot --live
-          else
-            ./target/release/kalshi_pilot
-          fi
+          git log -1 --oneline
+          cargo build --locked --release --bin kalshi_pilot
 
-      - name: Kalshi pilot (favorite)
-        if: steps.guard.outputs.already != 'true'
-        # The favorite-longshot rule (reports/2026-10-12-favorite-longshot-study.md): buy YES at the
-        # ask on every lead-1 market asking 0.50-0.99, $5 orders, $100 drawdown stop. Dry unless the
-        # repository variable PILOT_LIVE_FAVORITE is 1 (separate from PILOT_LIVE, which arms the
-        # market-shape step). A live run first passes scripts/favorite_gate.py (100 settled favorite
-        # orders, ROI > 0 after fees, no city > 1/3 of losses, verified fills) or places nothing.
-        # Real money also needs the Kalshi secrets and KALSHI_BASE_URL pointed at production.
-        continue-on-error: true
-        env:
-          PILOT_LIVE_FAVORITE: ${{ vars.PILOT_LIVE_FAVORITE }}
-          PILOT_DISABLE: ${{ vars.PILOT_DISABLE }}
-          KALSHI_BASE_URL: ${{ vars.KALSHI_BASE_URL }}
-          KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
-          KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+      - name: Run Favorite on public quotes in paper mode
         run: |
-          if [ "$PILOT_LIVE_FAVORITE" = "1" ]; then
-            echo "::warning::PILOT_LIVE_FAVORITE=1 — placing REAL favorite limit orders against ${KALSHI_BASE_URL:-<code default: demo host>}"
-            ./target/release/kalshi_pilot --live --strategy favorite
-          else
-            ./target/release/kalshi_pilot --strategy favorite
-          fi
+          cp data/pilot_trades.jsonl "$RUNNER_TEMP/favorite-ledger.jsonl"
+          prior_lines=$(wc -l < "$RUNNER_TEMP/favorite-ledger.jsonl")
+          ./target/release/kalshi_pilot --strategy favorite --ledger "$RUNNER_TEMP/favorite-ledger.jsonl"
+          python3 - "$RUNNER_TEMP/favorite-ledger.jsonl" "$prior_lines" <<'PY'
+          import datetime
+          import itertools
+          import json
+          import sys
 
-      - name: Render dashboard
-        if: steps.guard.outputs.already != 'true'
-        run: ./target/release/weather_dashboard --output dashboard.html
-
-      - name: Commit data
-        if: steps.guard.outputs.already != 'true'
-        run: |
-          git config user.name "daily-capture"
-          git config user.email "actions@users.noreply.github.com"
-          git add data/captures.jsonl dashboard.html
-          if [ -f data/pilot_trades.jsonl ]; then
-            git add data/pilot_trades.jsonl
-          fi
-          if git diff --cached --quiet; then
-            echo "no changes to commit"
-          else
-            git commit -m "Daily capture $(date -u +%F)"
-            git pull --rebase origin main
-            git push
-          fi
+          with open(sys.argv[1]) as ledger:
+              rows = [json.loads(line) for line in itertools.islice(ledger, int(sys.argv[2]), None)]
+          tomorrow = (datetime.datetime.now(datetime.timezone.utc).date()
+                      + datetime.timedelta(days=1)).isoformat()
+          next_day = [r for r in rows if r["target_date"] == tomorrow]
+          orders = [r for r in rows if r["decision"] == "order"]
+          assert next_day, "No next-day decisions recorded."
+          assert orders, "No Favorite paper orders recorded."
+          assert all(r["dry_run"] and r["strategy"] == "favorite" for r in rows)
+          assert all(r["target_date"] == tomorrow for r in orders)
+          print(f"Verified {len(next_day)} next-day decisions and {len(orders)} Favorite paper orders for {tomorrow}.")
+          PY
