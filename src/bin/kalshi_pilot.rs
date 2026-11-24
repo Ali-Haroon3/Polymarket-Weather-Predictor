@@ -688,13 +688,49 @@ async fn run() -> Result<(), String> {
 
     // Live open markets, priced exactly like the capture daemon prices them.
     let kalshi = KalshiHistoryDownloader::new();
-    let markets = kalshi
+    let mut markets = kalshi
         .download_weather_markets(true, 4000)
         .await
         .map_err(|e| format!("market fetch failed: {e}"))?;
     println!("{} open Kalshi weather markets", markets.len());
+    if cfg.strategy == Strategy::Favorite {
+        let next_day_markets = markets
+            .iter()
+            .filter(|market| market.target_date.signed_duration_since(today).num_days() == 1)
+            .count();
+        println!("{next_day_markets} open next-day Kalshi weather markets");
+        if next_day_markets == 0 {
+            eprintln!(
+                "No next-day markets available for favorite. Check Kalshi listings after the 10:00 Eastern open."
+            );
+        }
+    }
 
-    let mut pricer = StationPricer::new(today, spread_scale);
+    // Deterministic scan order (venue fetch order varies): by target date then ticker.
+    markets.sort_by(|a, b| (a.target_date, &a.market_id).cmp(&(b.target_date, &b.market_id)));
+    let (markets, model_estimates, mut committed) = if cfg.strategy == Strategy::ModelShrunk {
+        // StationPricer owns blocking HTTP clients. Construct, use, and drop them off the
+        // async runtime. The price-only strategies do not need a station forecast.
+        tokio::task::spawn_blocking(move || {
+            let mut pricer = StationPricer::new(today, spread_scale);
+            let estimates = markets
+                .iter()
+                .filter(|r| !committed.contains(&r.market_id))
+                .filter_map(|r| {
+                    let (mu, sigma) = pricer.estimate(r)?;
+                    let mut model = BayesianWeatherModel::default();
+                    model.set_point_forecast(mu, sigma);
+                    let estimate = market_estimate(&model, &to_sim(r))?;
+                    Some((r.market_id.clone(), estimate))
+                })
+                .collect::<HashMap<_, _>>();
+            (markets, estimates, committed)
+        })
+        .await
+        .map_err(|e| format!("station forecast worker failed: {e}"))?
+    } else {
+        (markets, HashMap::new(), committed)
+    };
     // Market shape: today's live ladders, re-priced under the fitted (b, k). Every market of a
     // complete ladder gets its probability; markets of an incomplete ladder, or with no usable
     // price at all, get a skip reason of their own so the ledger says why.
@@ -705,26 +741,18 @@ async fn run() -> Result<(), String> {
     let mut ledger: Vec<LedgerRow> = Vec::new();
     let mut placed = 0usize;
 
-    // Deterministic scan order (venue fetch order varies): by target date then ticker.
-    let mut sorted: Vec<&WeatherMarketRow> = markets.iter().collect();
-    sorted.sort_by(|a, b| (a.target_date, &a.market_id).cmp(&(b.target_date, &b.market_id)));
-
     // Pass 1: decide every market. Pass 2 places in order of net edge, so a per-run cap keeps
     // the best candidates rather than the first tickers alphabetically (under market shape a
     // day offers ~30 candidates across the ladders, and `--max-orders` 5 would otherwise trade
     // Austin and Chicago every morning and Vegas never).
     let mut decided: Vec<Decided> = Vec::new();
-    for r in sorted {
+    for r in &markets {
         if committed.contains(&r.market_id) {
             continue; // silently: already handled in a previous run
         }
         let (est, shape_est, candidate_lambda, d) = match cfg.strategy {
             Strategy::ModelShrunk => {
-                let est = pricer.estimate(r).and_then(|(mu, sigma)| {
-                    let mut model = BayesianWeatherModel::default();
-                    model.set_point_forecast(mu, sigma);
-                    market_estimate(&model, &to_sim(r))
-                });
+                let est = model_estimates.get(&r.market_id).copied();
                 let candidate_lambda = gate_lambda(fit, r.best_bid, lambda);
                 let d = decide_sell(
                     today,

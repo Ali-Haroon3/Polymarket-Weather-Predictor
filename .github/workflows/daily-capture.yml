@@ -1,11 +1,10 @@
 # Daily forward capture in the cloud — replaces the laptop launchd agent so data accrues even when
-# the machine is closed. Targets ~15:00 UTC: the exact capture geometry the per-(city, lead) sigma
-# tables in src/stations.rs were fitted at (launchd's 9:00 Denver drifts an hour with DST; this
-# doesn't). Scheduled at 14:50, not 15:00 — top-of-hour crons queue behind GitHub's rush and can
-# slip badly (the Jul 13 run fired at 16:01); an off-peak minute lands closer to the target hour
-# on average. Capture and dashboard touch only anonymous APIs. The kalshi_pilot step is the
-# canonical driver in BOTH of its modes: dry by default (no credentials ⇒ ledger-only dedupe,
-# paper decisions accrue for the go-live gate), and LIVE — real limit orders — only when the
+# the machine is closed. Stays near the 15:00 UTC capture time used to fit the per-(city, lead)
+# sigma tables in src/stations.rs. Kalshi opens tomorrow's daily highs at 10:00 Eastern
+# (14:00 UTC in summer, 15:00 UTC in winter). Run after the latest opening with a buffer and
+# avoid the top-of-hour GitHub Actions rush. Capture and dashboard touch only anonymous APIs.
+# The kalshi_pilot step is the canonical driver in both modes: dry by default (ledger-only dedupe
+# without credentials, with paper decisions feeding the go-live gate), and live only when the
 # repository variable PILOT_LIVE is "1" AND the KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM
 # secrets are set. The trade host comes from the KALSHI_BASE_URL variable (unset ⇒ the code's
 # demo default), so real money needs two explicit settings in the GitHub UI: PILOT_LIVE=1 and
@@ -15,7 +14,7 @@ name: daily-capture
 
 on:
   schedule:
-    # Primary, then a backup 37 minutes later. On 2026-08-26 GitHub delivered the schedule five
+    # Primary, then a backup 17 minutes later. On 2026-08-26 GitHub delivered the schedule five
     # times in twenty minutes and gave none of them a runner (two startup_failure, two failure,
     # one cancelled) — that day captured nothing, and a capture gap is PERMANENT: Polymarket
     # purges price history shortly after a market resolves, so a missed day can never be
@@ -23,7 +22,7 @@ on:
     # so the normal cost is one cheap checkout. 15:27 is still inside the drift this workflow has
     # always tolerated (the Jul 13 run fired at 16:01), so a rescued day is priced at essentially
     # the geometry the sigma/bias tables were fitted at.
-    - cron: "50 14 * * *"
+    - cron: "10 15 * * *"
     - cron: "27 15 * * *"
   workflow_dispatch:
 
